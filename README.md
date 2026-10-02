@@ -1,36 +1,103 @@
-# Spine on Wallpaper Engine
+# spine-wallpaper-kit
 
-[中文](https://github.com/spicy-wolf/spine-wallpaper-engine/blob/main/README.zh.md)
+Turn [Spine](https://esotericsoftware.com) skeletal animations into **interactive** web wallpapers for [Wallpaper Engine](https://www.wallpaperengine.io/en): layered scenes, touch interaction, voice lines with subtitle bubbles, BGM, particle effects, pointer trails, and a built-in settings panel.
 
-## What is it?
+[中文](./README.zh.md)
 
-This is a [Spine](https://esotericsoftware.com) animation player for wallpaper engine. This is a web application and build in Vanilla Js.
+> This repository is derived from [spicy-wolf/spine-wallpaper-engine](https://github.com/spicy-wolf/spine-wallpaper-engine) (GPL-3.0),
+> rebuilt from a plain Spine animation player into an interactive character wallpaper framework.
+> See [NOTICE.md](./NOTICE.md) for attribution and licensing.
 
-## How to use
+## How is this different from upstream?
 
-1. Download the latest release
-2. Unzip the release and nagivate into the "assets" folder
-3. Put all relative spine files (\*.altas, \*.png, \*.skel, etc) into the "assets" folder.
-4. Add a config.json into the "assets" folder and please see [this doc](https://github.com/spicy-wolf/spine-wallpaper-engine/blob/main/public/assets/README.md) for the config.json file structure.
-5. You can open the index.html to preview the animation.
-6. If everything looks good, then import your project into Wallpaper Engine. see [offical tutorial](https://docs.wallpaperengine.io/en/web/first/gettingstarted.html)
+Upstream is a **player**: drop your Spine files into `assets/` and it loops them on your desktop.
+
+This repository grew into a **framework** on top of that rendering core:
+
+| Capability | Upstream | Here |
+| --- | --- | --- |
+| Layered scenes (background / character / particles / foreground) | Yes | Yes, plus a `particle` layer and explicit z-ordering |
+| Touch interaction & action scheduling | — | ✅ Hit zones, mutual exclusion and interrupt rules |
+| Voice lines + subtitle bubbles | — | ✅ Anchored to the character, auto-wrapping, fade in/out |
+| BGM | — | ✅ Looping playback with volume control |
+| Pause / resume | — | ✅ **Unified audio master** (WE `setPaused` + page visibility) |
+| Pointer trail | — | ✅ Emitted along cursor movement |
+| Built-in settings panel | — | ✅ 5 tabs, edit at runtime and persist |
+| Archive panel / disclaimer | — | ✅ |
+| Debug probe | — | ✅ HUD plus CDP snapshot API |
+
+## Features
+
+- **Layered scenes** — `texture` / `spine` / `particle` / `video` layers ordered by `position.z`, with aspect-ratio fitting (`minAspect` / `maxAspect`) and DPI awareness (`dpr: "auto"`).
+- **Touch interaction** — rectangular hit zones plus an action sequence; `touch` / `greet` / `standby` sources follow explicit mutual-exclusion and interrupt rules.
+- **Voice & subtitles** — the bubble follows a character anchor, voice plays through a dedicated player; both are wired into the audio master.
+- **Audio master** (`src/audioMaster.ts`) — BGM and voice no longer subscribe to pause signals on their own; they register with a single master that handles pause/resume for both. Voice resumes from where it was paused.
+- **Particles & trails** — `ParticleAnimator` handles scene particles, `PointerTrail` handles the cursor trail; deliberately separate.
+- **Settings panel** — edit options at runtime and persist them to WE properties.
+- **Debug probe** — `__WB_DIALOGUE__` / `__WB_FX__` snapshot APIs, designed for headless Chrome + CDP regression runs.
+
+## Quick start
+
+```bash
+git clone --recurse-submodules https://github.com/awei808/spine-wallpaper-kit.git
+cd spine-wallpaper-kit
+npm ci
+```
+
+> ⚠️ `--recurse-submodules` is required: `packages/threejs-spine-3.8-runtime-es6` is a submodule and the build fails without it.
+
+Assets and config:
+
+1. Copy your Spine trio (`*.skel` / `*.atlas` / `*.png`) into `public/assets/`
+2. Copy the example config: `cp public/assets/config.example.json public/assets/config.json`
+3. Edit `config.json` for your assets — field reference in [public/assets/README.md](./public/assets/README.md)
+
+Preview and build:
+
+```bash
+npm start          # dev server
+npm run build      # emits dist/bundle.js
+```
+
+To import into Wallpaper Engine: place the contents of `dist/` together with `assets/` into a WE project directory, then follow the [official tutorial](https://docs.wallpaperengine.io/en/web/first/gettingstarted.html).
+
+## Layout
+
+```
+src/
+  index.ts                 Assembly and main loop
+  initScene.ts             Scene, camera, aspect fitting
+  audioMaster.ts           * The audio master: single pause control point for BGM + voice
+  bgmPlayer.ts             BGM player
+  voicePlayer.ts           Voice line player
+  voiceBubble.ts           Subtitle bubble
+  dialogue.ts              Voice scheduling
+  touch.ts                 Hit zones and action gating
+  pointerTrail.ts          Pointer trail
+  settingsPanel.ts         Built-in settings panel
+  settingsStore.ts         Settings read/write and overrides
+  archive.ts               Archive panel
+  disclaimer.ts            Disclaimer dialog
+  wePauseSignal.ts         Single installation point for WE setPaused
+  idleSequence.ts          Ambient action sequence
+  probe.ts / probeHud.ts   Debug probe
+  animator/                texture / spine / video / particle layers
+_regress/                  Regression scripts (ts-node)
+public/assets/             Assets and config.json (assets are gitignored)
+```
+
+## Known issues
+
+- The pointer trail emits based on cursor speed rather than distance, so fast strokes distribute unevenly. Counting logic is correct; distribution logic needs a fix.
 
 ## Licensing
 
-Please see [License](https://github.com/spicy-wolf/spine-wallpaper-engine/blob/main/LICENSE.txt)
-
-## Licensing from Spine
-
-You are welcome to evaluate the Spine Runtimes and the examples we provide in this repository free of charge.
-
-You can integrate the Spine Runtimes into your software free of charge, but users of your software must have their own [Spine license](https://esotericsoftware.com/spine-purchase). Please make your users aware of this requirement! This option is often chosen by those making development tools, such as an SDK, game toolkit, or software library.
-
-In order to distribute your software containing the Spine Runtimes to others that don't have a Spine license, you need a [Spine license](https://esotericsoftware.com/spine-purchase) at the time of integration. Then you can distribute your software containing the Spine Runtimes however you like, provided others don't modify it or use it to create new software. If others want to do that, they'll need their own Spine license.
-
-For the official legal terms governing the Spine Runtimes, please read the [Spine Runtimes License Agreement](http://esotericsoftware.com/spine-runtimes-license) and Section 2 of the [Spine Editor License Agreement](http://esotericsoftware.com/spine-editor-license#s2).
+- This repository: **GPL-3.0**, see [LICENSE.txt](./LICENSE.txt).
+- Spine Runtimes: **Spine Runtimes License Agreement**, see [LICENSE.spine.txt](./LICENSE.spine.txt).
+- Derived from spicy-wolf/spine-wallpaper-engine (GPL-3.0), see [NOTICE.md](./NOTICE.md).
 
 ## Disclaimer
 
-The main purpose of this program to to bring your spine animation into the Wallpager Engine. You should make sure that you own the copyright of the animations.
+This program only brings **your own** Spine animations to the desktop. Make sure you hold the rights to any assets, audio, and text you use — this repository ships no game assets (`public/assets/*` is gitignored; only documentation and an example config are kept).
 
-By using the program, you agree to do so at your own risk. The author of this program, which is me, shall not be held liable for any damages, including but not limited to direct, indirect, incidental, special, or consequential damages, arising from the use of this program.
+Use it at your own risk. The author is not liable for any damages arising from its use.

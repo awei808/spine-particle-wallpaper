@@ -1,30 +1,104 @@
-# Spine on Wallpaper Engine
+# spine-wallpaper-kit
 
-[English](https://github.com/spicy-wolf/spine-wallpaper-engine/blob/main/README.md)
+把 [Spine](https://esotericsoftware.com) 骨骼动画做成 [Wallpaper Engine](https://www.wallpaperengine.io/zh-hans) 上**可交互**的网页壁纸：多层场景、触摸反馈、念白语音与字幕气泡、BGM、粒子特效、指针拖尾，外加一套内置设置面板。
 
-## 这是什么？
+[English](./README.md)
 
-这是一个[Spine](https://esotericsoftware.com)墙纸引擎的动画播放器。这是一个 Web 项目，用 Vanilla Js 构建。
+> 本仓库衍生自 [spicy-wolf/spine-wallpaper-engine](https://github.com/spicy-wolf/spine-wallpaper-engine)（GPL-3.0），
+> 在其「Spine 动画播放器」基础上重构成可交互角色壁纸框架。归属与许可见 [NOTICE.md](./NOTICE.md)。
 
-## 如何使用
+## 和上游有什么区别？
 
-1. 下载最新版本
-2. 解压缩该版本，并将 nagivate 放入 "assets" 文件夹中
-3. 把所有相关的 Spine 文件（altas、png、skel 等）放到 "assets" 文件夹里。
-4. 在 "assets" 文件夹中添加 config.json，关于 config.json 文件结构，请参见[本文档](https://github.com/spicy-wolf/spine-wallpaper-engine/blob/main/public/assets/README.zh.md)。
-5. 你可以打开 index.html 来预览动画。
-6. 如果一切看起来不错，然后将你的项目导入 Wallpaper Engine。见[官方教程](https://docs.wallpaperengine.io/en/web/first/gettingstarted.html)
+上游是一个**播放器**：把 Spine 文件丢进 `assets/`，它就在壁纸里循环播放。
+
+本仓库在它的渲染内核之上长成了一套**框架**：
+
+| 能力 | 上游 | 本仓库 |
+| --- | --- | --- |
+| 多层场景编排（背景 / 角色 / 粒子 / 前景） | 支持 | 支持，并新增 `particle` 层与分层 z 序 |
+| 触摸交互与动作调度 | — | ✅ 热区、动作互斥与打断闸门 |
+| 念白语音 + 字幕气泡 | — | ✅ 跟随角色锚点、自动换行、淡入淡出 |
+| BGM | — | ✅ 循环播放与音量控制 |
+| 暂停 / 恢复 | — | ✅ **统一音频总闸**（WE `setPaused` + 页面可见性两路信号） |
+| 指针拖尾 | — | ✅ 跟随鼠标移动发射 |
+| 内置设置面板 | — | ✅ 5 个分页，运行时改配置并持久化 |
+| 档案面板 / 免责声明 | — | ✅ |
+| 调试探针 | — | ✅ HUD 与 CDP 快照接口 |
+
+## 功能一览
+
+- **多层场景**：`texture` / `spine` / `particle` / `video` 四种层，按 `position.z` 排布，宽高比自适应（`minAspect` / `maxAspect`），DPI 自适应（`dpr: "auto"`）。
+- **触摸交互**：矩形热区 + 动作序列；`touch` / `greet` / `standby` 三类来源有明确的互斥与打断规则。
+- **语音与字幕**：字幕气泡跟随角色锚点，语音走独立播放器；两者都接入音频总闸。
+- **音频总闸**（`src/audioMaster.ts`）：BGM 与语音不再各自订阅暂停信号，而是登记到同一个总闸统一处理暂停/恢复。语音从暂停处续播。
+- **粒子与拖尾**：`ParticleAnimator` 负责场景粒子，`PointerTrail` 负责鼠标拖尾，两者刻意分家。
+- **设置面板**：运行时修改并持久化到 WE 属性。
+- **调试探针**：`__WB_DIALOGUE__` / `__WB_FX__` 快照接口，配合 headless Chrome + CDP 做自动化回归。
+
+## 快速开始
+
+```bash
+git clone --recurse-submodules https://github.com/awei808/spine-wallpaper-kit.git
+cd spine-wallpaper-kit
+npm ci
+```
+
+> ⚠️ 必须带 `--recurse-submodules`：`packages/threejs-spine-3.8-runtime-es6` 是子模块，漏了会构建失败。
+
+放素材与配置：
+
+1. 把 Spine 三件套（`*.skel` / `*.atlas` / `*.png`）拷进 `public/assets/`
+2. 复制示例配置：`cp public/assets/config.example.json public/assets/config.json`
+3. 按你的素材改 `config.json` —— 字段说明见 [public/assets/README.zh.md](./public/assets/README.zh.md)
+
+本地预览与构建：
+
+```bash
+npm start          # 起 dev server
+npm run build      # 产出 dist/bundle.js
+```
+
+导入 Wallpaper Engine：把 `dist/` 的内容连同 `assets/` 一起放进一个 WE 工程目录，
+再按[官方教程](https://docs.wallpaperengine.io/en/web/first/gettingstarted.html)导入。
+
+## 目录结构
+
+```
+src/
+  index.ts                装配与主循环
+  initScene.ts            场景、相机、画幅自适应
+  audioMaster.ts          ★ 音频总闸（BGM + 语音的唯一暂停控制点）
+  bgmPlayer.ts            BGM 播放器
+  voicePlayer.ts          念白语音播放器
+  voiceBubble.ts          字幕气泡
+  dialogue.ts             念白调度
+  touch.ts                触摸热区与动作闸门
+  pointerTrail.ts         指针拖尾
+  settingsPanel.ts        内置设置面板
+  settingsStore.ts        设置读写与覆盖
+  archive.ts              档案面板
+  disclaimer.ts           免责声明
+  wePauseSignal.ts        WE setPaused 信号的唯一安装点
+  idleSequence.ts         常驻动作序列
+  probe.ts / probeHud.ts  调试探针
+  animator/               texture / spine / video / particle 四种层
+_regress/                 回归脚本（ts-node）
+public/assets/            素材与 config.json（素材已 gitignore）
+```
+
+## 已知缺陷
+
+- 指针拖尾的发射间距按速度而非距离计算，快速划动时分布不均。计数逻辑正确，分布逻辑待修。
 
 ## 许可证
 
-请看[许可证](https://github.com/spicy-wolf/spine-wallpaper-engine/blob/main/LICENSE.txt)
-
-## Spine 许可证
-
-请参考英文版[许可证](http://zh.esotericsoftware.com/spine-editor-license#s2)
+- 本仓库：**GPL-3.0**，见 [LICENSE.txt](./LICENSE.txt)。
+- Spine 运行时：**Spine Runtimes License Agreement**，见 [LICENSE.spine.txt](./LICENSE.spine.txt)。
+- 衍生自 spicy-wolf/spine-wallpaper-engine（GPL-3.0），详见 [NOTICE.md](./NOTICE.md)。
 
 ## 免责声明
 
-本程序的主要目的是将你的 Spine 动画引入到 [Wallpaper Engine](https://www.wallpaperengine.io/zh-hans)。你应该确保你拥有这些动画的版权。
+本程序只是把**你自己的** Spine 动画搬上桌面。请确保你对所用素材、音频、文本拥有合法权利 ——
+仓库本身不含任何游戏素材（`public/assets/*` 已被 gitignore，仅保留说明文档与示例配置）。
 
-通过使用该程序，你同意自己承担风险。本程序的作者不对任何损害负责，包括但不限于因使用本程序而引起的直接、间接、附带、特殊或相应的损害。
+使用本程序的风险由你自行承担，作者不对任何损害负责。

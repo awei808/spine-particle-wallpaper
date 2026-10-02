@@ -1,0 +1,84 @@
+{
+  "width": 1700,
+  "height": 750,
+  "fov": 59.255924,
+  "dpr": "auto",
+  "touch": {
+    "enabled": true,
+    "showZones": false,
+    "zones": [
+      {
+        "u0": -1,
+        "v0": -1,
+        "u1": 1,
+        "v1": 1,
+        "id": "hit1",
+        "label": "whole screen"
+      }
+    ]
+  },
+  "subtitle": {
+    "enabled": true,
+    "position": "game",
+    "fontSize": 20,
+    "lineSpacing": 1.05,
+    "paddingX": 15,
+    "paddingY": 12,
+    "fadeMs": 260,
+    "audio": {
+      "enabled": true,
+      "volume": 0.8,
+      "path": "./assets/voice/"
+    }
+  },
+  "bgm": {
+    "enabled": true,
+    "file": "bgm.ogg",
+    "path": "./assets/bgm/",
+    "volume": 0.5,
+    "loop": true
+  },
+  "idleSequence": {
+    "enabled": false,
+    "items": [],
+    "gapMs": 0,
+    "startIndex": 0
+  },
+  "pointerTrail": {
+    "enabled": false
+  },
+  "probe": {
+    "enabled": false,
+    "hud": false
+  },
+  "meshes": [
+    {
+      "type": "texture",
+      "textureFileName": "background.png",
+      "width": 3918.89,
+      "height": 3591.55,
+      "tilesHorizontal": 1,
+      "tilesVertical": 1,
+      "numTiles": 1,
+      "tileDisplayDuration": 0,
+      "scale": 1,
+      "position": {
+        "x": 0,
+        "y": 0,
+        "z": -1520
+      }
+    },
+    {
+      "type": "spine",
+      "skeletonFileName": "character.skel",
+      "atlasFileName": "character.atlas",
+      "animationName": "idle",
+      "scale": 0.7576,
+      "position": {
+        "x": 0,
+        "y": -300,
+        "z": -1000
+      }
+    }
+  ]
+}

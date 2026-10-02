@@ -20,3 +20,4 @@
 export * from './SpineAnimator';
 export * from './TextureAnimator';
 export * from './VideoAnimator';
+export * from './ParticleAnimator';

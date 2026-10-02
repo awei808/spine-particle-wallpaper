@@ -63,6 +63,17 @@ module.exports = (env) => ({
         },
       ],
     }),
+    /**
+     * 编译期开关：`npm run build -- --env probe=off` 产出**不带探针**的 bundle。
+     *
+     * 为什么用 DefinePlugin 而不是 URL 参数：WE 桌面环境走 `file://`，
+     * query/hash 的行为不确定；而"换头像做 A/B"要求两份产物在
+     * index.html 上完全可切换——编译期常量最可靠，也零运行时开销。
+     * 默认（不传 env）探针是**开**的，避免"忘了带参数导致以为探针坏了"。
+     */
+    new webpack.DefinePlugin({
+      __PROBE__: JSON.stringify(String(env?.probe ?? 'on') !== 'off'),
+    }),
   ],
   devServer: {
     historyApiFallback: true,

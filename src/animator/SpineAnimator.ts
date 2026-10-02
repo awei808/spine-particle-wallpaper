@@ -25,6 +25,7 @@ import * as Scene from '@src/initScene';
 
 export class SpineAnimator {
   private skeletonMesh: threejsSpine.SkeletonMesh;
+  private skeletonData: threejsSpine.SkeletonData;
   private cursorActionAnimationUpdateFunc: (
     resetBonePosition?: boolean
   ) => void;
@@ -66,6 +67,7 @@ export class SpineAnimator {
         meshConfig.jsonFileName ?? meshConfig.skeletonFileName
       )
     );
+    this.skeletonData = skeletonData;
 
     // Create a SkeletonMesh from the data and attach it to the scene
     this.skeletonMesh = new threejsSpine.SkeletonMesh(
@@ -133,6 +135,79 @@ export class SpineAnimator {
 
     // the rest bone animation updates
     this.skeletonMesh.update(delta);
+  };
+
+  /** 供探针读取骨架里真实存在的动画名（不重复解析 .skel） */
+  public getSkeletonData = (): threejsSpine.SkeletonData => {
+    return this.skeletonData;
+  };
+
+  /**
+   * 供触摸控制器拿到 SkeletonMesh（需要它的 `state` 来播 track 2 动画）。
+   *
+   * 为什么不让 touch.ts 自己去解析/新建骨架：那样会加载第二份资源、状态也无法
+   * 与渲染中的骨架同步。直接用现有实例才是唯一正确的做法。
+   */
+  public getSkeletonMesh = (): threejsSpine.SkeletonMesh => {
+    return this.skeletonMesh;
+  };
+
+  /**
+   * 供探针读取"当前各 track 在播什么"。
+   *
+   * 为什么需要：`cursorPress`/`cursorFollow` 机制在 mousedown 时用
+   * `setAnimation(1, name, true)` —— 第三个参数 loop **写死为 true**。
+   * 一旦 mouseup 时没切回去，track 1 会一直循环、永不回 idle。
+   * 这类"卡住"问题在桌面上看不到 DevTools，只能读出来。
+   *
+   * 只读快照，不改变任何状态。API 依据：
+   *   AnimationState.ts:806  getCurrent(i)  越界返回 null
+   *   AnimationState.ts:841  TrackEntry.animation
+   *   AnimationState.ts:867  TrackEntry.loop
+   *   AnimationState.ts:926  TrackEntry.trackTime
+   */
+  public getTrackSnapshot = (): Array<{
+    track: number;
+    animation: string;
+    loop: boolean;
+    trackTime: number;
+  }> => {
+    const state = this.skeletonMesh?.state;
+    if (!state || !state.tracks) {
+      return [];
+    }
+    const out: Array<{
+      track: number;
+      animation: string;
+      loop: boolean;
+      trackTime: number;
+    }> = [];
+    for (let i = 0; i < state.tracks.length; i++) {
+      const entry = state.getCurrent(i);
+      /**
+       * `getCurrent(i)` 在 `tracks[i]` 为 `null` 时返回 `null`（AnimationState.ts:806）。
+       *
+       * ★ 这里曾出过一个误导性读数：早期写成 `entry?.animation?.name ?? '(empty)'`，
+       * 于是"track 已被正确清空（null）"被显示成 `'(empty)'`，
+       * 让人误以为 `clearTrack` 没生效、有 `<empty>` 残留。
+       * 实际 `(empty)` 这个名字专指 `AnimationState.emptyAnimation`
+       * （`new Animation('<empty>', [], 0)`，AnimationState.ts:42），
+       * 只可能由 `setEmptyAnimation` 产生。
+       *
+       * 现在：**空槽位直接跳过**，不清空则视为"该 track 无动画"，
+       * 由调用方看到 rows 里没有该 track 号来判断。
+       */
+      if (!entry) {
+        continue;
+      }
+      out.push({
+        track: i,
+        animation: entry.animation?.name ?? '(?)',
+        loop: entry.loop ?? false,
+        trackTime: entry.trackTime ?? 0,
+      });
+    }
+    return out;
   };
 }
 

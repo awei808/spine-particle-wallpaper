@@ -30,17 +30,41 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
       display: flex;
       align-items: center;
       justify-content: center;
+      background: #000;
     }
 
+    /*
+      画布的 CSS 尺寸由 JS 按视口精确设定（见 bundle.js 的 initScene）：
+      正常比例 -> 等于视口尺寸（铺满）；超出 minAspect~maxAspect -> 按边界尺寸渲染、居中留边。
+      所以这里**不能**再写 width:100% / height:auto —— 那会覆盖 JS 设的 CSS 尺寸，
+      在 letterbox 情况下把画面拉变形。
+    */
     canvas {
-      width: 100% !important;
-      height: auto !important;
+      display: block;
     }
   </style>
 </head>
 
 <body id="body">
   <!-- page content -->
+  <!--
+    ★★ 必须在 bundle.js **之前**把 window.wallpaperPropertyListener 建成一个空对象。
+
+    按 WE 官方口径，这个对象是**壁纸作者创建**的，不是 WE 创建的：WE 的注入脚本
+    只往这个**已存在的对象**上补方法（applyUserProperties / applyGeneralProperties /
+    setPaused …）。对象不存在 ⇒ 那几句 `window.wallpaperPropertyListener.xxx = …`
+    全部抛 TypeError ⇒ 注入整段中断 ⇒ 属性面板里所有选项勾了都不生效。
+
+    建得越早越好（WE 在 document 创建时就注入），所以放在 bundle 之前。
+    判据同 bundle 内的 ensureWallpaperPropertyListener：只在 WE 环境里建，
+    普通浏览器预览保持"没有宿主对象"的原状（环境判据依赖这一点）。
+    bundle 内还有一次幂等兜底，只换 bundle 不换 index.html 也不会失效。
+  -->
+  <script>
+    if (window.___wpxUnpause || window.wallpaperRegisterAudioListener) {
+      window.wallpaperPropertyListener = window.wallpaperPropertyListener || {};
+    }
+  </script>
   <script src="bundle.js"></script>
 </body>
 

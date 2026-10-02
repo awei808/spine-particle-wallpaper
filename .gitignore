@@ -1,4 +1,7 @@
 dist
 node_modules
+_probe_build/
+_regress/_out_*.txt
 public/assets/*
 !public/assets/README*.md
+!public/assets/config.example.json

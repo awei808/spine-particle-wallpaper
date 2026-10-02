@@ -1,7 +1,7 @@
 {
-  "name": "spine-wallpaper-engine",
+  "name": "spine-wallpaper-kit",
   "version": "1.0.0",
-  "description": "play spine on wallpaper engine",
+  "description": "Turn Spine skeletal animations into interactive Wallpaper Engine web wallpapers",
   "main": "src/index.ts",
   "scripts": {
     "ci": "npm ci",
@@ -11,14 +11,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/spicy-wolf/spine-wallpaper-engine.git"
+    "url": "git+https://github.com/awei808/spine-wallpaper-kit.git"
   },
-  "author": "Spicy Wolf",
+  "author": "awei808",
   "license": "SEE LICENSE IN LICENSE",
   "bugs": {
-    "url": "https://github.com/spicy-wolf/spine-wallpaper-engine/issues"
+    "url": "https://github.com/awei808/spine-wallpaper-kit/issues"
   },
-  "homepage": "https://github.com/spicy-wolf/spine-wallpaper-engine#readme",
+  "homepage": "https://github.com/awei808/spine-wallpaper-kit#readme",
   "devDependencies": {
     "copy-webpack-plugin": "^11.0.0",
     "css-loader": "^6.7.3",
