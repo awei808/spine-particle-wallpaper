@@ -1,6 +1,8 @@
-# spine-wallpaper-kit
+# spine-particle-wallpaper
 
-Turn [Spine](https://esotericsoftware.com) skeletal animations into **interactive** web wallpapers for [Wallpaper Engine](https://www.wallpaperengine.io/en): layered scenes, touch interaction, voice lines with subtitle bubbles, BGM, particle effects, pointer trails, and a built-in settings panel.
+**Spine skeletons + Unity-style particle FX, turned into interactive wallpapers for Wallpaper Engine.**
+
+Bring a Spine character from a Unity mobile game to the desktop with its feel intact: multiple touch action sets, voice lines with subtitle bubbles, BGM, pointer trails, adaptive framing, and a built-in settings panel.
 
 [中文](./README.zh.md)
 
@@ -39,8 +41,8 @@ This repository grew into a **framework** on top of that rendering core:
 ## Quick start
 
 ```bash
-git clone --recurse-submodules https://github.com/awei808/spine-wallpaper-kit.git
-cd spine-wallpaper-kit
+git clone --recurse-submodules https://github.com/awei808/spine-particle-wallpaper.git
+cd spine-particle-wallpaper
 npm ci
 ```
 

@@ -1,6 +1,6 @@
 # NOTICE
 
-**spine-wallpaper-kit**
+**spine-particle-wallpaper**
 Copyright (C) 2026 awei808
 
 This project is licensed under the GNU General Public License v3.0 — see [LICENSE.txt](./LICENSE.txt).

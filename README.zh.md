@@ -1,6 +1,8 @@
-# spine-wallpaper-kit
+# spine-particle-wallpaper
 
-把 [Spine](https://esotericsoftware.com) 骨骼动画做成 [Wallpaper Engine](https://www.wallpaperengine.io/zh-hans) 上**可交互**的网页壁纸：多层场景、触摸反馈、念白语音与字幕气泡、BGM、粒子特效、指针拖尾，外加一套内置设置面板。
+**用 Spine 骨骼动画 + Unity 式粒子特效，给 Wallpaper Engine 做可交互的桌面壁纸。**
+
+Unity 手游里的 Spine 角色 + 粒子特效 + 触摸动作，搬上桌面并保持手感：多套触摸动作系统、念白语音与字幕气泡、BGM、指针拖尾、画面自适应，外加一套内置设置面板。
 
 [English](./README.md)
 
@@ -38,8 +40,8 @@
 ## 快速开始
 
 ```bash
-git clone --recurse-submodules https://github.com/awei808/spine-wallpaper-kit.git
-cd spine-wallpaper-kit
+git clone --recurse-submodules https://github.com/awei808/spine-particle-wallpaper.git
+cd spine-particle-wallpaper
 npm ci
 ```
 

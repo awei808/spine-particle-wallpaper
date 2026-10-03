@@ -1,7 +1,7 @@
 {
-  "name": "spine-wallpaper-kit",
+  "name": "spine-particle-wallpaper",
   "version": "1.0.0",
-  "description": "Turn Spine skeletal animations into interactive Wallpaper Engine web wallpapers",
+  "description": "Interactive Wallpaper Engine wallpapers from Spine skeletons, with Unity-style particle FX, touch actions, BGM and subtitles",
   "main": "src/index.ts",
   "scripts": {
     "ci": "npm ci",
@@ -11,14 +11,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/awei808/spine-wallpaper-kit.git"
+    "url": "git+https://github.com/awei808/spine-particle-wallpaper.git"
   },
   "author": "awei808",
   "license": "SEE LICENSE IN LICENSE",
   "bugs": {
-    "url": "https://github.com/awei808/spine-wallpaper-kit/issues"
+    "url": "https://github.com/awei808/spine-particle-wallpaper/issues"
   },
-  "homepage": "https://github.com/awei808/spine-wallpaper-kit#readme",
+  "homepage": "https://github.com/awei808/spine-particle-wallpaper#readme",
   "devDependencies": {
     "copy-webpack-plugin": "^11.0.0",
     "css-loader": "^6.7.3",
