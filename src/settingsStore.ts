@@ -46,7 +46,12 @@
  * 而 `location.reload()` 天然干净，代价只是切换时黑屏约 1 秒。
  */
 
-import { Configs, FerrisWheelConfig, GreetMode, TouchFeedbackMode } from './config.type';
+import {
+  Configs,
+  FerrisWheelConfig,
+  GreetMode,
+  TouchFeedbackMode,
+} from './config.type';
 // 只为读"探针当前生效值"的缺省（见 readView）——probe 不反向依赖本模块，无循环
 import { PROBE_OPTS } from './probe';
 

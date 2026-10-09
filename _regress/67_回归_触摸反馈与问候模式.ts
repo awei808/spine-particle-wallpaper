@@ -126,7 +126,11 @@ eq(
   normalizeGreetIds({ morning: 64001, evening: 64003 } as Slots),
   [64001, 64003]
 );
-eq('A5 undefined / 空对象 ⇒ 空数组（不抛）', [normalizeGreetIds(undefined), normalizeGreetIds({})], [[], []]);
+eq(
+  'A5 undefined / 空对象 ⇒ 空数组（不抛）',
+  [normalizeGreetIds(undefined), normalizeGreetIds({})],
+  [[], []]
+);
 eq(
   'A6 hasGreetIds：两种形状都算"有候选"，空 ⇒ false',
   [hasGreetIds(greetArr), hasGreetIds(greetMap), hasGreetIds(undefined)],
@@ -134,8 +138,10 @@ eq(
 );
 eq(
   'A7 ★新字段优先：同时给了 greet 与 greeting ⇒ 用数组（index.ts 的读法）',
-  normalizeGreetIds(({ greet: greetArr, greeting: greetMap } as unknown as Slots)
-    .greet as number[]),
+  normalizeGreetIds(
+    ({ greet: greetArr, greeting: greetMap } as unknown as Slots)
+      .greet as number[]
+  ),
   [64001, 64002, 64003]
 );
 
@@ -218,8 +224,14 @@ eq(
 /* ── C. 聊天（长时间无互动）池：chat 数组 ⇄ 旧 standby 单条 ── */
 console.log('\nC. resolveChatIds / resolveStandbyTouchIds：chat 升级为数组');
 eq('C1 ★chat 优先于旧 standby', resolveChatIds([64004], 777), [64004]);
-eq('C2 ★chat 没配 ⇒ 退回旧 standby（老 config 行为逐字不变）', resolveChatIds(undefined, 64004), [64004]);
-eq('C2b chat 给了空数组 ⇒ 同样退回旧 standby', resolveChatIds([], 64004), [64004]);
+eq(
+  'C2 ★chat 没配 ⇒ 退回旧 standby（老 config 行为逐字不变）',
+  resolveChatIds(undefined, 64004),
+  [64004]
+);
+eq('C2b chat 给了空数组 ⇒ 同样退回旧 standby', resolveChatIds([], 64004), [
+  64004,
+]);
 eq(
   'C3 ★chat 多条 + touch ⇒ 保序去重，touch 排在后面',
   resolveStandbyTouchIds(undefined, [64005, 64006], [64001, 64004]),
@@ -249,7 +261,11 @@ eq(
   resolveTouchIds([64005], greetMap, true),
   [64005, 64001, 64002, 64003]
 );
-eq('D3 开关关（缺省）⇒ 原样返回 touch', resolveTouchIds([64005], greetArr, undefined), [64005]);
+eq(
+  'D3 开关关（缺省）⇒ 原样返回 touch',
+  resolveTouchIds([64005], greetArr, undefined),
+  [64005]
+);
 eq(
   'D4 greet 里有已在 touch 中的 id ⇒ 不重复追加',
   resolveTouchIds([64005, 64001], greetArr, true),
@@ -258,16 +274,50 @@ eq(
 
 /* ── E. 触摸反馈三模式（touch.decideAction） ────────────── */
 console.log('\nE. decideAction：正在播动作时的点击该怎么处理');
-eq('E1 空闲（没有在播的）⇒ 三档都是 play', [decideAction(null, 'touch', 'immediate'), decideAction(null, 'touch', 'queue'), decideAction(null, 'touch', 'none')], ['play', 'play', 'play']);
+eq(
+  'E1 空闲（没有在播的）⇒ 三档都是 play',
+  [
+    decideAction(null, 'touch', 'immediate'),
+    decideAction(null, 'touch', 'queue'),
+    decideAction(null, 'touch', 'none'),
+  ],
+  ['play', 'play', 'play']
+);
 eq(
   'E2 ★immediate（缺省）：触摸 ⊥ 触摸 ⇒ **play**（改动前这里是 skip —— 刻意的变更）',
   decideAction('touch', 'touch', 'immediate'),
   'play'
 );
-eq('E2b 只传两个参数 ⇒ 同 immediate（旧调用方行为不被悄悄改坏）', decideAction('touch', 'touch'), 'play');
-eq('E3 immediate：触摸 打断 greet / standby', [decideAction('greet', 'touch', 'immediate'), decideAction('standby', 'touch', 'immediate')], ['play', 'play']);
-eq('E4 ★queue：触摸 ⊥ 任何在播的 ⇒ queue（排到当前这条之后）', [decideAction('touch', 'touch', 'queue'), decideAction('greet', 'touch', 'queue'), decideAction('standby', 'touch', 'queue')], ['queue', 'queue', 'queue']);
-eq('E5 ★none：触摸 ⊥ 任何在播的 ⇒ skip（计 skipped，用户点了没反应）', [decideAction('touch', 'touch', 'none'), decideAction('greet', 'touch', 'none')], ['skip', 'skip']);
+eq(
+  'E2b 只传两个参数 ⇒ 同 immediate（旧调用方行为不被悄悄改坏）',
+  decideAction('touch', 'touch'),
+  'play'
+);
+eq(
+  'E3 immediate：触摸 打断 greet / standby',
+  [
+    decideAction('greet', 'touch', 'immediate'),
+    decideAction('standby', 'touch', 'immediate'),
+  ],
+  ['play', 'play']
+);
+eq(
+  'E4 ★queue：触摸 ⊥ 任何在播的 ⇒ queue（排到当前这条之后）',
+  [
+    decideAction('touch', 'touch', 'queue'),
+    decideAction('greet', 'touch', 'queue'),
+    decideAction('standby', 'touch', 'queue'),
+  ],
+  ['queue', 'queue', 'queue']
+);
+eq(
+  'E5 ★none：触摸 ⊥ 任何在播的 ⇒ skip（计 skipped，用户点了没反应）',
+  [
+    decideAction('touch', 'touch', 'none'),
+    decideAction('greet', 'touch', 'none'),
+  ],
+  ['skip', 'skip']
+);
 eq(
   'E6 ★自动触发（greet / standby）**永不打断**也未入队，三档同 ⇒ reject',
   [
@@ -345,15 +395,24 @@ const baseView = readView(cfgNew);
 ok('F6 同值 ⇒ sameView = true', sameView(baseView, readView(cfgNew)) === true);
 ok(
   'F7 ★只改 touchFeedbackMode（immediate → queue）⇒ 判为"有变化"',
-  sameView(baseView, readView(applyOverrides(cfgNew, { touchFeedbackMode: 'queue' }))) === false
+  sameView(
+    baseView,
+    readView(applyOverrides(cfgNew, { touchFeedbackMode: 'queue' }))
+  ) === false
 );
 ok(
   'F8 ★只改 touchFeedbackMode（immediate → none）⇒ 判为"有变化"',
-  sameView(baseView, readView(applyOverrides(cfgNew, { touchFeedbackMode: 'none' }))) === false
+  sameView(
+    baseView,
+    readView(applyOverrides(cfgNew, { touchFeedbackMode: 'none' }))
+  ) === false
 );
 ok(
   'F9 ★只改 greetMode（time → random）⇒ 判为"有变化"',
-  sameView(baseView, readView(applyOverrides(cfgNew, { greetMode: 'random' }))) === false
+  sameView(
+    baseView,
+    readView(applyOverrides(cfgNew, { greetMode: 'random' }))
+  ) === false
 );
 
 /* 向后兼容：旧 config（既没数组也没这两个新字段） */
@@ -378,8 +437,13 @@ eq(
 eq(
   'F11 ★旧 config 的问候/聊天/触摸三张表照旧工作',
   [
-    pickGreetingEntry(dialogues, vOld && cfgOld.subtitle.greeting, {}, at(8), vOld.greetMode)
-      ?.actionId,
+    pickGreetingEntry(
+      dialogues,
+      vOld && cfgOld.subtitle.greeting,
+      {},
+      at(8),
+      vOld.greetMode
+    )?.actionId,
     resolveStandbyTouchIds(cfgOld.subtitle.standby, cfgOld.subtitle.touch),
   ],
   [64001, [64004, 64005, 64006]]
@@ -416,7 +480,13 @@ if (!fs.existsSync(BUNDLE)) {
     ok('G  bundle 含属性名 ' + name, src.indexOf(name) >= 0);
   }
   // 面板文案（用户可见）也必须到包 —— 这是"加了这个选项"最直接的证据
-  for (const word of ['立即播放新动作', '排进播放队列', '不做任何反馈', '按系统时间', '随机触发']) {
+  for (const word of [
+    '立即播放新动作',
+    '排进播放队列',
+    '不做任何反馈',
+    '按系统时间',
+    '随机触发',
+  ]) {
     ok('G  bundle 含面板文案「' + word + '」', src.indexOf(word) >= 0);
   }
 }

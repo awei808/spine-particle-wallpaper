@@ -53,20 +53,44 @@ import { TouchFeedbackMode } from '../src/config.type';
 const SKEL = process.argv[2] || process.env.WK_SKEL || 'assets/character.skel';
 
 const FAKE_REGION: any = {
-  u: 0, v: 0, u2: 1, v2: 1, width: 1, height: 1,
-  originalWidth: 1, originalHeight: 1, offsetX: 0, offsetY: 0, degreesRotated: false,
+  u: 0,
+  v: 0,
+  u2: 1,
+  v2: 1,
+  width: 1,
+  height: 1,
+  originalWidth: 1,
+  originalHeight: 1,
+  offsetX: 0,
+  offsetY: 0,
+  degreesRotated: false,
 };
 class DummyLoader {
-  private wrap(a: any) { a.region = FAKE_REGION; return a; }
-  newRegionAttachment(_s: any, n: string) { return this.wrap(new RegionAttachment(n)); }
-  newMeshAttachment(_s: any, n: string) { return this.wrap(new MeshAttachment(n)); }
-  newBoundingBoxAttachment(_s: any, n: string) { return new BoundingBoxAttachment(n); }
-  newPathAttachment(_s: any, n: string) { return new PathAttachment(n); }
-  newClippingAttachment(_s: any, n: string) { return new ClippingAttachment(n); }
+  private wrap(a: any) {
+    a.region = FAKE_REGION;
+    return a;
+  }
+  newRegionAttachment(_s: any, n: string) {
+    return this.wrap(new RegionAttachment(n));
+  }
+  newMeshAttachment(_s: any, n: string) {
+    return this.wrap(new MeshAttachment(n));
+  }
+  newBoundingBoxAttachment(_s: any, n: string) {
+    return new BoundingBoxAttachment(n);
+  }
+  newPathAttachment(_s: any, n: string) {
+    return new PathAttachment(n);
+  }
+  newClippingAttachment(_s: any, n: string) {
+    return new ClippingAttachment(n);
+  }
 }
 const binary = new SkeletonBinary(new DummyLoader() as any);
 binary.scale = 0.7576;
-const sd = binary.readSkeletonData(new Uint8Array(fs.readFileSync(SKEL)) as any);
+const sd = binary.readSkeletonData(
+  new Uint8Array(fs.readFileSync(SKEL)) as any
+);
 const DT = 1 / 30;
 const dur = (n: string): number =>
   sd.animations.find((a) => a.name === n)!.duration ?? 0;
@@ -74,8 +98,17 @@ const dur = (n: string): number =>
 let pass = 0;
 let fail = 0;
 const check = (ok: boolean, label: string, detail = ''): void => {
-  if (ok) { pass++; } else { fail++; }
-  console.log('  [%s] %s%s', ok ? ' OK ' : 'FAIL', label, detail ? '  ' + detail : '');
+  if (ok) {
+    pass++;
+  } else {
+    fail++;
+  }
+  console.log(
+    '  [%s] %s%s',
+    ok ? ' OK ' : 'FAIL',
+    label,
+    detail ? '  ' + detail : ''
+  );
 };
 
 const step = (state: any, skeleton: any): void => {
@@ -119,12 +152,21 @@ function run(mode: TouchFeedbackMode, clickSeconds: number[], total: number) {
   for (let f = 0; f < Math.round(total / DT); f++) {
     flushTimers(); // 待播那条排的宏任务要在下一帧前跑掉（同 60 号）
     if (clickSeconds.indexOf(Math.round(f * DT * 100) / 100) >= 0) {
-      results.push(tc.trigger({ actionId: 1, animation: 'touch2', label: 'x' } as any, 'touch'));
+      results.push(
+        tc.trigger(
+          { actionId: 1, animation: 'touch2', label: 'x' } as any,
+          'touch'
+        )
+      );
     }
     step(state, skeleton);
     const now = nameOf(state, 2);
-    if (playStart < 0 && now === 'touch2') { playStart = f; }
-    if (playStart >= 0 && playEnd < 0 && now !== 'touch2') { playEnd = f; }
+    if (playStart < 0 && now === 'touch2') {
+      playStart = f;
+    }
+    if (playStart >= 0 && playEnd < 0 && now !== 'touch2') {
+      playEnd = f;
+    }
     lastQueued = tc.snapshot().queuedCount;
   }
 
@@ -132,25 +174,43 @@ function run(mode: TouchFeedbackMode, clickSeconds: number[], total: number) {
     results,
     snap: tc.snapshot(),
     /** 第一条演了多久（帧） */
-    firstFrames: playStart < 0 ? 0 : (playEnd < 0 ? Math.round(total / DT) - playStart : playEnd - playStart),
+    firstFrames:
+      playStart < 0
+        ? 0
+        : playEnd < 0
+        ? Math.round(total / DT) - playStart
+        : playEnd - playStart,
     wantFrames: Math.round(dur('touch2') / DT),
     lastQueued,
-    disposeLeak: (() => { tc.dispose(); return pendingTimers(); })(),
+    disposeLeak: (() => {
+      tc.dispose();
+      return pendingTimers();
+    })(),
   };
 }
 
 console.log(
-  '\n动画时长: ' + ['idle', 'touch1', 'touch2', 'touch3', 'chat', 'greet']
-    .map((n) => n + '=' + dur(n).toFixed(2) + 's').join('  ')
+  '\n动画时长: ' +
+    ['idle', 'touch1', 'touch2', 'touch3', 'chat', 'greet']
+      .map((n) => n + '=' + dur(n).toFixed(2) + 's')
+      .join('  ')
 );
 
 /* ── A. queue：当前这条演完，待播自动接上 ─────────────────── */
 console.log('\n================ A queue（排进播放队列） ================');
 {
   const r = run('queue', [2, 5], 20);
-  check(r.results.length === 2, 'A0 两次点击都被收到（没有被 onerror 吞掉）', JSON.stringify(r.results));
+  check(
+    r.results.length === 2,
+    'A0 两次点击都被收到（没有被 onerror 吞掉）',
+    JSON.stringify(r.results)
+  );
   check(r.results[0] === true, 'A1 第一次点击 ⇒ 立刻播', String(r.results[0]));
-  check(r.results[1] === false, 'A2 ★第二次点击 ⇒ 本次**不播**（排到队里）', String(r.results[1]));
+  check(
+    r.results[1] === false,
+    'A2 ★第二次点击 ⇒ 本次**不播**（排到队里）',
+    String(r.results[1])
+  );
   check(
     r.firstFrames >= r.wantFrames - 4,
     'A3 ★第一条**完整演完**（没被掐断）',
@@ -161,10 +221,18 @@ console.log('\n================ A queue（排进播放队列） ================
     'A4 ★队里那条自动接上了（共播 2 条）',
     'firedCount=' + r.snap.firedCount
   );
-  check(r.disposeLeak === 0, 'A5 dispose 后无残留 定时器', 'pendingTimers=' + r.disposeLeak);
+  check(
+    r.disposeLeak === 0,
+    'A5 dispose 后无残留 定时器',
+    'pendingTimers=' + r.disposeLeak
+  );
 }
 
-console.log('\n================ A2 queue：连点不堆积（容量 ' + TOUCH_QUEUE_MAX + '） ================');
+console.log(
+  '\n================ A2 queue：连点不堆积（容量 ' +
+    TOUCH_QUEUE_MAX +
+    '） ================'
+);
 {
   const r = run('queue', [2, 3, 4, 5], 24);
   check(
@@ -189,7 +257,11 @@ console.log('\n================ B none（不做任何反馈） ================'
 {
   const r = run('none', [2, 5], 20);
   check(r.results[0] === true, 'B1 第一次点击 ⇒ 播', String(r.results[0]));
-  check(r.results[1] === false, 'B2 ★第二次点击 ⇒ 不播也不入队', String(r.results[1]));
+  check(
+    r.results[1] === false,
+    'B2 ★第二次点击 ⇒ 不播也不入队',
+    String(r.results[1])
+  );
   check(r.lastQueued === 0, 'B3 队列恒为空', 'queuedCount=' + r.lastQueued);
   check(
     r.snap.firedCount === 1,
@@ -204,13 +276,27 @@ console.log('\n================ B none（不做任何反馈） ================'
 }
 
 /* ── C. immediate（缺省）：当场重放 ──────────────────────── */
-console.log('\n================ C immediate（立即播放新动作，缺省档） ================');
+console.log(
+  '\n================ C immediate（立即播放新动作，缺省档） ================'
+);
 {
   const r = run('immediate', [2, 5], 20);
   check(r.results[0] === true, 'C1 第一次点击 ⇒ 播', String(r.results[0]));
-  check(r.results[1] === true, 'C2 ★第二次点击 ⇒ **当场重放**（与改动前的"忽略"不同）', String(r.results[1]));
-  check(r.lastQueued === 0, 'C3 不入队（当场就播了）', 'queuedCount=' + r.lastQueued);
-  check(r.snap.firedCount === 2, 'C4 共播 2 条', 'firedCount=' + r.snap.firedCount);
+  check(
+    r.results[1] === true,
+    'C2 ★第二次点击 ⇒ **当场重放**（与改动前的"忽略"不同）',
+    String(r.results[1])
+  );
+  check(
+    r.lastQueued === 0,
+    'C3 不入队（当场就播了）',
+    'queuedCount=' + r.lastQueued
+  );
+  check(
+    r.snap.firedCount === 2,
+    'C4 共播 2 条',
+    'firedCount=' + r.snap.firedCount
+  );
 }
 {
   // ★ 不传 touchFeedbackMode ⇒ 与 'immediate' 同（旧调用方不被悄悄改坏）
@@ -227,8 +313,15 @@ console.log('\n================ C immediate（立即播放新动作，缺省档�
   });
   state.setAnimation(2, 'touch2', false);
   step(state, skeleton);
-  const again = tc.trigger({ actionId: 1, animation: 'touch2', label: 'x' } as any, 'touch');
-  check(again === true, 'C5 ★缺省档 == immediate（不传字段也当场重放）', String(again));
+  const again = tc.trigger(
+    { actionId: 1, animation: 'touch2', label: 'x' } as any,
+    'touch'
+  );
+  check(
+    again === true,
+    'C5 ★缺省档 == immediate（不传字段也当场重放）',
+    String(again)
+  );
 }
 
 console.log(

@@ -478,7 +478,8 @@ export const createTouchController = (
     typeof options.queueTrack === 'number' ? options.queueTrack : null;
   const onActionFinished = options.onActionFinished;
   /** 触摸反馈模式（缺省 `'immediate'` = 改动前的行为） */
-  const feedbackMode: TouchFeedbackMode = options.touchFeedbackMode ?? 'immediate';
+  const feedbackMode: TouchFeedbackMode =
+    options.touchFeedbackMode ?? 'immediate';
 
   if (!state || !touchNames.length) {
     return createNoopController(idleName, touchNames, zones, touchPool.length);

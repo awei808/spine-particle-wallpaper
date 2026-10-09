@@ -235,7 +235,9 @@ const buildRows = (cfg: Configs): Row[] => {
     }
     const seat = '#' + (i + 1) + '/' + greetIds.length;
     if (greetMode === '随机') {
-      rows.push(makeRow('问候 · 随机 ' + seat, '问候时机 · 整个 greet 列表随机', e));
+      rows.push(
+        makeRow('问候 · 随机 ' + seat, '问候时机 · 整个 greet 列表随机', e)
+      );
       return;
     }
     if (i < SLOT_ORDER.length) {
@@ -253,7 +255,9 @@ const buildRows = (cfg: Configs): Row[] => {
     rows.push(
       makeRow(
         '问候 · 追加 ' + seat,
-        'greet 列表第 ' + (i + 1) + ' 条 · 按时模式下没有对应时段，仅随机模式能抽到',
+        'greet 列表第 ' +
+          (i + 1) +
+          ' 条 · 按时模式下没有对应时段，仅随机模式能抽到',
         e
       )
     );
@@ -431,7 +435,9 @@ const buildNotes = (cfg: Configs): string[] => {
       ? '从「问候 / 触摸」里随机挑一类'
       : standbyKinds[0] === 'greet'
       ? '播一条按时段的问候'
-      : '从「休闲待机 + 点击触摸」那 ' + standbyTouchPool.length + ' 条里随机播一条';
+      : '从「休闲待机 + 点击触摸」那 ' +
+        standbyTouchPool.length +
+        ' 条里随机播一条';
 
   /** 问候的取条方式（与表格同名列保持同一套判据） */
   const greetTake =
