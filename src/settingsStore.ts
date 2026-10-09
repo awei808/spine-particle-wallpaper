@@ -50,10 +50,13 @@ import {
   Configs,
   FerrisWheelConfig,
   GreetMode,
+  StandbyEventKind,
   TouchFeedbackMode,
 } from './config.type';
 // 只为读"探针当前生效值"的缺省（见 readView）——probe 不反向依赖本模块，无循环
 import { PROBE_OPTS } from './probe';
+// 摊平"新多选 / 旧两个布尔"的口径（纯函数，可单测）；dialogue 不反向依赖本模块，无循环
+import { resolveStandbyIntent } from './dialogue';
 
 /** localStorage 键。带版本号，将来改结构时便于一次性弃用旧值 */
 export const SETTINGS_STORAGE_KEY = 'wb.swe.settings.v1';
@@ -143,25 +146,35 @@ export type SettingsOverrides = {
    * 待机阈值：空闲多久触发一次「待机自动播放」（秒）。
    *
    * 对应 `config.subtitle.standbyIdleMs`（面板里暴露成秒更直观）。
-   * ★ 2026-09-30 起它是**共享阈值** —— 到点后播 `greet` 还是 `chat` 由下面两个开关决定
-   *   （两个都开 ⇒ 随机二选一；两个都关 ⇒ 待机不播任何东西）。
+   * ★ 三类事件（`chat` / `greet` / `touch`）**共用**这一个阈值；
+   *   到底播哪几类由下面的 `standbyKinds` 决定。
    * 改完需重载生效（气泡/轮询是开机一次性构造的，见文件头"生效方式"）。
    */
   standbyIdleSec?: number;
   /**
-   * 待机到点后是否自动触发「问候」（greet）事件。对应 `config.subtitle.standbyGreetEnabled`。
+   * **待机到点可触发的事件（多选）** —— 对应 `config.subtitle.standbyKinds`。
    *
-   * 缺省 **false** —— 待机播问候是 2026-09-30 新增的能力，不影响改动前的行为。
-   * 取哪一条由「问候」时段表按当前本地时刻决定，与"开机 / 回到桌面"几路同源。
+   * `'chat'` / `'greet'` / `'touch'` 的子集；**缺省（不写本字段）= 只有 `'chat'`**
+   * （还原"配了 `standby` 就一定会播"的老行为，修 2026-09-30「出厂什么也不播」的回归）。
+   * 语义与可用性判据见 `config.type.ts` 的 `StandbyEventKind`。
+   */
+  standbyKinds?: StandbyEventKind[];
+  /**
+   * ⚠️ **旧口径**（兼容输入）：待机到点是否也自动触发「问候」（greet）事件。
+   * 对应 `config.subtitle.standbyGreetEnabled`。
+   *
+   * 已被 `standbyKinds` 取代 —— **只在 `standbyKinds` 缺席时**被 `readView` /
+   * `dialogue.resolveStandbyIntent` 读取（`true` ⇒ 意向里追加 `'greet'`）。
+   * ⚠️ 旧口径下 `'chat'` 恒在，所以本字段为 `false` **不会**把待机闲聊一起关掉。
    */
   standbyGreetEnabled?: boolean;
   /**
-   * 待机到点后是否自动触发「触摸（touch）」事件（对应 `config.subtitle.standbyTouchEnabled`）。
+   * ⚠️ **旧口径**（兼容输入）：待机到点是否也自动触发「触摸（touch）」事件。
+   * 对应 `config.subtitle.standbyTouchEnabled`。
    *
-   * ★ 这一类是**一个池** = `standby`（休闲待机 64004）**并上** `touch`（点击触摸
-   *   64005~64010），去重后随机取一条 ⇒ 64004 **不再固定播放**。
-   * ★ 缺省 **false**（用户 2026-09-30 拍板）：两个开关都关 ⇒ **出厂待机不自动播任何
-   *   东西**。（改动前只要配了 `subtitle.standby` 就会到点自动播，那是旧行为。）
+   * 已被 `standbyKinds` 取代 —— **只在其缺席时**读取（`true` ⇒ 追加 `'touch'`）。
+   * ★ 2026-10-09 重修：`chat` 与 `touch` 已分家、各有各的池 ⇒
+   *   "64004 到 64010 都可触发"改成同时勾 `chat` 与 `touch` 来表达。
    */
   standbyTouchEnabled?: boolean;
   /**
@@ -244,10 +257,13 @@ export type SettingsView = {
   idleSequenceGapMs: number;
   /** 待机多久后触发一次「待机自动播放」（秒）。对应 config.subtitle.standbyIdleMs */
   standbyIdleSec: number;
-  /** 待机到点是否自动触发「问候」（greet）事件 */
-  standbyGreetEnabled: boolean;
-  /** 待机到点是否自动触发「触摸」事件（池 = `chat` + `touch`，随机取一条） */
-  standbyTouchEnabled: boolean;
+  /**
+   * 待机到点可触发的事件（**多选**，固定顺序 `chat` → `greet` → `touch`）。
+   *
+   * ⚠️ 这是**意向列表**（`dialogue.resolveStandbyIntent` 的产物），**不判可用性** ——
+   * 面板只管"该勾哪几个"，池空不空由 `resolveStandbyKinds` 在运行时判。
+   */
+  standbyKinds: StandbyEventKind[];
   /** 正在播动作时点击的处理方式（对应 `config.subtitle.touchFeedbackMode`；缺省 `legacy`） */
   touchFeedbackMode: TouchFeedbackMode;
   /** 问候事件的取条方式（对应 `config.subtitle.greetMode`） */
@@ -365,6 +381,7 @@ export const applyOverrides = (cfg: Configs, o: SettingsOverrides): Configs => {
     o.voiceVolume !== undefined ||
     o.greetInTouchPool !== undefined ||
     o.subtitlePosition !== undefined ||
+    o.standbyKinds !== undefined ||
     o.standbyGreetEnabled !== undefined ||
     o.standbyTouchEnabled !== undefined ||
     o.touchFeedbackMode !== undefined ||
@@ -402,6 +419,14 @@ export const applyOverrides = (cfg: Configs, o: SettingsOverrides): Configs => {
     }
     if (o.greetInTouchPool !== undefined) {
       out.subtitle.greetInTouchPool = o.greetInTouchPool;
+    }
+    /**
+     * ★★ 待机可触发的事件（多选）。**必须 slice** —— 与面板里 `draft.*` 的数组同源时，
+     *    不拷一份的话用户在面板里点 chips 会**就地改到"生效值"**上（同一个坑
+     *    `idleSequenceItems` 注释里写过）。
+     */
+    if (o.standbyKinds !== undefined) {
+      out.subtitle.standbyKinds = o.standbyKinds.slice();
     }
     if (o.standbyGreetEnabled !== undefined) {
       out.subtitle.standbyGreetEnabled = o.standbyGreetEnabled;
@@ -587,16 +612,21 @@ export const readView = (cfg: Configs): SettingsView => ({
       ? Math.round(cfg.subtitle.standbyIdleMs / 1000)
       : 25,
   /**
-   * ★ 缺省 false：待机播问候是 2026-09-30 新增的能力，缺省关才不会"升级后行为悄悄变了"。
-   *   判据必须写 `=== true`（而不是 `!== false`）—— 否则缺字段的旧 config 会被判成"开"。
+   * ★★ 待机可触发的事件（多选）。**摊平口径复用 `dialogue.resolveStandbyIntent`** ——
+   *   面板显示的勾选态与运行时真正会播的类别不可能各写一套判据。
+   *
+   * 判据顺序：**新字段 `standbyKinds` 优先**（给了数组就完全以它为准，空数组 = 全关）；
+   * 缺席时退回两个旧布尔 ⇒ `['chat']` 再追加各自的 `greet` / `touch`（旧 config 行为逐字不变）。
+   * 两样都没有 ⇒ `['chat']`（= 还原"配了 `standby` 就一定会播"的老行为）。
+   *
+   * ⚠️ 这里**不判可用性**（池空不空）—— 那是 `resolveStandbyKinds` 在 `index.ts` 里的事，
+   *   本函数产出的只是"面板该勾哪几个"（见 `SettingsView.standbyKinds` 的注释）。
    */
-  standbyGreetEnabled: cfg.subtitle?.standbyGreetEnabled === true,
-  /**
-   * ★ 缺省 **false**（判据 `=== true`，用户 2026-09-30 拍板）：与 `standbyGreetEnabled`
-   *   一致，两个开关**出厂都关** ⇒ 待机不自动播；想让角色自己说话就去「动作」页打开。
-   *   ⚠️ 判据**不能**写成 `!== false` —— 那会让缺字段的旧 config 被判成"开"。
-   */
-  standbyTouchEnabled: cfg.subtitle?.standbyTouchEnabled === true,
+  standbyKinds: resolveStandbyIntent(
+    cfg.subtitle?.standbyKinds,
+    cfg.subtitle?.standbyGreetEnabled,
+    cfg.subtitle?.standbyTouchEnabled
+  ),
   /**
    * ★ 缺省 `'legacy'`（= 改动前的规则表，见 `TouchFeedbackMode` 注释）。
    *
@@ -868,9 +898,6 @@ export const sameView = (a: SettingsView, b: SettingsView): boolean => {
     a.probeZones !== b.probeZones ||
     // ★ 待机延迟也要比：否则"只改了等待时长"会被判成"没变化"而不重载
     a.standbyIdleSec !== b.standbyIdleSec ||
-    // ★ 待机自动触发的两个类别开关也要比（2026-09-30）：漏比 ⇒"只改了这项"不重载
-    a.standbyGreetEnabled !== b.standbyGreetEnabled ||
-    a.standbyTouchEnabled !== b.standbyTouchEnabled ||
     // ★ 触摸反馈策略也要比（2026-10-08）：漏比 ⇒"只改了这一档"不重载
     a.touchFeedbackMode !== b.touchFeedbackMode ||
     // ★ 问候触发方式同理（2026-10-08）：漏比 ⇒"只改了这一项"不重载
@@ -891,6 +918,20 @@ export const sameView = (a: SettingsView, b: SettingsView): boolean => {
   }
   for (let i = 0; i < a.idleSequenceItems.length; i++) {
     if (a.idleSequenceItems[i] !== b.idleSequenceItems[i]) {
+      return false;
+    }
+  }
+  /**
+   * ★★ 待机可触发的事件（多选）同理，**必须按内容比**：
+   * `readView` 每次都产出一个**新数组**（`resolveStandbyIntent` 的返回值），
+   * 拿引用比必然不等 ⇒ 每次启动都被判成"有变化" ⇒ **白重载一次**
+   * （正是本函数上面那段注释警告的坑）。
+   */
+  if (a.standbyKinds.length !== b.standbyKinds.length) {
+    return false;
+  }
+  for (let i = 0; i < a.standbyKinds.length; i++) {
+    if (a.standbyKinds[i] !== b.standbyKinds[i]) {
       return false;
     }
   }

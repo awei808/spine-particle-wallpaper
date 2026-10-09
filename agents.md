@@ -75,12 +75,19 @@ rebuild — copy `config.example.json` to `config.json`, edit, reload.
 ```jsonc
 "subtitle": {
   "greet": [64001, 64002, 64003],   // startup / resume / focus-gain greetings
-  "chat":  [64004],                 // idle chatter (after standbyIdleMs)
+  "chat":  [64004],                 // idle chatter — fires after standbyIdleMs, only if 'chat' is enabled below
   "touch": [64005, 64006, 64007],   // any hit-zone click
   "greetMode": "time",              // "time" (by clock) | "random"
-  "touchFeedbackMode": "immediate"  // legacy | immediate | queue | none
+  "touchFeedbackMode": "immediate", // legacy | immediate | queue | none
+  "standbyKinds": ["chat"]          // what may fire after a long idle: chat | greet | touch (multi-select)
 }
 ```
+
+`standbyKinds` is **required reading** for idle behaviour: a long idle fires nothing unless the
+relevant kind is listed, and each kind draws from **its own pool** (`chat` → the `chat` array,
+`greet` → the `greet` pool, `touch` → the same pool a click uses). It **defaults to `["chat"]`**
+when omitted, so the classic "configure `chat`/`standby`, get idle chatter" behaviour keeps
+working; an empty array disables idle auto-play entirely.
 
 Every entry is an `actionId` from `subtitle.dialogues`. To add a candidate, append a number
 to the relevant array — no code change required.

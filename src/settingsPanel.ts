@@ -60,6 +60,8 @@
  * ⇒ 面板/齿轮一律用**实色半透明背景**代替毛玻璃。气泡模糊不受影响。
  */
 
+import { StandbyEventKind } from './config.type';
+import { STANDBY_KIND_ORDER, normalizeStandbyKinds } from './dialogue';
 import { SettingsOverrides, SettingsView } from './settingsStore';
 import { UI_SCALE_VAR, fpx, getUiScale, initUiScale, uiPx } from './uiScale';
 
@@ -1273,24 +1275,99 @@ export const createSettingsPanel = (
   ).textContent = '游戏内原版是 30 秒；这里默认 25 秒，想完全还原可拖到 30 秒';
 
   /**
-   * ★★ 待机到点自动触发哪一类事件（2026-09-30 新增，用户拍板「两个开关、共用上面的时长」）。
+   * ★★ 长时间待机可触发的事件（**多选**）—— 2026-10-09 取代原来的两个布尔开关。
    *
-   * 两个开关都开 ⇒ 到点后**随机二选一**；只开一个 ⇒ 只播那一个；两个都关 ⇒
-   * 待机不播任何东西（等价于关掉"待机自动播放"）。
+   * 语义表、缺省与可用性判据见 `config.type.ts` 的 `StandbyEventKind` /
+   * `dialogue.resolveStandbyKinds`（纯函数、可单测）。
    *
-   * ★ `touch` 这一类是**一个池**：`standby`（休闲待机 64004）+ `touch`（点击触摸
-   *   64005~64010），去重后随机取一条（用户 2026-09-30 修正："开启后可触发 64004 到 64010"）。
-   *   池的解析在 `dialogue.resolveStandbyTouchIds`，判据在 `resolveStandbyKinds`（纯函数、可单测）。
+   * ★★ 缺省**只勾「闲聊」** —— 还原"配了 `subtitle.standby`（休闲待机）就一定会播"的
+   *   老行为。2026-09-30 把"待机自动播放"整体挂到两个新开关上且都缺省关，
+   *   连这条老行为也一起掐掉了（待机到点什么都不播）—— 本项就是那次回归的修复。
+   *
+   * ★ 为什么用 chips 多选而不是两个开关：三类是**同一件事的三个选项**
+   *   （到点后随机挑一类，再在该类自己的池里取一条），一个设置项就该占一行；
+   *   观感与交互沿用「序列」页的 chips，用户已经熟悉。
+   * ★ **全部自绘**（`<button>` + 内联样式）：原生表单控件在 WE 的 CEF 里首帧 SIGILL。
    */
-  const cbStandbyGreet = createToggle(
-    'wb-set-standby-greet',
-    '待机自动触发greet事件',
-    '空闲超过上面的时长后，自动播一条按时段的问候（含动作、字幕与语音）'
+  const STANDBY_KIND_LABEL: Record<StandbyEventKind, string> = {
+    chat: '闲聊',
+    greet: '问候',
+    touch: '触摸',
+  };
+  /**
+   * ★ DOM 锚点**写全**（不拼字符串）：验证脚本与文档都按 id 找元素，
+   *   拼出来的 `'wb-set-standby-' + kind` 会被 terser 折成运行期拼接、
+   *   产物里查不到字面量 ⇒ 锚点形同虚设（65 号脚本正是靠字面量断言的）。
+   */
+  const STANDBY_KIND_DOM: Record<StandbyEventKind, string> = {
+    chat: 'wb-set-standby-chat',
+    greet: 'wb-set-standby-greet',
+    touch: 'wb-set-standby-touch',
+  };
+  const standbyKindChips = createEl(
+    'div',
+    'display:flex;flex-wrap:wrap;gap:' + uiPx(6) + ';pointer-events:auto'
   );
-  const cbStandbyTouch = createToggle(
-    'wb-set-standby-touch',
-    '待机自动触发touch事件',
-    '空闲超过上面的时长后，从「休闲待机 + 全部点击触摸」里随机播一条（含动作、字幕与语音）'
+  /** 按 `draft.standbyKinds` 重画三个 chips（选中态配色与序列页 chips 同一套） */
+  const paintStandbyKindChips = () => {
+    standbyKindChips.innerHTML = '';
+    STANDBY_KIND_ORDER.forEach((kind) => {
+      const on = draft.standbyKinds.indexOf(kind) >= 0;
+      const chip = createEl(
+        'button',
+        [
+          'pointer-events:auto',
+          'display:inline-flex',
+          'align-items:center',
+          'padding:' + uiPx(3) + ' ' + uiPx(11),
+          'border-radius:999px',
+          'border:' +
+            uiPx(1) +
+            ' solid ' +
+            (on ? '#4a90e2' : 'rgba(255,255,255,0.22)'),
+          'background:' +
+            (on ? 'rgba(74,144,226,0.28)' : 'rgba(255,255,255,0.06)'),
+          'color:' + (on ? '#dce9fb' : 'rgba(238,241,246,0.72)'),
+          'font-size:' + fpx(11.5),
+          'font-family:inherit',
+          'cursor:pointer',
+          'white-space:nowrap',
+        ].join(';'),
+        standbyKindChips
+      );
+      // DOM 锚点：id 与 `data-wb-opt` 都给，改结构也不会让验证脚本失锚（见文件头 DOM 锚点口径）
+      chip.id = STANDBY_KIND_DOM[kind];
+      chip.setAttribute('data-wb-set', STANDBY_KIND_DOM[kind]);
+      chip.setAttribute('data-wb-opt', kind);
+      chip.setAttribute('role', 'checkbox');
+      chip.setAttribute('aria-checked', on ? 'true' : 'false');
+      chip.textContent = STANDBY_KIND_LABEL[kind];
+      chip.addEventListener('click', () => toggleStandbyKind(kind));
+    });
+  };
+  /**
+   * 点一下 = 在 `draft.standbyKinds` 上增删，再**归一次**（去重 + 固定顺序）。
+   * 归一用 `dialogue.normalizeStandbyKinds`，面板自己不排序也不去重。
+   */
+  const toggleStandbyKind = (kind: StandbyEventKind) => {
+    const at = draft.standbyKinds.indexOf(kind);
+    if (at >= 0) {
+      draft.standbyKinds.splice(at, 1);
+    } else {
+      draft.standbyKinds.push(kind);
+    }
+    draft.standbyKinds = normalizeStandbyKinds(draft.standbyKinds);
+    paintStandbyKindChips();
+  };
+  addRow(
+    '长时间待机可触发的事件',
+    standbyKindChips,
+    '空闲超过上面的时长后，从「勾选的类别」里随机挑一类，再取一条（含动作、字幕与语音）。' +
+      '「闲聊」= chat 池（缺省就勾着，与改动前"配了 standby 就一定会播"一致）；' +
+      '「问候」按「问候取条方式」那一项取条；「触摸」与点击是同一个池。' +
+      '三类都不勾 = 待机不自动播（等价于关掉"待机自动播放"）。保存后重载生效。',
+    pages.sequence,
+    true
   );
 
   /**
@@ -1585,8 +1662,7 @@ export const createSettingsPanel = (
     paintGapValue();
     standbySlider.value = String(secToSlider(draft.standbyIdleSec));
     paintStandbyValue();
-    cbStandbyGreet.checked = draft.standbyGreetEnabled;
-    cbStandbyTouch.checked = draft.standbyTouchEnabled;
+    paintStandbyKindChips();
     selTouchFeedback.value = draft.touchFeedbackMode;
     selGreetMode.value = draft.greetMode;
     seqBody.style.opacity = draft.idleSequenceEnabled ? '1' : '0.45';
@@ -1690,13 +1766,7 @@ export const createSettingsPanel = (
   standbySlider.addEventListener('input', onStandbyChange);
   standbySlider.addEventListener('change', onStandbyChange);
 
-  /* 待机自动触发哪一类事件（两个开关共用上面的时长；都关 ⇒ 待机不自动播） */
-  cbStandbyGreet.addEventListener('change', () => {
-    draft.standbyGreetEnabled = cbStandbyGreet.checked;
-  });
-  cbStandbyTouch.addEventListener('change', () => {
-    draft.standbyTouchEnabled = cbStandbyTouch.checked;
-  });
+  /* 待机可触发的事件（chips 多选；三类都不勾 ⇒ 待机不自动播）——点击处理在 chips 自身里 */
 
   /* 播放动作时点击怎么处理 / 问候取哪一条 —— 两个白名单校验后可写回 draft */
   selTouchFeedback.addEventListener('change', () => {
@@ -1753,8 +1823,7 @@ export const createSettingsPanel = (
       idleSequenceItems: draft.idleSequenceItems.slice(),
       idleSequenceGapMs: draft.idleSequenceGapMs,
       standbyIdleSec: draft.standbyIdleSec,
-      standbyGreetEnabled: draft.standbyGreetEnabled,
-      standbyTouchEnabled: draft.standbyTouchEnabled,
+      standbyKinds: draft.standbyKinds.slice(),
       touchFeedbackMode: draft.touchFeedbackMode,
       greetMode: draft.greetMode,
       probeEnabled: draft.probeEnabled,
@@ -1772,6 +1841,7 @@ export const createSettingsPanel = (
   draft = {
     ...view,
     idleSequenceItems: view.idleSequenceItems.slice(),
+    standbyKinds: view.standbyKinds.slice(),
   };
   syncFromDraft();
   applyVisibility();
@@ -1787,7 +1857,11 @@ export const createSettingsPanel = (
     isVisible: () => visible,
     isOpen: () => open,
     refresh: (next: SettingsView) => {
-      draft = { ...next, idleSequenceItems: next.idleSequenceItems.slice() };
+      draft = {
+        ...next,
+        idleSequenceItems: next.idleSequenceItems.slice(),
+        standbyKinds: next.standbyKinds.slice(),
+      };
       syncFromDraft();
     },
     dispose: () => {

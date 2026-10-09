@@ -48,7 +48,6 @@ import {
   normalizeGreetIds,
   pickGreetingEntry,
   resolveChatIds,
-  resolveStandbyTouchIds,
   resolveTouchIds,
 } from '../src/dialogue';
 import { decideAction } from '../src/touch';
@@ -223,7 +222,7 @@ eq(
 );
 
 /* ── C. 聊天（长时间无互动）池：chat 数组 ⇄ 旧 standby 单条 ── */
-console.log('\nC. resolveChatIds / resolveStandbyTouchIds：chat 升级为数组');
+console.log('\nC. resolveChatIds：chat 升级为数组 + 与 touch 池**分家**');
 eq('C1 ★chat 优先于旧 standby', resolveChatIds([64004], 777), [64004]);
 eq(
   'C2 ★chat 没配 ⇒ 退回旧 standby（老 config 行为逐字不变）',
@@ -234,21 +233,18 @@ eq('C2b chat 给了空数组 ⇒ 同样退回旧 standby', resolveChatIds([], 64
   64004,
 ]);
 eq(
-  'C3 ★chat 多条 + touch ⇒ 保序去重，touch 排在后面',
-  resolveStandbyTouchIds(undefined, [64005, 64006], [64001, 64004]),
-  [64001, 64004, 64005, 64006]
+  'C3 ★★2026-10-09 起 chat 与 touch **各自成池**（不再合并成一个 7 条的大池）',
+  [
+    resolveChatIds(undefined, 64004),
+    resolveTouchIds([64005, 64006], undefined, undefined),
+  ],
+  [[64004], [64005, 64006]]
 );
 eq(
-  'C4 ★旧口径回归：standby + touch（65 号脚本 A1 的同款）',
-  resolveStandbyTouchIds(64004, [64005, 64006]),
-  [64004, 64005, 64006]
+  'C4 什么都没配 ⇒ chat 池空（待机那一类会被 resolveStandbyKinds 剔除）',
+  resolveChatIds(undefined, undefined),
+  []
 );
-eq(
-  'C5 touch 里再写一次 standby ⇒ 不重复',
-  resolveStandbyTouchIds(64004, [64004, 64005]),
-  [64004, 64005]
-);
-eq('C6 什么都没配 ⇒ 空池', resolveStandbyTouchIds(undefined, undefined), []);
 
 /* ── D. 触摸池合并：greetInTouchPool ───────────────────── */
 console.log('\nD. resolveTouchIds：问候并入触摸池（数组与旧表两种形状）');
@@ -384,22 +380,22 @@ eq(
   ['queue', 'random']
 );
 eq(
-  'F5 ★同一 patch 里再带 standbyGreetEnabled ⇒ 三个都生效（subtitle 分支没互相吃掉）',
+  'F5 ★同一 patch 里再带 standbyKinds ⇒ 两个都生效（subtitle 分支没互相吃掉）',
   (() => {
     const o = applyOverrides(cfgNew, {
       touchFeedbackMode: 'none',
       greetMode: 'random',
-      standbyGreetEnabled: true,
+      standbyKinds: ['touch', 'chat'],
       standbyIdleSec: 60,
     });
     return [
       o.subtitle.touchFeedbackMode,
       o.subtitle.greetMode,
-      o.subtitle.standbyGreetEnabled,
+      readView(o).standbyKinds,
       o.subtitle.standbyIdleMs,
     ];
   })(),
-  ['none', 'random', true, 60000]
+  ['none', 'random', ['chat', 'touch'], 60000]
 );
 
 /* sameView：★漏比任何一个 ⇒"只改这项"不重载（静默失效） */
@@ -453,7 +449,7 @@ eq(
   ['legacy', 'time']
 );
 eq(
-  'F11 ★旧 config 的问候/聊天/触摸三张表照旧工作',
+  'F11 ★旧 config 的问候/闲聊/触摸三张表照旧工作（闲聊与触摸各自成池）',
   [
     pickGreetingEntry(
       dialogues,
@@ -462,9 +458,10 @@ eq(
       at(8),
       vOld.greetMode
     )?.actionId,
-    resolveStandbyTouchIds(cfgOld.subtitle.standby, cfgOld.subtitle.touch),
+    resolveChatIds(cfgOld.subtitle.chat, cfgOld.subtitle.standby),
+    resolveTouchIds(cfgOld.subtitle.touch, cfgOld.subtitle.greeting, undefined),
   ],
-  [64001, [64004, 64005, 64006]]
+  [64001, [64004], [64005, 64006]]
 );
 eq(
   'F12 非法值 ⇒ 回落到缺省 legacy / time（"面板显示的和实际行为"不会劈叉）',

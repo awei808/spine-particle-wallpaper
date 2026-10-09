@@ -51,8 +51,8 @@ import {
   hasGreetIds,
   pickGreetingEntry,
   pickRandomFromPool,
+  resolveChatIds,
   resolveStandbyKinds,
-  resolveStandbyTouchIds,
   resolveTouchIds,
 } from './dialogue';
 import { createVoiceBubble, VoiceBubble } from './voiceBubble';
@@ -482,39 +482,56 @@ const main = async () => {
   /** 问候的取条方式（缺省 `'time'`）。详见 `GreetMode` 的表格 */
   const greetMode: GreetMode = subtitleCfg?.greetMode ?? 'time';
   /**
-   * 「待机触摸」池 —— **聊天池**（`chat`，或旧字段 `standby`）**并上** `touch`（点击触摸）
-   * 解析出的条目（2026-09-30 用户修正："开启后可触发 64004 到 64010"）。
+   * ★★「闲聊」池 —— `chat` 数组（**没配时**退回旧字段 `standby`，即 S9 的休闲待机 64004）。
    *
-   * ★ 动作与字幕**同源**（与点击触摸同一口径）：取了哪条就播它的 `animation`、
-   *   显示它的台词，天然配套不会串。
-   * ★ 解析复用 `dialogue.resolveStandbyTouchIds` + `buildPool` —— **不另写一套判据**，
-   *   于是"id 指向不存在的条目就静默跳过"这条兜底对两条来源一视同仁（与 `touchPool` 同）。
+   * 这是"原有 chat 事件"那一类：2026-10-09 起它与 `touch` **分家**，
+   * 各自成一类、各有各的池（改动前两者被并成一个 7 条的大池一起随机）。
+   */
+  const standbyChatPool: DialogueEntry[] = buildPool(
+    dialogues,
+    resolveChatIds(subtitleCfg?.chat, subtitleCfg?.standby)
+  );
+  /**
+   * ★★「待机触摸」池 —— 与**点击热区**同一个池（同一个 `resolveTouchIds` + 同一组入参），
+   * 所以"待机随机到哪条"与"点一下随机到哪条"永远是同一份候选。
+   *
+   * ★ `greetInTouchPool` 打开时问候池会一并并入 —— 这与点击一致，不是待机特有的行为。
    */
   const standbyTouchPool: DialogueEntry[] = buildPool(
     dialogues,
-    resolveStandbyTouchIds(
-      subtitleCfg?.standby,
+    resolveTouchIds(
       subtitleCfg?.touch,
-      subtitleCfg?.chat
+      greetSource,
+      subtitleCfg?.greetInTouchPool
     )
   );
 
   /**
-   * ★★ 待机到点后**可以播**哪些类别（`greet` / `touch`）—— 2026-09-30 新增。
+   * ★★ 待机到点后**可以播**哪些类别 —— 2026-10-09 起是**三选多选**（`subtitle.standbyKinds`）。
    *
-   * 用户拍板的口径：两个开关（「待机自动触发greet事件」/「…touch事件」）**共用**
-   * `standbyIdleMs` 这一个阈值；到点后从**已启用**的类别里**随机挑一个**，
-   * 两个都关 ⇒ 待机不播任何东西（等价于关掉"待机自动播放"）。
+   * 三类**各有各的池**：
+   *   - `chat`  ⇒ `standbyChatPool`（上面那个）；
+   *   - `touch` ⇒ `standbyTouchPool`（上面那个，与点击同池）；
+   *   - `greet` ⇒ 复用 `tryGreeting`（取条方式由 `greetMode` 决定）。
    *
-   * ★ 判据集中在 `dialogue.resolveStandbyKinds`（纯函数、可单测），这里只把 config
-   *   读成入参 —— 与 `resolveTouchIds` 同一套架构口径（见 `dialogue.ts` 文件头）。
-   * `touch` 要求上面那个池非空，`greet` 要求问候池（`greet`）至少有一条候选。
+   * ## ★★ 缺省只开 `chat` —— 修的就是"待机不再播原有 chat"这个回归
+   *
+   * 2026-09-30 把"待机自动播放"整体挂到两个新开关上且都缺省关 ⇒
+   * 连"配了 `subtitle.standby` 就一定播 64004"这条老行为也一起没了。
+   * 现在缺省只勾 `chat` ⇒ **不勾任何东西也照样播原有闲聊**，`greet` / `touch`
+   * 才是要显式勾选才加进来的能力。
+   *
+   * ★ 旧 config 的两个布尔（`standbyGreetEnabled` / `standbyTouchEnabled`）仍被读取 ——
+   *   摊平口径在 `dialogue.resolveStandbyIntent`（纯函数、可单测），这里不另写一套 if。
+   * `touch` 要求池非空、`greet` 要求问候池至少有一条候选，判据同样集中在那里。
    */
   const standbyKinds = resolveStandbyKinds(
-    subtitleCfg?.standbyTouchEnabled,
+    subtitleCfg?.standbyKinds,
     subtitleCfg?.standbyGreetEnabled,
-    standbyTouchPool.length > 0,
-    hasGreetIds(greetSource)
+    subtitleCfg?.standbyTouchEnabled,
+    standbyChatPool.length > 0,
+    hasGreetIds(greetSource),
+    standbyTouchPool.length > 0
   );
 
   /**
@@ -614,8 +631,9 @@ const main = async () => {
    * 每秒读一次 `isBusy()` 是**单一判据**，不会漏也不会重。
    * 代价是每秒一次空转，可以忽略。
    *
-   * ★★ 待机到点后播哪一类（2026-09-30）：从 `standbyKinds`（= 已启用的
-   *   `greet` / `touch`，见其声明处）里**随机挑一个**；空数组 ⇒ 什么都不做。
+   * ★★ 待机到点后播哪一类（2026-10-09 起是三选多选）：从 `standbyKinds`（= 勾了且可用的
+   *   `chat` / `greet` / `touch`，见其声明处）里**随机挑一类**，再在该类自己的池里取一条；
+   *   空数组（显式全关）⇒ 什么都不做。
    */
   const tickStandby = () => {
     if (!touchController) {
@@ -631,7 +649,7 @@ const main = async () => {
       return;
     }
     if (!standbyKinds.length) {
-      // 两个开关都关掉 ⇒ 待机不自动播任何东西（等价于关掉"待机自动播放"）
+      // 显式把三类都关掉（`standbyKinds: []`）⇒ 待机不自动播任何东西
       return;
     }
     /**
@@ -642,24 +660,28 @@ const main = async () => {
       standbyKinds.length - 1,
       Math.max(0, Math.floor(Math.random() * standbyKinds.length))
     );
-    if (standbyKinds[idx] === 'touch') {
+    const kind = standbyKinds[idx];
+    if (kind === 'chat' || kind === 'touch') {
       /**
-       * ★ 池里再随机取一条（64004 休闲待机 + 64005~64010 点击触摸）。
+       * ★★ `chat` 与 `touch` **各自从自己的池里**随机取一条
+       *   （改动前是"两类并成一个大池一起随机"，现在各自成类 ⇒ 概率不再被条目数带偏）。
        *
        * ★★ `source` 必须给 **`'standby'`** 而不是 `'touch'`：这是**自动播放**，
        *   按 `touch.ts` 的闸门表，`'touch'` 会去**打断**正在演的问候/动作，
        *   而自动播放只该"让位不抢戏"。给了 `'touch'` 还会污染点击统计口径。
        */
-      const entry = pickRandomFromPool(standbyTouchPool);
+      const entry = pickRandomFromPool(
+        kind === 'chat' ? standbyChatPool : standbyTouchPool
+      );
       if (entry && touchController.trigger(entry, 'standby')) {
         lastActivityAt = now;
       }
       return;
     }
     /**
-     * `greet`：复用 `tryGreeting`（按时段选取 + 5 秒去重 + `trigger('greet')`）；
+     * `greet`：复用 `tryGreeting`（按 `greetMode` 选取 + 5 秒去重 + `trigger('greet')`）；
      * 成功时它自己会置 `lastActivityAt`。被去重挡下（返回 false）时**不重置计时**
-     * ⇒ 下一秒 tick 会再试一次 —— 与 `touch` 分支"只有真播了才重置"的口径一致。
+     * ⇒ 下一秒 tick 会再试一次 —— 与上面那一支"只有真播了才重置"的口径一致。
      */
     tryGreeting('standby');
   };
@@ -718,8 +740,9 @@ const main = async () => {
       subscribePause(onPauseChange);
     }
     /**
-     * ★ 判据用 `standbyKinds`（已启用且可用）而不是"配了 `standby` 条目"：
-     *   两个开关都关掉时**不必**再挂一个每秒空转的定时器。
+     * ★ 判据用 `standbyKinds`（已勾选**且**可用）而不是"配了 `chat` / `standby` 条目"：
+     *   用户把三类**显式全关**（`standbyKinds: []`）时，不必再挂一个每秒空转的定时器。
+     *   ⚠️ 反过来说：**缺省（没配 `standbyKinds`）会勾上 `chat`** ⇒ 只要配了闲聊就一定有这个定时器。
      */
     if (standbyKinds.length) {
       window.setInterval(tickStandby, 1000);

@@ -74,7 +74,6 @@ import {
   normalizeGreetIds,
   resolveChatIds,
   resolveStandbyKinds,
-  resolveStandbyTouchIds,
   resolveTouchIds,
 } from './dialogue';
 import { UI_SCALE_VAR, fpx, getUiScale, initUiScale, uiPx } from './uiScale';
@@ -263,29 +262,61 @@ const buildRows = (cfg: Configs): Row[] => {
     );
   });
 
-  /* ② 待机自动触发 —— 到点后从**已启用**的类别里随机挑一条 */
+  /* ② 待机自动触发 —— 到点后从**勾选的类别**里随机挑一类，再在该类自己的池里取一条 */
   const standbySec = Math.max(
     0,
     Math.round((sub?.standbyIdleMs ?? 25000) / 1000)
   );
   /**
-   * ★ 池与判据都复用**运行时同一套**纯函数（`resolveStandbyTouchIds` + `buildPool` +
-   *   `resolveStandbyKinds`），不在这里另写 if —— 否则表与行为会随配置漂移。
+   * ★ 池与判据都复用**运行时同一套**纯函数（`resolveChatIds` / `resolveTouchIds` +
+   *   `buildPool` + `resolveStandbyKinds`），不在这里另写 if —— 否则表与行为会随配置漂移。
+   * ★★ 2026-10-09：`chat` 与 `touch` **各自成类、各有各的池**（改动前是并成一个大池随机）。
    */
+  const standbyChatPool = buildPool(
+    dialogues,
+    resolveChatIds(sub?.chat, sub?.standby)
+  );
   const standbyTouchPool = buildPool(
     dialogues,
-    resolveStandbyTouchIds(sub?.standby, sub?.touch, sub?.chat)
+    resolveTouchIds(sub?.touch, greetSource, sub?.greetInTouchPool)
   );
   const standbyKinds = resolveStandbyKinds(
-    sub?.standbyTouchEnabled,
+    sub?.standbyKinds,
     sub?.standbyGreetEnabled,
-    standbyTouchPool.length > 0,
-    hasGreetIds(greetSource)
+    sub?.standbyTouchEnabled,
+    standbyChatPool.length > 0,
+    hasGreetIds(greetSource),
+    standbyTouchPool.length > 0
   );
   if (standbyKinds.length) {
     const gate = '无操作静置 ' + fmtSec(standbySec);
-    const twoWay = standbyKinds.length > 1 ? ' · 随机二选一' : '';
-    /* 问候：仅当勾了「待机自动触发greet事件」才占行（与上面 ① 同一批条目） */
+    // ★ 勾了多类 ⇒ **先随机挑一类**（各 1/N），再在类内随机 —— 不再是"并成一个大池"
+    const pick = standbyKinds.length > 1 ? ' · 随机挑一类' : '';
+    /**
+     * 闲聊（`chat` 池）：逐条占行。池通常只有 1 条（S9 = 64004 休闲待机），列出来最直观。
+     * ★ 这是**原有 chat 事件**那一类 —— 缺省就勾着（详见 `StandbyEventKind` 的注释）。
+     */
+    if (standbyKinds.indexOf('chat') >= 0) {
+      const chatIds = resolveChatIds(sub?.chat, sub?.standby);
+      chatIds.forEach((id, i) => {
+        const e = findByActionId(dialogues, id);
+        if (!e) {
+          return;
+        }
+        rows.push(
+          makeRow(
+            '待机闲聊 #' + (i + 1),
+            gate +
+              pick +
+              ' · 池内随机 1 条（共 ' +
+              standbyChatPool.length +
+              ' 条：闲聊）',
+            e
+          )
+        );
+      });
+    }
+    /* 问候：仅当勾了「问候」才占行（与上面 ① 同一批条目） */
     if (standbyKinds.indexOf('greet') >= 0) {
       greetIds.forEach((id, i) => {
         const e = findByActionId(dialogues, id);
@@ -299,35 +330,28 @@ const buildRows = (cfg: Configs): Row[] => {
             : i < SLOT_ORDER.length
             ? '待机问候 · ' + SLOT_LABEL[SLOT_ORDER[i]]
             : '待机问候 · 追加 ' + seat;
-        rows.push(makeRow(name, gate + twoWay + ' · ' + greetMode, e));
+        rows.push(makeRow(name, gate + pick + ' · ' + greetMode, e));
       });
     }
     /**
-     * 聊天 / 休闲待机：**`chat` 列表逐条占行**（2026-10-08 起是数组，通常只有 1 条）。
+     * 触摸：整个池**只占 1 行**（用池的首条当代表）。
      *
-     * ★ 池里其余条目（`subtitle.touch` 那几条）**就是下面 ③「点击触摸」那几行** ——
-     *   逐条再列一遍会让表里出现两遍同样的念白，行数也会顶穿一屏。
-     *   池的构成写在「触发条件」列里，一眼能看出"静置到点会从 N 条里随机"。
+     * ★ 池里那几条**就是下面 ③「点击触摸」那几行** —— 逐条再列一遍会让表里出现两遍
+     *   同样的念白、行数也会顶穿一屏。真实池子的大小写在「触发条件」列里，
+     *   一眼能看出"静置到点会从这 N 条里随机"。
      */
-    if (standbyKinds.indexOf('touch') >= 0) {
-      const chatIds = resolveChatIds(sub?.chat, sub?.standby);
-      chatIds.forEach((id, i) => {
-        const e = findByActionId(dialogues, id);
-        if (!e) {
-          return;
-        }
-        rows.push(
-          makeRow(
-            '待机闲聊 #' + (i + 1),
-            gate +
-              twoWay +
-              ' · 池内随机 1 条（共 ' +
-              standbyTouchPool.length +
-              ' 条：聊天 + 点击触摸）',
-            e
-          )
-        );
-      });
+    if (standbyKinds.indexOf('touch') >= 0 && standbyTouchPool.length > 0) {
+      rows.push(
+        makeRow(
+          '待机触摸（池内随机）',
+          gate +
+            pick +
+            ' · 与「点击触摸」同一个池（共 ' +
+            standbyTouchPool.length +
+            ' 条）',
+          standbyTouchPool[0]
+        )
+      );
     }
   }
 
@@ -420,24 +444,30 @@ const buildNotes = (cfg: Configs): string[] => {
    * ⚠️ `buildNotes` 里没有 `dialogues` 局部量（那是 `buildRows` 的），故直接取 `sub?.dialogues`。
    */
   const greetSource = sub?.greet ?? sub?.greeting;
+  const standbyChatPool = buildPool(
+    sub?.dialogues ?? [],
+    resolveChatIds(sub?.chat, sub?.standby)
+  );
   const standbyTouchPool = buildPool(
     sub?.dialogues ?? [],
-    resolveStandbyTouchIds(sub?.standby, sub?.touch, sub?.chat)
+    resolveTouchIds(sub?.touch, greetSource, sub?.greetInTouchPool)
   );
   const standbyKinds = resolveStandbyKinds(
-    sub?.standbyTouchEnabled,
+    sub?.standbyKinds,
     sub?.standbyGreetEnabled,
-    standbyTouchPool.length > 0,
-    hasGreetIds(greetSource)
+    sub?.standbyTouchEnabled,
+    standbyChatPool.length > 0,
+    hasGreetIds(greetSource),
+    standbyTouchPool.length > 0
   );
   const which =
     standbyKinds.length > 1
-      ? '从「问候 / 触摸」里随机挑一类'
+      ? '从勾选的那几类里随机挑一类，再取一条'
       : standbyKinds[0] === 'greet'
-      ? '播一条按时段的问候'
-      : '从「休闲待机 + 点击触摸」那 ' +
-        standbyTouchPool.length +
-        ' 条里随机播一条';
+      ? '播一条按「问候取条方式」取的问候'
+      : standbyKinds[0] === 'touch'
+      ? '从「点击触摸」那个池的 ' + standbyTouchPool.length + ' 条里随机播一条'
+      : '从「闲聊」池的 ' + standbyChatPool.length + ' 条里随机播一条';
 
   /** 问候的取条方式（与表格同名列保持同一套判据） */
   const greetTake =
@@ -462,8 +492,8 @@ const buildNotes = (cfg: Configs): string[] => {
           fmtSec(standbySec) +
           ' 秒后' +
           which +
-          '（「动作」页两个开关决定播哪一类，共用同一个时长）。'
-      : '「待机自动触发」的两类都关掉了 —— 静置再久也不会自动说话。'
+          '（「动作」页的「长时间待机可触发的事件」多选决定播哪一类，三类共用同一个时长）。'
+      : '「待机自动触发」一类都没勾（或勾了的类别没有候选）—— 静置再久也不会自动说话。'
   );
   notes.push(
     '「点击触摸」= 点中任一热区后从池中随机取 1 条；池 = 配置里的 ' +

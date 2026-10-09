@@ -49,15 +49,16 @@ What the character says, and when, is entirely driven by the `subtitle` block of
   "chat":  [64004],
   "touch": [64005, 64006, 64007, 64008, 64009, 64010],
   "greetMode": "time",
-  "touchFeedbackMode": "immediate"
+  "touchFeedbackMode": "immediate",
+  "standbyKinds": ["chat"]
 }
 ```
 
-| List                  | When it fires                                                                          | Which line is picked                                                                                            |
-| --------------------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `greet` (greetings)   | startup / back to desktop / window regains focus / WE resume / (optional) idle timeout | `greetMode`: `"time"` picks entry #1/#2/#3 by system clock (morning/noon/evening); `"random"` ignores the clock |
-| `chat` (idle chatter) | long inactivity (idle longer than `standbyIdleMs`)                                     | random from `chat` + `touch`                                                                                    |
-| `touch`               | any hit zone is clicked                                                                | random from the pool                                                                                            |
+| List                  | When it fires                                                                                                   | Which line is picked                                                                                            |
+| --------------------- | --------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `greet` (greetings)   | startup / back to desktop / window regains focus / WE resume / (optional) idle timeout                          | `greetMode`: `"time"` picks entry #1/#2/#3 by system clock (morning/noon/evening); `"random"` ignores the clock |
+| `chat` (idle chatter) | long inactivity (idle longer than `standbyIdleMs`) **and** `chat` enabled in `standbyKinds` (**on by default**) | random from the `chat` list                                                                                     |
+| `touch`               | any hit zone is clicked (or `touch` enabled in `standbyKinds` for idle)                                         | random from the `touch` pool                                                                                    |
 
 Every entry is an `actionId` from `subtitle.dialogues` — **add a candidate by adding a number**
 (e.g. `"greet": [64001, 64002, 64003, 64004]`).
@@ -70,8 +71,15 @@ Two behaviour switches are also exposed on the built-in settings panel (Actions 
   **`queue`** (after the current one finishes) / **`none`** (no feedback at all).
 - `greetMode` — how a greeting is chosen: **`time`** (default, by system clock) / **`random`**.
 
-> The legacy `greeting` (slot → actionId map) and `standby` (single actionId) fields are still read
-> for backwards compatibility; new configs should just use the three arrays above.
+`standbyKinds` decides **what may fire after a long idle** — a multi-select of
+`"chat"` / `"greet"` / `"touch"`, **defaulting to `["chat"]`** so that the classic idle chatter
+keeps working out of the box. Each kind draws from **its own pool**; an empty array turns idle
+auto-play off completely. Editable on the settings panel (Actions tab → _Events triggerable after
+a long idle_).
+
+> The legacy `greeting` (slot → actionId map), `standby` (single actionId) and the two booleans
+> `standbyGreetEnabled` / `standbyTouchEnabled` are still read for backwards compatibility;
+> new configs should just use the three arrays above plus `standbyKinds`.
 
 ## Quick start
 

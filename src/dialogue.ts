@@ -30,7 +30,7 @@
  * |---|---|---|
  * | 点击热区 | `pickTouchEntry` →（`touch.ts`） | 从 **`touch` 池**的 actionId 里**随机**取一条 |
  * | 首次打开 / 回到桌面 / 回到前台 / WE 暂停后恢复 | `pickGreetingEntry` | 从 **`greet` 池**取：按 `greetMode` = 当前时段下标 **或** 随机 |
- * | 长时间无互动（待机到点） | `resolveStandbyTouchIds` + `pickRandomFromPool` | 从 **`chat` + `touch` 合并池**里随机取一条 |
+ * | 长时间无互动（待机到点） | `resolveStandbyIntent` + `resolveStandbyKinds` | 从**已勾选的类别**（`chat`/`greet`/`touch`）里随机挑一类，再在该类**自己的池**里取一条 |
  *
  * ★★ **三条事件列表的头号事实（2026-10-08 改）**：`greet` / `chat` / `touch`
  *    全部统一为 **actionId 数组**，且它们是 config 里唯一的真相来源
@@ -53,6 +53,7 @@ import {
   DialogueSlotKey,
   DialogueTimeRange,
   GreetMode,
+  StandbyEventKind,
 } from './config.type';
 
 /** 时段遍历顺序：按早 → 中 → 晚找第一个命中的 */
@@ -255,45 +256,105 @@ export const resolveTouchIds = (
 };
 
 /**
- * 待机到点后可**自动触发**的事件类别。
+ * 待机到点后可**自动触发**的事件类别：`chat`（闲聊）/ `greet`（问候）/ `touch`（触摸）。
  *
- * 命名沿用面板文案（「待机自动触发 greet / touch 事件」），与
- * `touch.ts` 的 `ActionSource`（`'touch' | 'greet' | 'standby'`）**刻意不同**：
+ * 类型本体定义在 `config.type.ts`（与 `GreetMode` / `TouchFeedbackMode` 同处），
+ * 这里**再导出一次** —— 本模块是这些判据的落点，使用方就近 import 更自然。
+ *
+ * 命名与 `touch.ts` 的 `ActionSource`（`'touch' | 'greet' | 'standby'`）**刻意不同**：
  * 那边是"谁触发的"，这里是"触发的是哪一类事件" —— 二者不要互相套用。
- * ⚠️ 尤其 `'touch'` 这一类**是自动播放**，触发时给的 `ActionSource` 仍是 `'standby'`。
+ * ⚠️ 尤其这三个类别**都是自动播放**，触发时给的 `ActionSource` 一律是 `'standby'`。
  */
-export type StandbyEventKind = 'greet' | 'touch';
+export type { StandbyEventKind };
 
 /**
- * 「待机触摸」池的 actionId 列表 = **聊天池** + `touch`（点击触摸），**保序去重**。
+ * 类别的**固定顺序**（= 面板里 chips 的显示顺序）。
  *
- * ★ 2026-10-08 起"聊天"那一段来自 **`chat` 数组**；数组未配时才退回旧的单值字段
- *   `standby`（解析见 `resolveChatIds`，老 config 行为逐字不变）。
- *
- * ★ 2026-09-30 用户拍板：「开启待机自动触发 touch 事件后，**64004 到 64010 都可触发**」
- *   —— 所以聊天池不是单独一类，而是这个池的**前几条**。
- * ⚠️ 池里因此含 64004，而它**不再固定播放**（原来待机到点必播它）。
- *
- * 顺序 = `[...chat, ...touch]`，重复 id 只保留首次出现（`touch` 里再写一次
- * `standby` 不会让它被随机到的概率翻倍）。去重口径与 `resolveTouchIds` 一致。
+ * ★ 归一化一律按它排序，**与用户在 config / 面板里敲的顺序无关** ——
+ *   于是断言可以写死，也不会出现"同样一组勾选、两种顺序"这种不可比的状态。
  */
-export const resolveStandbyTouchIds = (
-  standby: number | undefined,
-  touch: number[] | undefined,
-  chat?: number[]
-): number[] => {
-  const out: number[] = resolveChatIds(chat, standby);
-  const push = (id: unknown): void => {
-    if (typeof id === 'number' && out.indexOf(id) < 0) {
-      out.push(id);
+export const STANDBY_KIND_ORDER: readonly StandbyEventKind[] = [
+  'chat',
+  'greet',
+  'touch',
+];
+
+/** 是不是合法的类别名（config 无 schema 校验 ⇒ 非法值静默丢弃，与 `buildPool` 同一容错口径） */
+export const isStandbyEventKind = (v: unknown): v is StandbyEventKind =>
+  v === 'chat' || v === 'greet' || v === 'touch';
+
+/**
+ * 把任意值归一成**合法的类别列表**：丢弃非法值、去重、按 `STANDBY_KIND_ORDER` 排序。
+ *
+ * ★ 面板点 chips 之后也走它 ⇒ "面板里存的顺序"与"config 里手写的顺序"永远同一种形状，
+ *   不会出现"同样一组勾选、两种顺序"这种不可比的状态。
+ * ⚠️ 非数组 ⇒ 空数组（调用方据此区分"没配"与"配了个空的"）。
+ */
+export const normalizeStandbyKinds = (kinds: unknown): StandbyEventKind[] => {
+  if (!Array.isArray(kinds)) {
+    return [];
+  }
+  const want: StandbyEventKind[] = [];
+  kinds.forEach((k: unknown) => {
+    if (isStandbyEventKind(k) && want.indexOf(k) < 0) {
+      want.push(k);
     }
-  };
-  (touch ?? []).forEach(push);
+  });
+  return STANDBY_KIND_ORDER.filter((k) => want.indexOf(k) >= 0);
+};
+
+/**
+ * 把「新多选 / 旧两个布尔」两种口径**摊平成意向列表**（只归一，不判可用性）。
+ *
+ * ## 两种写法
+ *
+ * | 口径 | config 字段 | 摊平结果 |
+ * |---|---|---|
+ * | **新**（推荐） | `subtitle.standbyKinds`（`'chat'|'greet'|'touch'` 的子集） | 原样，去重后按 `STANDBY_KIND_ORDER` 排序 |
+ * | **旧**（兼容） | `standbyGreetEnabled` / `standbyTouchEnabled` 两个布尔 | `['chat']` **再追加**各自的 `greet` / `touch` |
+ *
+ * ★★ 旧口径里 `'chat'` **恒在**：改动前"只要配了 `subtitle.standby`（休闲待机 64004），
+ *   待机到点就一定会播它" —— 这条老行为必须还原（2026-10-09 的回归修复）。
+ *   两个旧布尔只**追加**自己那一类，不会把 `chat` 挤掉。
+ *
+ * ★ 给了**数组**（哪怕空数组）就完全以它为准：空数组 = 显式关掉"待机自动播放"。
+ *   ⚠️ 唯一的例外：数组里**一个合法值都没有**（`['Chat', 3, null]` 这种拼错）⇒ 当作"没配"、
+ *   退回旧口径 —— 宁可降级也不要静默把待机自动播整个关掉（config 无 schema 校验）。
+ *   写坏成**非数组**同理，一律退回旧口径。
+ *
+ * ⚠️ 这里**不判可用性**（池空不空）—— 那是 `resolveStandbyKinds` 的事。
+ *   分两层的理由：`settingsStore.readView` 只需要"面板该勾哪几个"，
+ *   它拿不到池，也不该为了显示去解析 `dialogues`。
+ */
+export const resolveStandbyIntent = (
+  kinds: unknown,
+  greetEnabled: boolean | undefined,
+  touchEnabled: boolean | undefined
+): StandbyEventKind[] => {
+  if (Array.isArray(kinds)) {
+    const want = normalizeStandbyKinds(kinds);
+    /**
+     * ★ 写了数组但**一个合法值都没有** ⇒ 当作"没配"，退回旧口径 ——
+     *   拼错一个词（`'Chat'`）不该把"待机自动播"整个关掉；config 没有 schema 校验，
+     *   静默失效是这个工程反复踩过的坑，这里宁可降级。
+     * ⚠️ 但**空数组**是合法的显式表达（= 全关），必须原样返回、绝不退回。
+     */
+    if (want.length || kinds.length === 0) {
+      return want;
+    }
+  }
+  const out: StandbyEventKind[] = ['chat'];
+  if (greetEnabled === true) {
+    out.push('greet');
+  }
+  if (touchEnabled === true) {
+    out.push('touch');
+  }
   return out;
 };
 
 /**
- * 问候池是否非空（`standbyGreetEnabled` 的可用性判据）。
+ * 问候池是否非空（`greet` 这一类的可用性判据，见 `resolveStandbyKinds` 的 `hasGreeting`）。
  *
  * ⚠️ **旧名**：2026-10-08 起问候是数组，建议用 `hasGreetIds`；
  * 本函数是它的别名（两者完全等价），保留以免既有脚本失效。
@@ -302,41 +363,41 @@ export const hasGreetingSlots = (greeting?: GreetSource): boolean =>
   hasGreetIds(greeting);
 
 /**
- * 解析「待机到点后**可以播**哪些类别」—— 纯函数，开关判据集中在这里，便于单测。
+ * 解析「待机到点后**真正会播**哪些类别」—— 纯函数，判据集中在这里，便于单测。
  *
- * ## 两条候选与各自口径
+ * 两步：`resolveStandbyIntent`（摊平口径）⇒ 按**可用性**过滤（该类别的池非空）。
  *
- * | 类别 | 开关（缺省） | 还需要 config 里有 |
+ * ## 三个类别与各自的池（2026-10-09 起 `chat` 与 `touch` **分家**）
+ *
+ * | 类别 | 池 | 池空时 |
  * |---|---|---|
- * | `greet` | `standbyGreetEnabled`（**false**） | `greeting` 至少一个时段 |
- * | `touch` | `standbyTouchEnabled`（**false**） | `standby` + `touch` 解析出的池非空 |
+ * | `chat` | `chat` 数组（没配时退回旧字段 `standby` 那一条） | 整类剔除 |
+ * | `greet` | `greet` 池（或旧时段表 `greeting`） | 整类剔除 |
+ * | `touch` | `touch` 数组（与**点击**同一口径，含 `greetInTouchPool` 的并入） | 整类剔除 |
  *
- * ★★ **两个开关都缺省关**（用户 2026-09-30 拍板）：两者都是"新增能力"，
- *   出厂不自动播任何东西；想让角色"静置一会儿自己说话"要由用户打开其中一个。
- *   ⚠️ 因此**两个判据都必须写 `=== true`** —— 写成 `!== false` 会让缺字段的旧
- *   config 被判成"开"，行为当场变（这正是本项目反复强调的静默失效）。
+ * ★★ 缺省 = **只有 `chat`**（用户 2026-10-09 拍板）：出厂"静置一会儿自己说句闲聊"
+ *   直接可用，**不必先去开任何开关** —— 这正是 2026-09-30 那次"出厂两个开关都关
+ *   ⇒ 连原来会播的 `chat` 也不播了"的回归修复。
+ *   `greet` / `touch` 依旧是**要显式勾选**才加进来的能力（老 config 经
+ *   `resolveStandbyIntent` 的旧口径分支推导）。
  *
- * ★ 返回顺序**恒为 `['greet','touch']`**（与传参顺序无关，便于断言）；
- *   调用方从返回值里**随机**挑一个（两个都可用 ⇒ 各 50%）。
+ * ★ 返回顺序**恒为 `['chat','greet','touch']` 的子序列**（见 `STANDBY_KIND_ORDER`），
+ *   与传参顺序无关，便于断言；调用方从返回值里**随机挑一类**，再在该类自己的池里取一条。
  *
- * ⚠️ `hasTouchPool` 由调用方传入，通常是"`buildPool(dialogues, resolveStandbyTouchIds(...))`
- *   的长度 > 0" —— 本函数只回答"开关 + 可用性"这一层，不碰 `dialogues`。
+ * ⚠️ 三个 `has*` 由调用方传入（通常是"`buildPool(...)` 的长度 > 0"）：
+ *   本函数只回答"口径 + 可用性"这一层，**不碰 `dialogues`**，所以能脱离骨架单测。
  */
 export const resolveStandbyKinds = (
-  touchEnabled: boolean | undefined,
+  kinds: unknown,
   greetEnabled: boolean | undefined,
-  hasTouchPool: boolean,
-  hasGreeting: boolean
-): StandbyEventKind[] => {
-  const out: StandbyEventKind[] = [];
-  if (greetEnabled === true && hasGreeting) {
-    out.push('greet');
-  }
-  if (touchEnabled === true && hasTouchPool) {
-    out.push('touch');
-  }
-  return out;
-};
+  touchEnabled: boolean | undefined,
+  hasChat: boolean,
+  hasGreeting: boolean,
+  hasTouch: boolean
+): StandbyEventKind[] =>
+  resolveStandbyIntent(kinds, greetEnabled, touchEnabled).filter((k) =>
+    k === 'chat' ? hasChat : k === 'greet' ? hasGreeting : hasTouch
+  );
 
 /**
  * 从池里随机取一条。
