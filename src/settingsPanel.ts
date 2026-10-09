@@ -60,8 +60,8 @@
  * ⇒ 面板/齿轮一律用**实色半透明背景**代替毛玻璃。气泡模糊不受影响。
  */
 
-import { StandbyEventKind } from './config.type';
-import { STANDBY_KIND_ORDER, normalizeStandbyKinds } from './dialogue';
+import { TriggerEventKind } from './config.type';
+import { TRIGGER_KIND_ORDER, normalizeTriggerKinds } from './dialogue';
 import { SettingsOverrides, SettingsView } from './settingsStore';
 import { UI_SCALE_VAR, fpx, getUiScale, initUiScale, uiPx } from './uiScale';
 
@@ -1190,18 +1190,6 @@ export const createSettingsPanel = (
     gapValue.textContent = Math.round(draft.idleSequenceGapMs) + ' 毫秒';
   };
 
-  /**
-   * ★ 打招呼（问候）是否也进触摸随机池。
-   *
-   * 面板里**不显示** `subtitle.greeting` 的 actionId（口径：面板只讲人话）——
-   * 并入范围由 config 的问候时段表决定，这里只管开关。
-   */
-  const cbGreetPool = createToggle(
-    'wb-set-greetpool',
-    'touch触发greet事件',
-    '把三个时段的问候语音/动作也放进点击随机池（打开后点角色也可能触发问候）'
-  );
-
   /* 待机阈值（**必须自绘滑块，不能是需要打字的输入框** —— WE 网页壁纸无键盘输入，见动作间隔滑块注释） */
   const standbyRow = createEl(
     'div',
@@ -1275,97 +1263,161 @@ export const createSettingsPanel = (
   ).textContent = '游戏内原版是 30 秒；这里默认 25 秒，想完全还原可拖到 30 秒';
 
   /**
-   * ★★ 长时间待机可触发的事件（**多选**）—— 2026-10-09 取代原来的两个布尔开关。
+   * ★★ 三个通道的「可触发的事件」（**多选**）—— 2026-10-09 由单通道（`standbyKinds`）
+   * 泛化成**三项同构**设置，共用同一套选项与交互。
    *
-   * 语义表、缺省与可用性判据见 `config.type.ts` 的 `StandbyEventKind` /
-   * `dialogue.resolveStandbyKinds`（纯函数、可单测）。
+   * | 设置项 | 通道 | config 字段 | 缺省 |
+   * |---|---|---|---|
+   * | 长时间待机可触发的事件 | `'standby'` | `standbyKinds` | `['chat']` |
+   * | 触摸可触发的事件 | `'touch'` | `touchKinds` | `['touch']` |
+   * | 回到壁纸可触发的事件 | `'resume'` | `resumeKinds` | `['greet']` |
    *
-   * ★★ 缺省**只勾「闲聊」** —— 还原"配了 `subtitle.standby`（休闲待机）就一定会播"的
-   *   老行为。2026-09-30 把"待机自动播放"整体挂到两个新开关上且都缺省关，
-   *   连这条老行为也一起掐掉了（待机到点什么都不播）—— 本项就是那次回归的修复。
+   * ★★ 三个缺省**刻意各自不同**，合起来 = "升级后行为与改动前逐字相同"：
+   *   待机缺省 chat类（还原"配了 `standby` 就一定会播"的老行为）、
+   *   触摸缺省 touch类（= 被删掉的 `greetInTouchPool:false`）、
+   *   回到壁纸缺省 greet类（= 旧 `tryGreeting` 只播问候）。
+   * 详表见 `config.type.ts` 的 `TriggerEventKind` / `TriggerChannel`。
    *
-   * ★ 为什么用 chips 多选而不是两个开关：三类是**同一件事的三个选项**
-   *   （到点后随机挑一类，再在该类自己的池里取一条），一个设置项就该占一行；
-   *   观感与交互沿用「序列」页的 chips，用户已经熟悉。
+   * ★ 为什么用 chips 多选而不是几个开关：三类是**同一件事的三个选项**（从一个池里取一条），
+   *   一个设置项就该占一行；观感与交互沿用「序列」页的 chips，用户已经熟悉。
    * ★ **全部自绘**（`<button>` + 内联样式）：原生表单控件在 WE 的 CEF 里首帧 SIGILL。
    */
-  const STANDBY_KIND_LABEL: Record<StandbyEventKind, string> = {
-    chat: '闲聊',
-    greet: '问候',
-    touch: '触摸',
+  const KIND_LABEL: Record<TriggerEventKind, string> = {
+    chat: 'chat类',
+    greet: 'greet类',
+    touch: 'touch类',
   };
+
   /**
-   * ★ DOM 锚点**写全**（不拼字符串）：验证脚本与文档都按 id 找元素，
-   *   拼出来的 `'wb-set-standby-' + kind` 会被 terser 折成运行期拼接、
-   *   产物里查不到字面量 ⇒ 锚点形同虚设（65 号脚本正是靠字面量断言的）。
+   * 造一组「可触发的事件」chips。三个通道共用本函数 ⇒ **选项、顺序、配色、交互天然一致**
+   * （这是"选项与长时间待机那项一致"这句话的落点，不是复制三遍代码）。
+   *
+   * @param ids 每个类别的 **DOM 锚点**（**写全字面量**：验证脚本按 id 找元素；拼出来的
+   *   `'wb-set-standby-' + kind` 会被 terser 折成运行期拼接、产物里查不到字面量 ⇒ 锚点形同虚设）
+   * @param get 读当前勾选（一般是 `draft.xxxKinds`）
+   * @param set 把**归一后**的结果写回（归一用 `dialogue.normalizeTriggerKinds`，
+   *   面板自己不排序也不去重）
    */
-  const STANDBY_KIND_DOM: Record<StandbyEventKind, string> = {
-    chat: 'wb-set-standby-chat',
-    greet: 'wb-set-standby-greet',
-    touch: 'wb-set-standby-touch',
+  const createKindChips = (
+    ids: Record<TriggerEventKind, string>,
+    get: () => TriggerEventKind[],
+    set: (next: TriggerEventKind[]) => void
+  ): { el: HTMLElement; paint: () => void } => {
+    const box = createEl(
+      'div',
+      'display:flex;flex-wrap:wrap;gap:' + uiPx(6) + ';pointer-events:auto'
+    );
+    const paint = () => {
+      box.innerHTML = '';
+      TRIGGER_KIND_ORDER.forEach((kind) => {
+        const on = get().indexOf(kind) >= 0;
+        const chip = createEl(
+          'button',
+          [
+            'pointer-events:auto',
+            'display:inline-flex',
+            'align-items:center',
+            'padding:' + uiPx(3) + ' ' + uiPx(11),
+            'border-radius:999px',
+            'border:' +
+              uiPx(1) +
+              ' solid ' +
+              (on ? '#4a90e2' : 'rgba(255,255,255,0.22)'),
+            'background:' +
+              (on ? 'rgba(74,144,226,0.28)' : 'rgba(255,255,255,0.06)'),
+            'color:' + (on ? '#dce9fb' : 'rgba(238,241,246,0.72)'),
+            'font-size:' + fpx(11.5),
+            'font-family:inherit',
+            'cursor:pointer',
+            'white-space:nowrap',
+          ].join(';'),
+          box
+        );
+        // DOM 锚点：id 与 `data-wb-opt` 都给，改结构也不会让验证脚本失锚（见文件头 DOM 锚点口径）
+        chip.id = ids[kind];
+        chip.setAttribute('data-wb-set', ids[kind]);
+        chip.setAttribute('data-wb-opt', kind);
+        chip.setAttribute('role', 'checkbox');
+        chip.setAttribute('aria-checked', on ? 'true' : 'false');
+        chip.textContent = KIND_LABEL[kind];
+        chip.addEventListener('click', () => {
+          const next = get().slice();
+          const at = next.indexOf(kind);
+          if (at >= 0) {
+            next.splice(at, 1);
+          } else {
+            next.push(kind);
+          }
+          set(normalizeTriggerKinds(next));
+          paint();
+        });
+      });
+    };
+    paint();
+    return { el: box, paint };
   };
-  const standbyKindChips = createEl(
-    'div',
-    'display:flex;flex-wrap:wrap;gap:' + uiPx(6) + ';pointer-events:auto'
-  );
-  /** 按 `draft.standbyKinds` 重画三个 chips（选中态配色与序列页 chips 同一套） */
-  const paintStandbyKindChips = () => {
-    standbyKindChips.innerHTML = '';
-    STANDBY_KIND_ORDER.forEach((kind) => {
-      const on = draft.standbyKinds.indexOf(kind) >= 0;
-      const chip = createEl(
-        'button',
-        [
-          'pointer-events:auto',
-          'display:inline-flex',
-          'align-items:center',
-          'padding:' + uiPx(3) + ' ' + uiPx(11),
-          'border-radius:999px',
-          'border:' +
-            uiPx(1) +
-            ' solid ' +
-            (on ? '#4a90e2' : 'rgba(255,255,255,0.22)'),
-          'background:' +
-            (on ? 'rgba(74,144,226,0.28)' : 'rgba(255,255,255,0.06)'),
-          'color:' + (on ? '#dce9fb' : 'rgba(238,241,246,0.72)'),
-          'font-size:' + fpx(11.5),
-          'font-family:inherit',
-          'cursor:pointer',
-          'white-space:nowrap',
-        ].join(';'),
-        standbyKindChips
-      );
-      // DOM 锚点：id 与 `data-wb-opt` 都给，改结构也不会让验证脚本失锚（见文件头 DOM 锚点口径）
-      chip.id = STANDBY_KIND_DOM[kind];
-      chip.setAttribute('data-wb-set', STANDBY_KIND_DOM[kind]);
-      chip.setAttribute('data-wb-opt', kind);
-      chip.setAttribute('role', 'checkbox');
-      chip.setAttribute('aria-checked', on ? 'true' : 'false');
-      chip.textContent = STANDBY_KIND_LABEL[kind];
-      chip.addEventListener('click', () => toggleStandbyKind(kind));
-    });
-  };
-  /**
-   * 点一下 = 在 `draft.standbyKinds` 上增删，再**归一次**（去重 + 固定顺序）。
-   * 归一用 `dialogue.normalizeStandbyKinds`，面板自己不排序也不去重。
-   */
-  const toggleStandbyKind = (kind: StandbyEventKind) => {
-    const at = draft.standbyKinds.indexOf(kind);
-    if (at >= 0) {
-      draft.standbyKinds.splice(at, 1);
-    } else {
-      draft.standbyKinds.push(kind);
+
+  const standbyChips = createKindChips(
+    {
+      chat: 'wb-set-standby-chat',
+      greet: 'wb-set-standby-greet',
+      touch: 'wb-set-standby-touch',
+    },
+    () => draft.standbyKinds,
+    (v) => {
+      draft.standbyKinds = v;
     }
-    draft.standbyKinds = normalizeStandbyKinds(draft.standbyKinds);
-    paintStandbyKindChips();
-  };
+  );
   addRow(
     '长时间待机可触发的事件',
-    standbyKindChips,
-    '空闲超过上面的时长后，从「勾选的类别」里随机挑一类，再取一条（含动作、字幕与语音）。' +
-      '「闲聊」= chat 池（缺省就勾着，与改动前"配了 standby 就一定会播"一致）；' +
-      '「问候」按「问候取条方式」那一项取条；「触摸」与点击是同一个池。' +
-      '三类都不勾 = 待机不自动播（等价于关掉"待机自动播放"）。保存后重载生效。',
+    standbyChips.el,
+    '空闲超过上面的时长后，从「勾中的类别」的候选池里随机取一条（含动作、字幕与语音）。' +
+      '勾了多类就**并成一个大池**一起随机。「chat类」= 闲聊池（缺省就勾着，与改动前"配了 standby 就一定会播"一致）；' +
+      '「greet类」在只勾它时按「问候取条方式」那一项取条；「touch类」与点击是同一个池。' +
+      '三类都不勾 = 待机不自动播。保存后重载生效。',
+    pages.sequence,
+    true
+  );
+
+  const touchChips = createKindChips(
+    {
+      chat: 'wb-set-touch-chat',
+      greet: 'wb-set-touch-greet',
+      touch: 'wb-set-touch-touch',
+    },
+    () => draft.touchKinds,
+    (v) => {
+      draft.touchKinds = v;
+    }
+  );
+  addRow(
+    '触摸可触发的事件',
+    touchChips.el,
+    '点中角色热区时，从「勾中的类别」的候选池里随机取一条。' +
+      '缺省只勾「touch类」= 只从 config 的 touch 列表里随机（与旧版一致）；' +
+      '勾上「greet类」就会把问候池一起并进来（= 旧版「touch触发greet事件」开关打开的效果）；' +
+      '「chat类」是新增能力：点一下也可能随机到闲聊那几条。保存后重载生效。',
+    pages.sequence,
+    true
+  );
+
+  const resumeChips = createKindChips(
+    {
+      chat: 'wb-set-resume-chat',
+      greet: 'wb-set-resume-greet',
+      touch: 'wb-set-resume-touch',
+    },
+    () => draft.resumeKinds,
+    (v) => {
+      draft.resumeKinds = v;
+    }
+  );
+  addRow(
+    '回到壁纸可触发的事件',
+    resumeChips.el,
+    '壁纸载入后、回到桌面、切回窗口、以及离开其他应用超过 15 秒再回来时，' +
+      '从「勾中的类别」的候选池里随机取一条。缺省只勾「greet类」= 仍按「问候取条方式」取一条问候；' +
+      '勾上其它两类就是"回来时也可能说句闲聊 / 演个触摸动作"。保存后重载生效。',
     pages.sequence,
     true
   );
@@ -1651,7 +1703,6 @@ export const createSettingsPanel = (
       t.el.style.pointerEvents = draft.muteAll ? 'none' : 'auto';
     });
     cbVoice.checked = draft.voiceEnabled;
-    cbGreetPool.checked = draft.greetInTouchPool;
     selFitAspect.value = draft.fitAspect;
     selCabin.value = draft.cabinMode;
     cbTrail.checked = draft.pointerTrailEnabled;
@@ -1662,7 +1713,10 @@ export const createSettingsPanel = (
     paintGapValue();
     standbySlider.value = String(secToSlider(draft.standbyIdleSec));
     paintStandbyValue();
-    paintStandbyKindChips();
+    // ★ 三个通道各重画一次（勾选态来自 draft，不是 view）
+    standbyChips.paint();
+    touchChips.paint();
+    resumeChips.paint();
     selTouchFeedback.value = draft.touchFeedbackMode;
     selGreetMode.value = draft.greetMode;
     seqBody.style.opacity = draft.idleSequenceEnabled ? '1' : '0.45';
@@ -1722,9 +1776,6 @@ export const createSettingsPanel = (
   });
   cbVoice.addEventListener('change', () => {
     draft.voiceEnabled = cbVoice.checked;
-  });
-  cbGreetPool.addEventListener('change', () => {
-    draft.greetInTouchPool = cbGreetPool.checked;
   });
   selFitAspect.addEventListener('change', () => {
     const v = selFitAspect.value as SettingsView['fitAspect'];
@@ -1815,7 +1866,6 @@ export const createSettingsPanel = (
       subtitleAnchorV: draft.subtitleAnchorV,
       voiceEnabled: draft.voiceEnabled,
       voiceVolume: draft.voiceVolume,
-      greetInTouchPool: draft.greetInTouchPool,
       fitAspect: draft.fitAspect,
       cabinMode: draft.cabinMode,
       pointerTrailEnabled: draft.pointerTrailEnabled,
@@ -1824,6 +1874,8 @@ export const createSettingsPanel = (
       idleSequenceGapMs: draft.idleSequenceGapMs,
       standbyIdleSec: draft.standbyIdleSec,
       standbyKinds: draft.standbyKinds.slice(),
+      touchKinds: draft.touchKinds.slice(),
+      resumeKinds: draft.resumeKinds.slice(),
       touchFeedbackMode: draft.touchFeedbackMode,
       greetMode: draft.greetMode,
       probeEnabled: draft.probeEnabled,
@@ -1837,11 +1889,16 @@ export const createSettingsPanel = (
     options.onReset();
   });
 
-  /** ★ 必须 slice：`{...view}` 只浅拷，数组仍是同一份 ⇒ 面板里改会串到生效值上 */
+  /**
+   * ★ 必须 slice：`{...view}` 只浅拷，数组仍是同一份 ⇒ 面板里改会串到生效值上
+   *   （三个通道的 `*Kinds` 与 `idleSequenceItems` 同理）。
+   */
   draft = {
     ...view,
     idleSequenceItems: view.idleSequenceItems.slice(),
     standbyKinds: view.standbyKinds.slice(),
+    touchKinds: view.touchKinds.slice(),
+    resumeKinds: view.resumeKinds.slice(),
   };
   syncFromDraft();
   applyVisibility();
@@ -1861,6 +1918,8 @@ export const createSettingsPanel = (
         ...next,
         idleSequenceItems: next.idleSequenceItems.slice(),
         standbyKinds: next.standbyKinds.slice(),
+        touchKinds: next.touchKinds.slice(),
+        resumeKinds: next.resumeKinds.slice(),
       };
       syncFromDraft();
     },

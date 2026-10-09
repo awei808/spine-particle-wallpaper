@@ -25,8 +25,9 @@
  *
  * ## 与 64 / 65 号脚本的分工
  *
- * 64 验"问候并入触摸池"、65 验"待机触发哪一类"。本脚本验的是**事件列表本身怎么读**
- * 与**有东西在播时点击怎么处置**（纯判定 + 配置链路）；68 号验的是同一批模式的**真实播放行为**。
+ * 64 验"触摸通道的并池"（含旧 `greetInTouchPool` 的等价性）、65 验"三个通道各能触发哪几类"。
+ * 本脚本验的是**事件列表本身怎么读**与**有东西在播时点击怎么处置**（纯判定 + 配置链路）；
+ * 68 号验的是同一批模式的**真实播放行为**。
  *
  * ## 测的是真模块，不是复刻
  *
@@ -45,6 +46,7 @@ import { Configs, DialogueEntry, DialogueSlotKey } from '../src/config.type';
 import {
   hasGreetIds,
   idForSlot,
+  mergeKindPools,
   normalizeGreetIds,
   pickGreetingEntry,
   resolveChatIds,
@@ -261,10 +263,7 @@ eq('C2b chat 给了空数组 ⇒ 同样退回旧 standby', resolveChatIds([], 64
 ]);
 eq(
   'C3 ★★2026-10-09 起 chat 与 touch **各自成池**（不再合并成一个 7 条的大池）',
-  [
-    resolveChatIds(undefined, 64004),
-    resolveTouchIds([64005, 64006], undefined, undefined),
-  ],
+  [resolveChatIds(undefined, 64004), resolveTouchIds([64005, 64006])],
   [[64004], [64005, 64006]]
 );
 eq(
@@ -273,27 +272,52 @@ eq(
   []
 );
 
-/* ── D. 触摸池合并：greetInTouchPool ───────────────────── */
-console.log('\nD. resolveTouchIds：问候并入触摸池（数组与旧表两种形状）');
-eq(
-  'D1 数组形状 + 开关开 ⇒ touch + 整个 greet，保序去重',
-  resolveTouchIds([64005], greetArr, true),
-  [64005, 64001, 64002, 64003]
+/* ── D. 触摸池：归一 touch 数组（旧 greetInTouchPool 已删除） ── */
+console.log(
+  '\nD. resolveTouchIds：只做去重保序（并池改由 mergeKindPools 负责）'
 );
 eq(
-  'D2 ★旧时段表形状 ⇒ 同样的结果（64 号脚本的口径继续成立）',
-  resolveTouchIds([64005], greetMap, true),
-  [64005, 64001, 64002, 64003]
+  'D1 去重保序：重复的 id 只留一个',
+  resolveTouchIds([64005, 64006, 64005]),
+  [64005, 64006]
 );
 eq(
-  'D3 开关关（缺省）⇒ 原样返回 touch',
-  resolveTouchIds([64005], greetArr, undefined),
+  'D2 ★旧第三参已失效：多传旧的「问候 / 开关」也不会并入问候',
+  (resolveTouchIds as unknown as (...a: unknown[]) => number[])(
+    [64005],
+    greetArr,
+    true
+  ),
   [64005]
 );
 eq(
-  'D4 greet 里有已在 touch 中的 id ⇒ 不重复追加',
-  resolveTouchIds([64005, 64001], greetArr, true),
-  [64005, 64001, 64002, 64003]
+  'D3 没配 / 空数组 ⇒ 空',
+  [resolveTouchIds(undefined), resolveTouchIds([])],
+  [[], []]
+);
+/** 造并池测例用的最小条目池（只需要 actionId） */
+const mkE = (id: number): DialogueEntry => ({ actionId: id } as DialogueEntry);
+const TOUCH_POOLS = {
+  chat: [] as DialogueEntry[],
+  greet: [mkE(64001), mkE(64002), mkE(64003)],
+  touch: [mkE(64005)],
+};
+/**
+ * ★★ 旧 `greetInTouchPool:true` 的等价写法 = `touchKinds: ['touch','greet']`
+ *   ⇒ 池内容 = touch + greet 的全部条目（按 actionId 去重）；
+ *   ⚠️ 池内顺序按 `chat→greet→touch` 归一（旧实现是追加到末尾），概率分布相同。
+ */
+eq(
+  'D4 ★★并池：touch+greet ⇒ 内容 = touch + greet 全部条目（去重）',
+  mergeKindPools(['touch', 'greet'], TOUCH_POOLS)
+    .map((e) => e.actionId)
+    .sort((a, b) => a - b),
+  [64001, 64002, 64003, 64005]
+);
+eq(
+  'D4b 缺省（只勾 touch）⇒ 池里只有 touch（= 旧开关关）',
+  mergeKindPools(['touch'], TOUCH_POOLS).map((e) => e.actionId),
+  [64005]
 );
 
 /* ── E. 触摸反馈四模式（touch.decideAction） ────────────── */
@@ -486,9 +510,14 @@ eq(
       vOld.greetMode
     )?.actionId,
     resolveChatIds(cfgOld.subtitle.chat, cfgOld.subtitle.standby),
-    resolveTouchIds(cfgOld.subtitle.touch, cfgOld.subtitle.greeting, undefined),
+    resolveTouchIds(cfgOld.subtitle.touch),
   ],
   [64001, [64004], [64005, 64006]]
+);
+eq(
+  'F11b ★旧 config 缺三个 `*Kinds` ⇒ 视图用各自缺省（行为与改动前逐字一致）',
+  [vOld.standbyKinds, vOld.touchKinds, vOld.resumeKinds],
+  [['chat'], ['touch'], ['greet']]
 );
 eq(
   'F12 非法值 ⇒ 回落到缺省 legacy / time（"面板显示的和实际行为"不会劈叉）',

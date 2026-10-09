@@ -866,34 +866,66 @@ export type TouchFeedbackMode = 'legacy' | 'immediate' | 'queue' | 'none';
 export type GreetMode = 'time' | 'random';
 
 /**
- * 待机到点后可**自动触发**的事件类别（2026-10-09 新增，取代原来的两个布尔开关）。
+ * 可被某个**触发通道**自动播放的事件类别（2026-10-09 由单通道的 `StandbyEventKind`
+ * 泛化而来 —— 面板「动作」页现在有**三项同构**的多选，共用这一套取值域）。
  *
- * ★★ 唯一判据在 `dialogue.ts` 的 `resolveStandbyKinds`（纯函数、可单测）；
- *   本类型只是它的取值域。支持多选，写进 `subtitle.standbyKinds` 数组。
+ * ★★ 唯一判据在 `dialogue.ts` 的 `resolveTriggerIntent` / `resolveTriggerKinds`
+ *   （纯函数、可单测）；本类型只是它们的取值域。
  *
- * | 取值 | 面板 chips | 触发时播什么 | 池来自 |
- * |---|---|---|---|
- * | `'chat'`（**缺省开**） | 闲聊 | 池内**随机** 1 条（动作 + 字幕 + 语音同源） | `chat` 数组（没配时退回旧字段 `standby`） |
- * | `'greet'` | 问候 | 走 `pickGreetingEntry`，取条方式由 `greetMode` 决定 | `greet` 池（或旧时段表 `greeting`） |
- * | `'touch'` | 触摸 | 池内**随机** 1 条 | `touch` 数组（与**点击**同一口径，含 `greetInTouchPool` 的并入） |
+ * ## 三个类别的池（每类各有各的池）
  *
- * ## ★★ 缺省只开 `chat` —— 这是刻意还原的**老行为**
+ * | 取值 | 面板 chips | 池来源 |
+ * |---|---|---|
+ * | `'chat'` | chat类 | `chat` 数组（没配时退回旧字段 `standby`） |
+ * | `'greet'` | greet类 | `greet` 池（或旧时段表 `greeting`） |
+ * | `'touch'` | touch类 | `touch` 数组 |
  *
- * 改动前（2026-09-30 之前）只要配了 `subtitle.standby`（休闲待机 64004），
- * 待机到点就**一定会播它**。2026-09-30 把"待机自动播放"整体挂到两个新开关上
- * （且都缺省关）⇒ 连这条老行为也一起消失了 —— 本字段就是那次回归的修复：
- * **不勾任何东西也照样播 `chat`**，`greet` / `touch` 才是要显式勾选的新能力。
+ * ## ★★ 多选时是"并成一个大池随机"，不是"先挑一类再类内随机"
  *
- * ⇒ **空数组** = 显式关掉"待机自动播放"（等价于 2026-09-30~10-09 之间的出厂行为）。
- * ⇒ 三类**都勾** ⇒ 到点后**随机挑一类**，再在该类自己的池里取一条（各 1/3，不是并成一个大池）。
+ * 勾中的类别各自算一个池，再**拼成一个大池**（`dialogue.mergeKindPools`，按 actionId
+ * 去重、按 `chat`→`greet`→`touch` 归一出池）⇒ **池内每条等概率**，
+ * 类别之间按各自的条目数加权。
+ * ⚠️ 因此 `['chat','touch']` 时"条目多的那一类更容易被抽到"是**预期行为**，不是 bug。
  *
- * ★ 用户在**右上角设置面板 →「动作」页**改（`设置 → 动作 → 长时间待机可触发的事件`），
- *   落盘即进覆盖层 ⇒ 与 `config.json` 里写的值**同名同语义**，只是优先级更高；**重载生效**。
+ * ★ **唯一例外**：某个通道**只勾 `greet` 一类**时改走 `dialogue.pickGreetingEntry`
+ *   —— 否则「问候触发方式」（按系统时间 / 随机，`greetMode`）会静默失效。
+ *   缺省值之所以选 `greet`（见 `TriggerChannel`）正是为了让"回到壁纸按时段问候"保持不变。
  *
- * ⚠️ 触发时给的 `ActionSource` 一律是 **`'standby'`**（不是 `'touch'`）—— 它是**自动播放**，
- *   不该像用户点击那样去打断正在演的问候（见 `touch.ts` 的闸门表）。
+ * ⚠️ 可触发 ≠ 一定会播：该类别的池为空时会被整类剔除（`resolveTriggerKinds`），
+ *   真正要播时还要过 `touch.ts` 的动作闸门（自动事件不打断正在演的动作）。
+ *
+ * ★ 用户在**右上角设置面板 →「动作」页**改，落盘即进覆盖层 ⇒ 与 `config.json` 里写的值
+ *   **同名同语义**，只是优先级更高；**重载生效**。
  */
-export type StandbyEventKind = 'chat' | 'greet' | 'touch';
+export type TriggerEventKind = 'chat' | 'greet' | 'touch';
+
+/**
+ * 触发通道 —— 三个「事件入口」，每个入口各有一项「可触发的事件」多选（2026-10-09 新增）。
+ *
+ * | 取值 | 面板设置项 | config 字段 | 触发时机 | 缺省 | 触发时给的 `ActionSource` |
+ * |---|---|---|---|---|---|
+ * | `'standby'` | 长时间待机可触发的事件 | `standbyKinds` | 静置超过 `standbyIdleMs` | `['chat']` | `'standby'` |
+ * | `'touch'` | 触摸可触发的事件 | `touchKinds` | 点中任一热区（**用户操作**） | `['touch']` | `'touch'` |
+ * | `'resume'` | 回到壁纸可触发的事件 | `resumeKinds` | 载入后延迟 / 回到桌面 / 回到前台 / WE 暂停恢复 | `['greet']` | `'greet'` |
+ *
+ * ## ★★ 三个缺省值刻意各自不同 —— 合起来 = "升级后行为与改动前逐字相同"
+ *
+ *   - 待机 `['chat']` ⇒ 还原"配了 `subtitle.standby`（休闲待机 64004）就一定会播"的老行为
+ *     （2026-09-30 那次"出厂什么都不播"的回归就是在这里修的）；
+ *   - 触摸 `['touch']` ⇒ 点击只取 `touch` 池（= 被删掉的旧布尔 `greetInTouchPool:false` 的行为）；
+ *   - 回到壁纸 `['greet']` ⇒ 四个自动时机仍只播问候（旧 `tryGreeting` 的唯一口径）。
+ *
+ * ## 被删掉的旧设置
+ *
+ * ⚠️ 旧布尔 `subtitle.greetInTouchPool`（面板「touch触发greet事件」）**已删除** ——
+ *   它的语义（"点击也能随机到问候"）现在由**「触摸可触发的事件」勾上 greet 类**表达，
+ *   而且不再只是布尔开关：勾了它还会与 touch 类并池（见 `TriggerEventKind`）。
+ *
+ * ★ 命名与 `touch.ts` 的 `ActionSource`（`'touch' | 'greet' | 'standby'`）**刻意不同**：
+ *   那是"谁触发的"，这里是"哪个入口" —— 二者只是名字像，不要互相套用
+ *   （例如 `'resume'` 通道给出的 `ActionSource` 是 `'greet'`，因为它是自动问候那一路）。
+ */
+export type TriggerChannel = 'standby' | 'touch' | 'resume';
 
 /**
  * 念白字幕气泡配置。
@@ -1078,13 +1110,13 @@ export type SubtitleConfig = {
    *
    * | 列表 | 触发时机 | 取条方式 |
    * |---|---|---|
-   * | `greet` | 开机 / 回到桌面 / 回到前台 / WE 暂停后恢复 /（可选）待机到点 | 由 `greetMode` 定：按时段下标 或 随机 |
-   * | `chat` | **长时间无互动**（静置超过 `standbyIdleMs`）且 `standbyKinds` 里勾了 `'chat'`（**缺省就勾着**） | 池内随机 |
-   * | `touch` | 点中任一触摸热区 | 池内随机 |
+   * | `greet` | 「回到壁纸可触发的事件」勾了 greet类（缺省）时的四个自动时机 | 由 `greetMode` 定：按时段下标 或 随机 |
+   * | `chat` | 待机 / 触摸 / 回到壁纸 三个入口里任意一个勾了 chat类 | 池内随机 |
+   * | `touch` | 「触摸可触发的事件」勾了 touch类（缺省）；待机/回到壁纸也可勾 | 池内随机 |
    *
-   * ⚠️ 三条列表**互不排斥**：同一个 actionId 写进多个列表完全合法
-   *    （例如把 64005 同时放进 `touch` 和 `chat`）；需要去重的合并在
-   *    `dialogue.ts` 的合并函数里做，这里按用户写的原样保留。
+   * ⚠️ 三条列表**互不排斥**：同一个 actionId 写进多个列表完全合法（例如把 64005
+   *    同时放进 `touch` 和 `chat`）；**并池时的去重**在 `dialogue.mergeKindPools` 里做，
+   *    这里按用户写的原样保留。
    */
   /**
    * **问候（greet）事件池**。`greetMode==='time'` 时按下标对位时段，详见上面的表格。
@@ -1109,20 +1141,6 @@ export type SubtitleConfig = {
   greetMode?: GreetMode;
 
   /**
-   * 是否把「问候」条目**并入触摸池**（缺省 **false** = 点击只从 `touch` 里随机）。
-   *
-   * ★ 并入的是 **`greet` 池里的全部** actionId（不再写死 64001/64002）——
-   * 加候选只改 config，**不需要重建 bundle**。
-   *
-   * ⚠️ 各条目的**动作并不相同**：S9 的 `morning`/`noon` 是 `greet`，`evening` 是 `chat`。
-   * 口径（2026-09-29 用户确认）= **"只要它本来就是被当作打招呼触发的，就一并并入"**
-   * ⇒ 晚间问候虽然动作是 `chat`，也照样收进池。
-   *
-   * ★ 用户可在壁纸右上角「设置 → 字幕气泡 → 打招呼加入触摸随机」里开关，
-   * 落盘后经 `settingsStore.applyOverrides` 覆盖本字段并**重载生效**。
-   */
-  greetInTouchPool?: boolean;
-  /**
    * ⚠️ **旧口径**：按时段映射的问候 actionId（如 `{morning:64001,...}`）。
    *
    * 已被 `greet` 数组取代 —— 保留仅为向后兼容：**没配 `greet`、或 `greet` 是空数组**时
@@ -1138,7 +1156,7 @@ export type SubtitleConfig = {
   /**
    * 待机阈值：空闲多久没交互就触发一次「待机自动播放」（毫秒）。缺省 **25000**。
    *
-   * 到点后播哪一类事件由 **`standbyKinds`** 决定（见该字段）；**三类共用一个阈值**
+   * 到点后播哪几类事件由 **`standbyKinds`** 决定（见该字段）；**三类共用一个阈值**
    * （面板上是同一个滑块「待机触发事件时长」）。
    *
    * ★ 用户可在壁纸右上角「设置 → 动作 → 待机触发事件时长」里改（以秒为单位，5~300 秒），
@@ -1146,16 +1164,47 @@ export type SubtitleConfig = {
    */
   standbyIdleMs?: number;
   /**
-   * **待机到点可触发的事件（多选）**——`'chat'` / `'greet'` / `'touch'` 的子集。
+   * **长时间待机可触发的事件（多选）**——`TriggerEventKind` 的子集，通道 `'standby'`。
    *
-   * ★★ **缺省（本字段没配时）= 只有 `'chat'`**：还原"配了 `standby` 就一定会播"的老行为，
+   * ★★ **缺省（本字段没配时）= `['chat']`**：还原"配了 `standby` 就一定会播"的老行为，
    *   也修掉 2026-09-30「出厂两个开关都关 ⇒ 待机什么都不播」的回归。
-   * 语义表、可用性判据、以及**空数组 = 显式全关**的口径，见 `StandbyEventKind` 的注释。
+   * 取值域、并池口径、可用性判据与**空数组 = 显式全关**，见 `TriggerEventKind` 注释。
    *
    * ★ **旧口径（兼容输入）**：本字段缺席时，由下面两个布尔推导 —— 见
-   *   `dialogue.resolveStandbyIntent`。旧 config 因此**行为逐字不变**（外加还原 `chat`）。
+   *   `dialogue.resolveTriggerIntent`。旧 config 因此**行为逐字不变**（外加还原 `chat`）。
    */
-  standbyKinds?: StandbyEventKind[];
+  standbyKinds?: TriggerEventKind[];
+  /**
+   * **触摸可触发的事件（多选）**——`TriggerEventKind` 的子集，通道 `'touch'`。
+   *
+   * 触发时机 = **点中任一触摸热区**（用户操作，`ActionSource = 'touch'`，
+   * 所以它会按「播放动作时点击」那一档去打断/排队/忽略）。
+   *
+   * ★★ **缺省（本字段没配时）= `['touch']`** ⇒ 点击只从 `touch` 数组里随机取，
+   *   与改动前完全一致（= 被删掉的旧布尔 `greetInTouchPool:false`）。
+   *   想要"点角色也能触发问候"就勾上 **greet类** —— 此时 greet 池与 touch 池**并池随机**
+   *   （按条目数加权），这正是旧 `greetInTouchPool:true` 的行为。
+   *   勾 **chat类** 是新增能力：点击也能随机到闲聊那几条。
+   *
+   * ★ 面板：「设置 → 动作 → 触摸可触发的事件」；**保存后重载生效**
+   *   （触摸池是 `createTouchController` 开机一次性构造的）。
+   */
+  touchKinds?: TriggerEventKind[];
+  /**
+   * **回到壁纸可触发的事件（多选）**——`TriggerEventKind` 的子集，通道 `'resume'`。
+   *
+   * 触发时机 = **四个自动信号**（`ActionSource = 'greet'`，自动事件一律不打断正在演的动作）：
+   *   ① 壁纸载入后延迟 `greetingDelayMs`；② 页面重新变为可见（"回到桌面"）；
+   *   ③ 窗口重新获得焦点；④ Wallpaper Engine 暂停后恢复且离开 ≥ 15 秒。
+   *   ⚠️ ②③ 在 WE 里默认收不到（桌面壁纸窗口常驻"可见"），属零成本的尽力而为；
+   *      ④ 要求用户在 WE 里把「其他应用全屏/最大化时」选成**暂停**。
+   *   相邻两次触发至少间隔 5 秒（`index.ts` 的 `GREETING_DEDUPE_SEC`）——
+   *   几个信号常在同一时刻接连到来，没有这层会"一句话连播三遍"。
+   *
+   * ★★ **缺省（本字段没配时）= `['greet']`** ⇒ 与改动前逐字一致（只播问候，
+   *   取条方式仍由 `greetMode` 决定）。勾 chat类 / touch类 是新增能力。
+   */
+  resumeKinds?: TriggerEventKind[];
   /**
    * ⚠️ **旧口径**：「休闲待机」那一条念白的 actionId（S9 = 64004）。已被 `chat` 数组取代。
    *
@@ -1166,9 +1215,9 @@ export type SubtitleConfig = {
   /**
    * ⚠️ **旧口径**（兼容输入）：待机到点是否也自动触发「问候」（greet）事件。
    *
-   * 已被 `standbyKinds` 数组取代 —— **只在本字段缺席时**由 `resolveStandbyIntent` 读取：
-   * `true` ⇒ 往意向里追加 `'greet'`（取条方式由 `greetMode` 决定，与"开机 / 回到桌面"
-   * 那几路共用同一个 `pickGreetingEntry` 和 5 秒去重窗口）。
+   * 已被 `standbyKinds` 数组取代 —— **只在本字段缺席时**由 `resolveTriggerIntent` 读取：
+   * `true` ⇒ 往意向里追加 `'greet'`（取条方式由 `greetMode` 决定，与"回到壁纸"那一路
+   * 共用同一个 `pickGreetingEntry` 和 5 秒去重窗口）。
    * ⚠️ 旧口径下 `'chat'` **恒在**，所以本字段为 `false` **不会**把待机闲聊一起关掉。
    * **新配置请一律用 `standbyKinds`。**
    */
@@ -1177,11 +1226,7 @@ export type SubtitleConfig = {
    * ⚠️ **旧口径**（兼容输入）：待机到点是否也自动触发「触摸」（touch）事件。
    *
    * 已被 `standbyKinds` 数组取代 —— **只在本字段缺席时**读取：`true` ⇒ 追加 `'touch'`
-   * （池 = `touch` 数组，与**点击**同一口径）。
-   *
-   * ★ 2026-10-09 重修：改动前这一档是"`chat` + `touch` **合并成一个池**随机取一条"
-   *   （开了它 64004 就不再固定播放）；现在 `chat` 与 `touch` **各自成一类、各有各的池**
-   *   ⇒ "64004 到 64010 都可触发"改成**同时勾 `chat` 与 `touch`** 来表达。
+   * （池 = `touch` 数组）。
    * **新配置请一律用 `standbyKinds`。**
    */
   standbyTouchEnabled?: boolean;

@@ -63,6 +63,7 @@ npm run build      # emits dist/bundle.js
 leaves it empty and the build **fails**. Always verify the submodule is present before building.
 
 Notes:
+
 - `dist/` and `public/assets/*` are gitignored by design. `dist/bundle.js` is a build artifact.
 - `npm run format` runs Prettier over the tree; `ts-loader` + webpack handle TS compilation.
 
@@ -79,15 +80,31 @@ rebuild — copy `config.example.json` to `config.json`, edit, reload.
   "touch": [64005, 64006, 64007],   // any hit-zone click
   "greetMode": "time",              // "time" (by clock) | "random"
   "touchFeedbackMode": "immediate", // legacy | immediate | queue | none
-  "standbyKinds": ["chat"]          // what may fire after a long idle: chat | greet | touch (multi-select)
+  "standbyKinds": ["chat"],         // what may fire after a long idle: chat | greet | touch
+  "touchKinds": ["touch"],          // what a hit-zone click may fire: chat | greet | touch
+  "resumeKinds": ["greet"]          // what the four auto signals may fire (startup/visible/focus/resume)
 }
 ```
 
-`standbyKinds` is **required reading** for idle behaviour: a long idle fires nothing unless the
-relevant kind is listed, and each kind draws from **its own pool** (`chat` → the `chat` array,
-`greet` → the `greet` pool, `touch` → the same pool a click uses). It **defaults to `["chat"]`**
-when omitted, so the classic "configure `chat`/`standby`, get idle chatter" behaviour keeps
-working; an empty array disables idle auto-play entirely.
+The three `*Kinds` fields are **structurally identical multi-selects**, one per trigger channel,
+with **deliberately different defaults** so that upgrading changes nothing:
+
+| Field          | Channel     | Trigger                                                     | Default     |
+| -------------- | ----------- | ----------------------------------------------------------- | ----------- |
+| `resumeKinds`  | `'resume'`  | startup delay / page visible / focus gain / WE pause-resume | `["greet"]` |
+| `touchKinds`   | `'touch'`   | any hit-zone click (user action)                            | `["touch"]` |
+| `standbyKinds` | `'standby'` | idle longer than `standbyIdleMs`                            | `["chat"]`  |
+
+`*Kinds` is **required reading** for event scheduling. Each kind draws from **its own pool**
+(`chat` → the `chat` array, `greet` → the `greet` pool, `touch` → the `touch` array). When more
+than one kind is enabled the pools are **merged into one pool** and picked uniformly
+(`dialogue.mergeKindPools`), so classes are weighted by entry count. An empty array disables that
+entry point. Sole exception: a channel with **only `greet` enabled** goes through
+`pickGreetingEntry` so that `greetMode` (by clock / random) keeps working.
+
+The old boolean `greetInTouchPool` was **removed**; "clicks may also trigger greetings" is now
+`touchKinds: ["touch", "greet"]`. The legacy booleans `standbyGreetEnabled` /
+`standbyTouchEnabled` are still read but only affect the `standby` channel.
 
 Every entry is an `actionId` from `subtitle.dialogues`. To add a candidate, append a number
 to the relevant array — no code change required.

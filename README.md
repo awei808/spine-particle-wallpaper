@@ -50,15 +50,17 @@ What the character says, and when, is entirely driven by the `subtitle` block of
   "touch": [64005, 64006, 64007, 64008, 64009, 64010],
   "greetMode": "time",
   "touchFeedbackMode": "immediate",
-  "standbyKinds": ["chat"]
+  "standbyKinds": ["chat"],
+  "touchKinds": ["touch"],
+  "resumeKinds": ["greet"]
 }
 ```
 
-| List                  | When it fires                                                                                                   | Which line is picked                                                                                            |
-| --------------------- | --------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `greet` (greetings)   | startup / back to desktop / window regains focus / WE resume / (optional) idle timeout                          | `greetMode`: `"time"` picks entry #1/#2/#3 by system clock (morning/noon/evening); `"random"` ignores the clock |
-| `chat` (idle chatter) | long inactivity (idle longer than `standbyIdleMs`) **and** `chat` enabled in `standbyKinds` (**on by default**) | random from the `chat` list                                                                                     |
-| `touch`               | any hit zone is clicked (or `touch` enabled in `standbyKinds` for idle)                                         | random from the `touch` pool                                                                                    |
+| List                  | When it fires                                                          | Which line is picked                                                                                            |
+| --------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `greet` (greetings)   | any of the three channels with `greet` enabled (resume **by default**) | `greetMode`: `"time"` picks entry #1/#2/#3 by system clock (morning/noon/evening); `"random"` ignores the clock |
+| `chat` (idle chatter) | any of the three channels with `chat` enabled (idle **by default**)    | random from the `chat` list                                                                                     |
+| `touch`               | any of the three channels with `touch` enabled (click **by default**)  | random from the `touch` pool                                                                                    |
 
 Every entry is an `actionId` from `subtitle.dialogues` — **add a candidate by adding a number**
 (e.g. `"greet": [64001, 64002, 64003, 64004]`).
@@ -71,17 +73,31 @@ Two behaviour switches are also exposed on the built-in settings panel (Actions 
   **`queue`** (after the current one finishes) / **`none`** (no feedback at all).
 - `greetMode` — how a greeting is chosen: **`time`** (default, by system clock) / **`random`**.
 
-`standbyKinds` decides **what may fire after a long idle** — a multi-select of
-`"chat"` / `"greet"` / `"touch"`, **defaulting to `["chat"]`** so that the classic idle chatter
-keeps working out of the box. Each kind draws from **its own pool**; an empty array turns idle
-auto-play off completely. Editable on the settings panel (Actions tab → _Events triggerable after
-a long idle_).
+### The three `*Kinds` multi-selects
+
+Four trigger channels exist, and the Actions tab exposes **three structurally identical**
+multi-selects, one per automatic/click entry point. All three offer the same options
+(`"chat"` / `"greet"` / `"touch"`, shown as chat 类 / greet 类 / touch 类) but **different defaults**:
+
+| Setting                       | Field          | When it fires                                      | Default     |
+| ----------------------------- | -------------- | -------------------------------------------------- | ----------- |
+| Events triggerable by touch   | `touchKinds`   | any hit zone is clicked                            | `["touch"]` |
+| Events triggerable on return  | `resumeKinds`  | startup / back to desktop / focus gain / WE resume | `["greet"]` |
+| Events triggerable after idle | `standbyKinds` | idle longer than `standbyIdleMs`                   | `["chat"]`  |
+
+The three defaults were chosen so that **upgrading changes nothing**. When more than one kind is
+selected, the kinds' pools are **merged into one pool** and picked from uniformly (every entry
+equally likely, so classes are weighted by their entry count); an empty array disables that entry
+point completely. Sole exception: a channel with **only `greet` selected** still uses `greetMode`
+(by clock / random), otherwise time-of-day greetings would silently break.
 
 > The legacy `greeting` (slot → actionId map), `standby` (single actionId) and the two booleans
-> `standbyGreetEnabled` / `standbyTouchEnabled` are still read for backwards compatibility;
-> new configs should just use the three arrays above plus `standbyKinds`.
-> An **empty** `greet` / `chat` array counts as _not configured_ and falls back to the legacy
-> field (it will not silently disable the whole event class).
+> `standbyGreetEnabled` / `standbyTouchEnabled` are still read for backwards compatibility
+> (the booleans only affect the idle channel); new configs should just use the three arrays above
+> plus the three `*Kinds`. An **empty** `greet` / `chat` array counts as _not configured_ and
+> falls back to the legacy field (it will not silently disable the whole event class).
+> The old boolean `greetInTouchPool` (panel: "touch 触发 greet 事件") has been **removed** — its
+> meaning is now expressed by enabling `greet` on the touch channel.
 
 ## Quick start
 

@@ -29,10 +29,10 @@
  * ## ★★ 表格由**运行时 config 现算**，不是写死文案
  *
  * 传进来的 `config` 是**已合并 localStorage 覆盖层**的生效值 ⇒ 用户改了
- * 「待机时长」「touch触发greet事件」之后，表里立刻是改后的数字/池子大小。
- * 池子的构造直接复用运行时同一批纯函数（`dialogue.ts` 的
- * `resolveTouchIds` / `buildPool` / `findByActionId`），**不另写一套判据** ——
- * 否则文档与行为会慢慢漂移（这正是"新增冗余"最容易出事的地方）。
+ * 「待机时长」「三个通道各能触发哪几类」之后，表里立刻是改后的数字/池子大小。
+ * 池子的构造与类别解析直接复用运行时同一批纯函数（`dialogue.ts` 的
+ * `resolveTriggerKinds` / `mergeKindPools` / `buildPool` / `findByActionId`），
+ * **不另写一套判据** —— 否则文档与行为会慢慢漂移（这正是"新增冗余"最容易出事的地方）。
  *
  * ## ★ 显示与否只由 WE 属性 `showArchive` 决定（用户 2026-09-30 拍板）
  *
@@ -64,18 +64,25 @@
  * 也不能盖住免责弹窗（法务声明优先级更高）。
  */
 
-import { Configs, DialogueEntry, DialogueSlotKey } from './config.type';
+import {
+  Configs,
+  DialogueEntry,
+  DialogueSlotKey,
+  TriggerChannel,
+  TriggerEventKind,
+} from './config.type';
 import {
   DEFAULT_TIME_RANGES,
   SLOT_ORDER,
+  TRIGGER_KIND_ORDER,
   buildPool,
   findByActionId,
-  hasGreetIds,
+  mergeKindPools,
   normalizeGreetIds,
   resolveChatIds,
   resolveGreetSource,
-  resolveStandbyKinds,
   resolveTouchIds,
+  resolveTriggerKinds,
 } from './dialogue';
 import { UI_SCALE_VAR, fpx, getUiScale, initUiScale, uiPx } from './uiScale';
 
@@ -209,169 +216,239 @@ const makeRow = (event: string, cond: string, e: DialogueEntry): Row => {
 };
 
 /**
- * 按**生效配置**算出事件表。
+ * 表格与细则**共用**的一份"当前生效口径"：三个池 + 三条事件列表 + 每个通道的勾选结果。
  *
- * 顺序刻意与"运行时可能发生的先后"无关，而与「触发入口」分组：
- * 问候（自动）→ 待机（自动）→ 点击（交互）→ 常驻序列（若启用）→ BGM（环境）。
+ * ★ 只算一次、两处共用（`buildRows` / `buildNotes`）—— 早先两处各算一遍，
+ *   改动通道口径时极易只改一处 ⇒ 表格与细则互相打架。
  */
-const buildRows = (cfg: Configs): Row[] => {
+type ArchiveState = {
+  dialogues: DialogueEntry[];
+  /** 三张 id 列表（摊平旧口径之后） */
+  chatIds: number[];
+  greetIds: number[];
+  touchIds: number[];
+  /** 三个类别各自的条目池（`buildPool` 的产物） */
+  pools: Record<TriggerEventKind, DialogueEntry[]>;
+  /** 三个通道**真正会播**哪些类别（口径 + 可用性，= 运行时同一判据） */
+  channels: Record<TriggerChannel, TriggerEventKind[]>;
+  greetMode: 'time' | 'random';
+};
+
+const resolveState = (cfg: Configs): ArchiveState => {
   const sub = cfg.subtitle;
   const dialogues: DialogueEntry[] = sub?.dialogues ?? [];
-  const rows: Row[] = [];
-
-  /**
-   * ① 问候 —— ★ 2026-10-08 起按**数组**列举（`subtitle.greet`；旧时段表 `greeting` 自动兼容）。
-   *
-   * `greetMode==='time'`：第 1/2/3 条分别对应清晨/中午/傍晚（`GreetMode` 注释里的对位约定），
-   * 再往后的条**按时取不到** ⇒ 单独标成"追加候选"，让用户一眼看出它们只参与随机。
-   */
   // ★ 「新数组优先、空数组退回旧时段表」的口径集中在 `dialogue.resolveGreetSource` ——
   //   这里不另写 `??`（`??` 对空数组不回退 ⇒ 会把整类问候静默关掉）
   const greetSource = resolveGreetSource(sub?.greet, sub?.greeting);
+  const chatIds = resolveChatIds(sub?.chat, sub?.standby);
   const greetIds = normalizeGreetIds(greetSource);
-  const greetMode = sub?.greetMode === 'random' ? '随机' : '按时段';
-  greetIds.forEach((id, i) => {
-    const e = findByActionId(dialogues, id);
-    if (!e) {
-      return;
-    }
-    const seat = '#' + (i + 1) + '/' + greetIds.length;
-    if (greetMode === '随机') {
-      rows.push(
-        makeRow('问候 · 随机 ' + seat, '问候时机 · 整个 greet 列表随机', e)
-      );
-      return;
-    }
-    if (i < SLOT_ORDER.length) {
-      const slot = SLOT_ORDER[i];
-      const r = sub?.greetingRanges?.[slot] ?? DEFAULT_TIME_RANGES[slot];
-      rows.push(
-        makeRow(
-          '问候 · ' + SLOT_LABEL[slot],
-          hourRangeText(r.start, r.end) + ' ＋ 问候时机',
-          e
-        )
-      );
-      return;
-    }
-    rows.push(
-      makeRow(
-        '问候 · 追加 ' + seat,
-        'greet 列表第 ' +
-          (i + 1) +
-          ' 条 · 按时模式下没有对应时段，仅随机模式能抽到',
-        e
-      )
-    );
-  });
+  const touchIds = resolveTouchIds(sub?.touch);
+  const pools: Record<TriggerEventKind, DialogueEntry[]> = {
+    chat: buildPool(dialogues, chatIds),
+    greet: buildPool(dialogues, greetIds),
+    touch: buildPool(dialogues, touchIds),
+  };
+  const has = (k: TriggerEventKind): boolean => pools[k].length > 0;
+  return {
+    dialogues,
+    chatIds,
+    greetIds,
+    touchIds,
+    pools,
+    channels: {
+      // ★ 与 `index.ts` 完全同一组入参 —— 表里显示的"会播哪几类"不可能与实际行为不同
+      standby: resolveTriggerKinds(
+        'standby',
+        sub?.standbyKinds,
+        sub?.standbyGreetEnabled,
+        sub?.standbyTouchEnabled,
+        has('chat'),
+        has('greet'),
+        has('touch')
+      ),
+      touch: resolveTriggerKinds(
+        'touch',
+        sub?.touchKinds,
+        undefined,
+        undefined,
+        has('chat'),
+        has('greet'),
+        has('touch')
+      ),
+      resume: resolveTriggerKinds(
+        'resume',
+        sub?.resumeKinds,
+        undefined,
+        undefined,
+        has('chat'),
+        has('greet'),
+        has('touch')
+      ),
+    },
+    greetMode: sub?.greetMode === 'random' ? 'random' : 'time',
+  };
+};
 
-  /* ② 待机自动触发 —— 到点后从**勾选的类别**里随机挑一类，再在该类自己的池里取一条 */
+/** 类别名（人话）—— 表格与细则共用 */
+const KIND_TEXT: Record<TriggerEventKind, string> = {
+  chat: 'chat类',
+  greet: 'greet类',
+  touch: 'touch类',
+};
+
+/** 一个条目属于哪一类（`mergeKindPools` 的收录顺序 = `TRIGGER_KIND_ORDER`，与这里一致） */
+const kindOfEntry = (
+  e: DialogueEntry,
+  kinds: readonly TriggerEventKind[],
+  pools: Record<TriggerEventKind, DialogueEntry[]>
+): TriggerEventKind => {
+  for (let i = 0; i < TRIGGER_KIND_ORDER.length; i++) {
+    const k = TRIGGER_KIND_ORDER[i];
+    if (kinds.indexOf(k) >= 0 && pools[k].indexOf(e) >= 0) {
+      return k;
+    }
+  }
+  return 'touch';
+};
+
+/** 按**生效配置**算出事件表。
+ *
+ * 顺序 = 「触发入口」分组，与运行时可能发生的先后无关：
+ * 回到壁纸（自动）→ 待机（自动）→ 点击触摸（交互）→ 常驻序列（若启用）→ BGM（环境）。
+ */
+const buildRows = (cfg: Configs, st: ArchiveState): Row[] => {
+  const sub = cfg.subtitle;
+  const dialogues = st.dialogues;
+  const rows: Row[] = [];
+  const greetModeText = st.greetMode === 'random' ? '随机' : '按时段';
+
+  /**
+   * ★ 待机与「回到壁纸」共用同一套排版：勾中的类别**逐类列举**，
+   *   每条都把"闸门 + 取条方式"写清楚 —— 表格本身就是用户对照行为的唯一入口。
+   */
   const standbySec = Math.max(
     0,
     Math.round((sub?.standbyIdleMs ?? 25000) / 1000)
   );
-  /**
-   * ★ 池与判据都复用**运行时同一套**纯函数（`resolveChatIds` / `resolveTouchIds` +
-   *   `buildPool` + `resolveStandbyKinds`），不在这里另写 if —— 否则表与行为会随配置漂移。
-   * ★★ 2026-10-09：`chat` 与 `touch` **各自成类、各有各的池**（改动前是并成一个大池随机）。
-   */
-  const standbyChatPool = buildPool(
-    dialogues,
-    resolveChatIds(sub?.chat, sub?.standby)
-  );
-  const standbyTouchPool = buildPool(
-    dialogues,
-    resolveTouchIds(sub?.touch, greetSource, sub?.greetInTouchPool)
-  );
-  const standbyKinds = resolveStandbyKinds(
-    sub?.standbyKinds,
-    sub?.standbyGreetEnabled,
-    sub?.standbyTouchEnabled,
-    standbyChatPool.length > 0,
-    hasGreetIds(greetSource),
-    standbyTouchPool.length > 0
-  );
-  if (standbyKinds.length) {
-    const gate = '无操作静置 ' + fmtSec(standbySec);
-    // ★ 勾了多类 ⇒ **先随机挑一类**（各 1/N），再在类内随机 —— 不再是"并成一个大池"
-    const pick = standbyKinds.length > 1 ? ' · 随机挑一类' : '';
-    /**
-     * 闲聊（`chat` 池）：逐条占行。池通常只有 1 条（S9 = 64004 休闲待机），列出来最直观。
-     * ★ 这是**原有 chat 事件**那一类 —— 缺省就勾着（详见 `StandbyEventKind` 的注释）。
-     */
-    if (standbyKinds.indexOf('chat') >= 0) {
-      const chatIds = resolveChatIds(sub?.chat, sub?.standby);
-      chatIds.forEach((id, i) => {
-        const e = findByActionId(dialogues, id);
-        if (!e) {
-          return;
-        }
+  const GATE: Record<TriggerChannel, string> = {
+    resume: '壁纸载入 / 回到桌面 / 回到前台 / WE 恢复（离开 ≥ 15 秒）',
+    standby: '无操作静置 ' + fmtSec(standbySec),
+    touch: '点击角色热区',
+  };
+
+  const pushChannel = (
+    kind: TriggerChannel,
+    /** 事件名列的前缀，如「回到壁纸」 */
+    prefix: string
+  ) => {
+    const kinds = st.channels[kind];
+    if (!kinds.length) {
+      return;
+    }
+    const mergedPool = mergeKindPools(kinds, st.pools);
+    /** 勾了多类 ⇒ 并成一个大池随机（池内每条等概率，类别之间按条目数加权） */
+    const tail =
+      kinds.length > 1
+        ? ' · 并池随机（共 ' + mergedPool.length + ' 条，按条目数加权）'
+        : ' · 池内随机 1 条';
+    kinds.forEach((k) => {
+      if (k === 'chat') {
+        st.chatIds.forEach((id, i) => {
+          const e = findByActionId(dialogues, id);
+          if (!e) {
+            return;
+          }
+          rows.push(
+            makeRow(
+              prefix + ' · chat类 #' + (i + 1),
+              GATE[kind] +
+                tail +
+                '（chat 池共 ' +
+                st.pools.chat.length +
+                ' 条）',
+              e
+            )
+          );
+        });
+        return;
+      }
+      if (k === 'greet') {
+        /**
+         * ★ 只勾 `greet` 一类时走 `pickGreetingEntry` ⇒ 取条方式由「问候触发方式」决定；
+         *   与别的类并池时它只是池里的一条候选（不再看时间）——两种情况都在条件列里写明。
+         */
+        const only = kinds.length === 1;
+        st.greetIds.forEach((id, i) => {
+          const e = findByActionId(dialogues, id);
+          if (!e) {
+            return;
+          }
+          const seat = '#' + (i + 1) + '/' + st.greetIds.length;
+          const name = !only
+            ? 'greet类 · 池内候选 ' + seat
+            : greetModeText === '随机'
+            ? 'greet类 · 随机 ' + seat
+            : i < SLOT_ORDER.length
+            ? 'greet类 · ' + SLOT_LABEL[SLOT_ORDER[i]]
+            : 'greet类 · 追加 ' + seat;
+          const slot = SLOT_ORDER[i];
+          const range = slot
+            ? sub?.greetingRanges?.[slot] ?? DEFAULT_TIME_RANGES[slot]
+            : null;
+          const cond =
+            GATE[kind] +
+            (only
+              ? ' · ' +
+                greetModeText +
+                (only && greetModeText === '按时段' && range
+                  ? '（' + hourRangeText(range.start, range.end) + '）'
+                  : '')
+              : tail);
+          rows.push(makeRow(prefix + ' · ' + name, cond, e));
+        });
+        return;
+      }
+      // touch：整个池只占 1 行（用池的首条当代表）—— 逐条列会让表里出现两遍同样的念白
+      if (st.pools.touch.length) {
         rows.push(
           makeRow(
-            '待机闲聊 #' + (i + 1),
-            gate +
-              pick +
-              ' · 池内随机 1 条（共 ' +
-              standbyChatPool.length +
-              ' 条：闲聊）',
-            e
+            prefix + ' · touch类（池内随机）',
+            GATE[kind] +
+              tail +
+              '（touch 池共 ' +
+              st.pools.touch.length +
+              ' 条，与「点击触摸」同一批候选）',
+            st.pools.touch[0]
           )
         );
-      });
-    }
-    /* 问候：仅当勾了「问候」才占行（与上面 ① 同一批条目） */
-    if (standbyKinds.indexOf('greet') >= 0) {
-      greetIds.forEach((id, i) => {
-        const e = findByActionId(dialogues, id);
-        if (!e) {
-          return;
-        }
-        const seat = '#' + (i + 1) + '/' + greetIds.length;
-        const name =
-          greetMode === '随机'
-            ? '待机问候 · 随机 ' + seat
-            : i < SLOT_ORDER.length
-            ? '待机问候 · ' + SLOT_LABEL[SLOT_ORDER[i]]
-            : '待机问候 · 追加 ' + seat;
-        rows.push(makeRow(name, gate + pick + ' · ' + greetMode, e));
-      });
-    }
-    /**
-     * 触摸：整个池**只占 1 行**（用池的首条当代表）。
-     *
-     * ★ 池里那几条**就是下面 ③「点击触摸」那几行** —— 逐条再列一遍会让表里出现两遍
-     *   同样的念白、行数也会顶穿一屏。真实池子的大小写在「触发条件」列里，
-     *   一眼能看出"静置到点会从这 N 条里随机"。
-     */
-    if (standbyKinds.indexOf('touch') >= 0 && standbyTouchPool.length > 0) {
-      rows.push(
-        makeRow(
-          '待机触摸（池内随机）',
-          gate +
-            pick +
-            ' · 与「点击触摸」同一个池（共 ' +
-            standbyTouchPool.length +
-            ' 条）',
-          standbyTouchPool[0]
-        )
-      );
-    }
-  }
+      }
+    });
+  };
 
-  /* ③ 点击触摸 —— 池子用运行时同一套纯函数现算 */
-  const pool = buildPool(
-    dialogues,
-    resolveTouchIds(sub?.touch, greetSource, sub?.greetInTouchPool)
-  );
-  const touchCount = (sub?.touch ?? []).length;
-  pool.forEach((e, i) => {
-    const seat =
-      '池 #' +
-      (i + 1) +
-      '/' +
-      pool.length +
-      (sub?.greetInTouchPool === true && i >= touchCount ? '（问候并入）' : '');
-    rows.push(makeRow('点击触摸 #' + (i + 1), '点击角色热区 · ' + seat, e));
+  /* ① 回到壁纸（自动）—— 载入 / 回到桌面 / 回到前台 / WE 暂停恢复 */
+  pushChannel('resume', '回到壁纸');
+
+  /* ② 待机（自动）—— 静置到点 */
+  pushChannel('standby', '待机');
+
+  /* ③ 点击触摸 —— 池 = 「触摸可触发的事件」勾中的类别并池 */
+  const touchKinds = st.channels.touch;
+  const touchPool = mergeKindPools(touchKinds, st.pools);
+  touchPool.forEach((e, i) => {
+    const kind = kindOfEntry(e, touchKinds, st.pools);
+    rows.push(
+      makeRow(
+        '点击触摸 #' + (i + 1),
+        '点击角色热区 · 池 #' +
+          (i + 1) +
+          '/' +
+          touchPool.length +
+          '（' +
+          KIND_TEXT[kind] +
+          '）',
+        e
+      )
+    );
   });
 
   /* ④ 常驻动作序列（仅启用时列出；否则不占行） */
@@ -428,9 +505,39 @@ const buildRows = (cfg: Configs): Row[] => {
 };
 
 /**
+ * 描述某个通道「当前会播什么」—— 细则里的一句话。
+ *
+ * 与表格同源（都用 `st.channels` 与 `st.pools`），不另写判据。
+ */
+const describeChannel = (st: ArchiveState, kind: TriggerChannel): string => {
+  const kinds = st.channels[kind];
+  if (!kinds.length) {
+    return '一类都没勾（或勾了的类别没有候选）—— 这个入口不会自动播任何东西';
+  }
+  if (kinds.length === 1 && kinds[0] === 'greet') {
+    return st.greetMode === 'random'
+      ? '从 greet 列表里随机取 1 条（不看时间）'
+      : '按当前时刻取 greet 列表里对应序号那条（第 1 条=清晨、第 2 条=中午、第 3 条=傍晚）';
+  }
+  const pool = mergeKindPools(kinds, st.pools);
+  const parts = kinds.map(
+    (k) => KIND_TEXT[k] + ' ' + st.pools[k].length + ' 条'
+  );
+  return (
+    '把「' +
+    kinds.map((k) => KIND_TEXT[k]).join('、') +
+    '」并成一个大池（' +
+    parts.join(' + ') +
+    ' = 共 ' +
+    pool.length +
+    ' 条）随机取 1 条'
+  );
+};
+
+/**
  * 表格下方的「细则」——那些**跨行共享**的闸门，逐行重复写在表格里会淹掉信息。
  */
-const buildNotes = (cfg: Configs): string[] => {
+const buildNotes = (cfg: Configs, st: ArchiveState): string[] => {
   const sub = cfg.subtitle;
   const notes: string[] = [];
   const delaySec = Math.max(
@@ -441,72 +548,34 @@ const buildNotes = (cfg: Configs): string[] => {
     0,
     Math.round((sub?.standbyIdleMs ?? 25000) / 1000)
   );
-  /**
-   * ★ 与 `buildRows` 用**同一个**判据函数（`dialogue.resolveStandbyKinds`）现算，
-   *   不在这里另写一套 if —— 否则表格与细则会随配置漂移。
-   * ⚠️ `buildNotes` 里没有 `dialogues` 局部量（那是 `buildRows` 的），故直接取 `sub?.dialogues`。
-   */
-  // ★ 「新数组优先、空数组退回旧时段表」的口径集中在 `dialogue.resolveGreetSource` ——
-  //   这里不另写 `??`（`??` 对空数组不回退 ⇒ 会把整类问候静默关掉）
-  const greetSource = resolveGreetSource(sub?.greet, sub?.greeting);
-  const standbyChatPool = buildPool(
-    sub?.dialogues ?? [],
-    resolveChatIds(sub?.chat, sub?.standby)
-  );
-  const standbyTouchPool = buildPool(
-    sub?.dialogues ?? [],
-    resolveTouchIds(sub?.touch, greetSource, sub?.greetInTouchPool)
-  );
-  const standbyKinds = resolveStandbyKinds(
-    sub?.standbyKinds,
-    sub?.standbyGreetEnabled,
-    sub?.standbyTouchEnabled,
-    standbyChatPool.length > 0,
-    hasGreetIds(greetSource),
-    standbyTouchPool.length > 0
-  );
-  const which =
-    standbyKinds.length > 1
-      ? '从勾选的那几类里随机挑一类，再取一条'
-      : standbyKinds[0] === 'greet'
-      ? '播一条按「问候取条方式」取的问候'
-      : standbyKinds[0] === 'touch'
-      ? '从「点击触摸」那个池的 ' + standbyTouchPool.length + ' 条里随机播一条'
-      : '从「闲聊」池的 ' + standbyChatPool.length + ' 条里随机播一条';
 
-  /** 问候的取条方式（与表格同名列保持同一套判据） */
-  const greetTake =
-    sub?.greetMode === 'random'
-      ? '从 greet 列表里随机取 1 条（不看时间）'
-      : '按当前时刻取 greet 列表里对应序号那条（第 1 条=清晨、第 2 条=中午、第 3 条=傍晚）';
   notes.push(
-    '「问候时机」= 下列任一：① 壁纸载入后 ' +
+    '「回到壁纸可触发的事件」管辖四个时机：① 壁纸载入后 ' +
       delaySec +
       ' 秒；② 页面重新变为可见；③ 窗口重新获得焦点；④ Wallpaper Engine 暂停后恢复' +
-      '（恢复这一路还要求离开不少于 15 秒，切一下窗口马上回来不会触发）' +
-      (standbyKinds.indexOf('greet') >= 0 ? '；⑤ 待机静置到点' : '') +
-      '。取哪一条：' +
-      greetTake +
-      '；列表本身写在 config.json 的 subtitle.greet 里。' +
-      '相邻两次问候至少间隔 5 秒；若此刻正在播触摸动作则跳过，等下一个信号。'
+      '（恢复这一路还要求离开不少于 15 秒，切一下窗口马上回来不会触发）。' +
+      '当前会播：' +
+      describeChannel(st, 'resume') +
+      '。相邻两次至少间隔 5 秒；若此刻正在播触摸动作则跳过，等下一个信号。' +
+      '（②③ 在桌面壁纸里通常收不到 —— 壁纸窗口始终"可见"，属尽力而为。）'
   );
   notes.push(
-    standbyKinds.length
-      ? '「待机自动触发」的计时从壁纸载入起算；只要有任何动作正在播放就重新起算，' +
-          '所以不会在演出中途插话。静置 ' +
-          fmtSec(standbySec) +
-          ' 秒后' +
-          which +
-          '（「动作」页的「长时间待机可触发的事件」多选决定播哪一类，三类共用同一个时长）。'
-      : '「待机自动触发」一类都没勾（或勾了的类别没有候选）—— 静置再久也不会自动说话。'
+    '「长时间待机可触发的事件」的计时从壁纸载入起算；只要有任何动作正在播放就重新起算，' +
+      '所以不会在演出中途插话。静置 ' +
+      fmtSec(standbySec) +
+      ' 秒后：' +
+      describeChannel(st, 'standby') +
+      '。'
   );
   notes.push(
-    '「点击触摸」= 点中任一热区后从池中随机取 1 条；池 = 配置里的 ' +
-      ((sub?.touch ?? []).length || 0) +
-      ' 条触碰念白' +
-      (sub?.greetInTouchPool === true
-        ? '，另并入整个 greet 列表（开关已打开）'
-        : '') +
+    '「点击触摸」= 点中任一热区后从池中随机取 1 条；池 = ' +
+      (st.channels.touch.length
+        ? '「触摸可触发的事件」勾中的类别并池，共 ' +
+          mergeKindPools(st.channels.touch, st.pools).length +
+          ' 条（配置里 touch 列表 ' +
+          st.touchIds.length +
+          ' 条）'
+        : '空（「触摸可触发的事件」一类都没勾，或勾了的类别没有候选）') +
       '。同一条念白对应的动画只有 5 个（greet / chat / touch1 / touch2 / touch3）——' +
       '多条念白共用同一个动作是骨架资源本身的情况。'
   );
@@ -531,7 +600,8 @@ const buildNotes = (cfg: Configs): string[] => {
   notes.push(
     '「播放动作时点击」当前是：' +
       feedbackText +
-      '（在「设置 → 动作」页改）。四档都不影响空闲时的点击 —— 空闲时点击一定立即播。'
+      '（在「设置 → 动作」页改）。四档都不影响空闲时的点击 —— 空闲时点击一定立即播。' +
+      '另外两个通道都是**自动触发**，一律不打断正在演的动作。'
   );
 
   return notes;
@@ -540,8 +610,10 @@ const buildNotes = (cfg: Configs): string[] => {
 export const createArchive = (options: ArchiveOptions): ArchivePanel => {
   let visible = options.visible === true;
   const cfg = options.config;
-  const rows = buildRows(cfg);
-  const notes = buildNotes(cfg);
+  // ★ 口径只算一次，表格与细则共用（见 `ArchiveState` 的注释）
+  const st = resolveState(cfg);
+  const rows = buildRows(cfg, st);
+  const notes = buildNotes(cfg, st);
 
   // ★ 先初始化 UI 缩放变量（幂等）：下面所有 px 都依赖它
   initUiScale();

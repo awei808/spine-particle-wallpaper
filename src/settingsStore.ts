@@ -50,13 +50,13 @@ import {
   Configs,
   FerrisWheelConfig,
   GreetMode,
-  StandbyEventKind,
+  TriggerEventKind,
   TouchFeedbackMode,
 } from './config.type';
 // 只为读"探针当前生效值"的缺省（见 readView）——probe 不反向依赖本模块，无循环
 import { PROBE_OPTS } from './probe';
-// 摊平"新多选 / 旧两个布尔"的口径（纯函数，可单测）；dialogue 不反向依赖本模块，无循环
-import { resolveStandbyIntent } from './dialogue';
+// 摊平"新多选 / 待机通道的旧两个布尔"的口径（纯函数，可单测）；dialogue 不反向依赖本模块，无循环
+import { resolveTriggerIntent } from './dialogue';
 
 /** localStorage 键。带版本号，将来改结构时便于一次性弃用旧值 */
 export const SETTINGS_STORAGE_KEY = 'wb.swe.settings.v1';
@@ -102,13 +102,6 @@ export type SettingsOverrides = {
    */
   voiceVolume?: number;
   /**
-   * 是否把「问候」条目并入触摸池（对应 `config.subtitle.greetInTouchPool`）。
-   *
-   * 打开 ⇒ 点击热区也能随机到打招呼的语音/动作；缺省/关闭 = 只从 `subtitle.touch` 里随机。
-   * 改了要重载（触摸池是开机一次性构造的，见文件头"生效方式"）。
-   */
-  greetInTouchPool?: boolean;
-  /**
    * 全屏适配的**对齐基准**（对应 `config.fitAspect`，「画面调整」页）。
    *
    * - `'height'` = **按画幅高对齐**（缺省，2026-10-08 用户拍板）：
@@ -146,25 +139,44 @@ export type SettingsOverrides = {
    * 待机阈值：空闲多久触发一次「待机自动播放」（秒）。
    *
    * 对应 `config.subtitle.standbyIdleMs`（面板里暴露成秒更直观）。
-   * ★ 三类事件（`chat` / `greet` / `touch`）**共用**这一个阈值；
+   * ★ 待机通道勾中的那几类事件**共用**这一个阈值；
    *   到底播哪几类由下面的 `standbyKinds` 决定。
    * 改完需重载生效（气泡/轮询是开机一次性构造的，见文件头"生效方式"）。
    */
   standbyIdleSec?: number;
   /**
-   * **待机到点可触发的事件（多选）** —— 对应 `config.subtitle.standbyKinds`。
+   * **长时间待机可触发的事件（多选）** —— 对应 `config.subtitle.standbyKinds`。
    *
-   * `'chat'` / `'greet'` / `'touch'` 的子集；**缺省（不写本字段）= 只有 `'chat'`**
+   * `TriggerEventKind` 的子集；**缺省（不写本字段）= `['chat']`**
    * （还原"配了 `standby` 就一定会播"的老行为，修 2026-09-30「出厂什么也不播」的回归）。
-   * 语义与可用性判据见 `config.type.ts` 的 `StandbyEventKind`。
+   * 语义、并池口径与可用性判据见 `config.type.ts` 的 `TriggerEventKind`。
    */
-  standbyKinds?: StandbyEventKind[];
+  standbyKinds?: TriggerEventKind[];
+  /**
+   * **触摸可触发的事件（多选）** —— 对应 `config.subtitle.touchKinds`。
+   *
+   * `TriggerEventKind` 的子集；**缺省（不写本字段）= `['touch']`**
+   * （= 点击只从 `touch` 数组里随机，与改动前一致）。
+   *
+   * ★ 本字段**取代了被删掉的旧布尔 `greetInTouchPool`**（面板「touch触发greet事件」）——
+   *   它的语义现在由"勾上 greet 类"表达，而且顺带支持 chat 类。
+   *   改了要重载（触摸池是 `createTouchController` 开机一次性构造的）。
+   */
+  touchKinds?: TriggerEventKind[];
+  /**
+   * **回到壁纸可触发的事件（多选）** —— 对应 `config.subtitle.resumeKinds`。
+   *
+   * `TriggerEventKind` 的子集；**缺省（不写本字段）= `['greet']`**
+   * （= 载入后延迟 / 回到桌面 / 回到前台 / WE 暂停恢复这四个自动时机仍只播问候）。
+   * 改了要重载（自动信号是 `startAutoPlay` 时一次性挂上的）。
+   */
+  resumeKinds?: TriggerEventKind[];
   /**
    * ⚠️ **旧口径**（兼容输入）：待机到点是否也自动触发「问候」（greet）事件。
    * 对应 `config.subtitle.standbyGreetEnabled`。
    *
    * 已被 `standbyKinds` 取代 —— **只在 `standbyKinds` 缺席时**被 `readView` /
-   * `dialogue.resolveStandbyIntent` 读取（`true` ⇒ 意向里追加 `'greet'`）。
+   * `dialogue.resolveTriggerIntent` 读取（`true` ⇒ 意向里追加 `'greet'`）。
    * ⚠️ 旧口径下 `'chat'` 恒在，所以本字段为 `false` **不会**把待机闲聊一起关掉。
    */
   standbyGreetEnabled?: boolean;
@@ -173,8 +185,6 @@ export type SettingsOverrides = {
    * 对应 `config.subtitle.standbyTouchEnabled`。
    *
    * 已被 `standbyKinds` 取代 —— **只在其缺席时**读取（`true` ⇒ 追加 `'touch'`）。
-   * ★ 2026-10-09 重修：`chat` 与 `touch` 已分家、各有各的池 ⇒
-   *   "64004 到 64010 都可触发"改成同时勾 `chat` 与 `touch` 来表达。
    */
   standbyTouchEnabled?: boolean;
   /**
@@ -244,8 +254,6 @@ export type SettingsView = {
   voiceEnabled: boolean;
   /** 角色语音（念白 CV）音量 0~1。对应 `config.subtitle.audio.volume` */
   voiceVolume: number;
-  /** 是否把「问候」条目并入触摸池（对应 `config.subtitle.greetInTouchPool`） */
-  greetInTouchPool: boolean;
   /** 全屏适配的对齐基准：`height` = 按画幅高（缺省，同游戏取景）/ `width` = 按画幅宽 */
   fitAspect: 'width' | 'height';
   /** 摩天轮轿厢姿态角：`gravity` = 解包 −15°（随画面重力）/ `game` = 画布对齐 0° */
@@ -258,12 +266,24 @@ export type SettingsView = {
   /** 待机多久后触发一次「待机自动播放」（秒）。对应 config.subtitle.standbyIdleMs */
   standbyIdleSec: number;
   /**
-   * 待机到点可触发的事件（**多选**，固定顺序 `chat` → `greet` → `touch`）。
+   * 长时间待机可触发的事件（**多选**，固定顺序 `chat` → `greet` → `touch`）。
    *
-   * ⚠️ 这是**意向列表**（`dialogue.resolveStandbyIntent` 的产物），**不判可用性** ——
-   * 面板只管"该勾哪几个"，池空不空由 `resolveStandbyKinds` 在运行时判。
+   * ⚠️ 这是**意向列表**（`dialogue.resolveTriggerIntent` 的产物），**不判可用性** ——
+   * 面板只管"该勾哪几个"，池空不空由 `resolveTriggerKinds` 在运行时判。
    */
-  standbyKinds: StandbyEventKind[];
+  standbyKinds: TriggerEventKind[];
+  /**
+   * 触摸可触发的事件（**多选**）—— 点中任一热区时可能播的类别。
+   *
+   * ⚠️ 同样是**意向列表**，不判可用性；缺省 `['touch']`（= 只从 `touch` 池随机）。
+   */
+  touchKinds: TriggerEventKind[];
+  /**
+   * 回到壁纸可触发的事件（**多选**）—— 载入 / 回到桌面 / 回到前台 / WE 恢复时可能播的类别。
+   *
+   * ⚠️ 同样是**意向列表**，不判可用性；缺省 `['greet']`（= 只播问候）。
+   */
+  resumeKinds: TriggerEventKind[];
   /** 正在播动作时点击的处理方式（对应 `config.subtitle.touchFeedbackMode`；缺省 `legacy`） */
   touchFeedbackMode: TouchFeedbackMode;
   /** 问候事件的取条方式（对应 `config.subtitle.greetMode`） */
@@ -379,9 +399,10 @@ export const applyOverrides = (cfg: Configs, o: SettingsOverrides): Configs => {
     o.subtitleEnabled !== undefined ||
     o.voiceEnabled !== undefined ||
     o.voiceVolume !== undefined ||
-    o.greetInTouchPool !== undefined ||
     o.subtitlePosition !== undefined ||
     o.standbyKinds !== undefined ||
+    o.touchKinds !== undefined ||
+    o.resumeKinds !== undefined ||
     o.standbyGreetEnabled !== undefined ||
     o.standbyTouchEnabled !== undefined ||
     o.touchFeedbackMode !== undefined ||
@@ -417,16 +438,19 @@ export const applyOverrides = (cfg: Configs, o: SettingsOverrides): Configs => {
       };
       out.subtitle.audio.volume = o.voiceVolume;
     }
-    if (o.greetInTouchPool !== undefined) {
-      out.subtitle.greetInTouchPool = o.greetInTouchPool;
-    }
     /**
-     * ★★ 待机可触发的事件（多选）。**必须 slice** —— 与面板里 `draft.*` 的数组同源时，
-     *    不拷一份的话用户在面板里点 chips 会**就地改到"生效值"**上（同一个坑
+     * ★★ 三个通道的「可触发的事件」（多选）。**必须 slice** —— 与面板里 `draft.*` 的数组
+     *    同源时，不拷一份的话用户在面板里点 chips 会**就地改到"生效值"**上（同一个坑
      *    `idleSequenceItems` 注释里写过）。
      */
     if (o.standbyKinds !== undefined) {
       out.subtitle.standbyKinds = o.standbyKinds.slice();
+    }
+    if (o.touchKinds !== undefined) {
+      out.subtitle.touchKinds = o.touchKinds.slice();
+    }
+    if (o.resumeKinds !== undefined) {
+      out.subtitle.resumeKinds = o.resumeKinds.slice();
     }
     if (o.standbyGreetEnabled !== undefined) {
       out.subtitle.standbyGreetEnabled = o.standbyGreetEnabled;
@@ -581,7 +605,6 @@ export const readView = (cfg: Configs): SettingsView => ({
     typeof cfg.subtitle?.audio?.volume === 'number'
       ? cfg.subtitle.audio.volume
       : 1,
-  greetInTouchPool: cfg.subtitle?.greetInTouchPool === true,
   /**
    * ★ 缺省 `gravity`（= 沿用解包 `startRotation` 的 −15°），**不是** `game`。
    *   理由：本壁纸此前的观感就是解包值，改默认等于"升级后画面悄悄变了"；
@@ -612,21 +635,26 @@ export const readView = (cfg: Configs): SettingsView => ({
       ? Math.round(cfg.subtitle.standbyIdleMs / 1000)
       : 25,
   /**
-   * ★★ 待机可触发的事件（多选）。**摊平口径复用 `dialogue.resolveStandbyIntent`** ——
+   * ★★ 三个通道的「可触发的事件」（多选）。**摊平口径复用 `dialogue.resolveTriggerIntent`** ——
    *   面板显示的勾选态与运行时真正会播的类别不可能各写一套判据。
    *
-   * 判据顺序：**新字段 `standbyKinds` 优先**（给了数组就完全以它为准，空数组 = 全关）；
-   * 缺席时退回两个旧布尔 ⇒ `['chat']` 再追加各自的 `greet` / `touch`（旧 config 行为逐字不变）。
-   * 两样都没有 ⇒ `['chat']`（= 还原"配了 `standby` 就一定会播"的老行为）。
+   * 判据顺序（三个通道一致）：**新字段优先**（给了数组就完全以它为准，空数组 = 该通道全关）；
+   * 缺席时用该通道缺省（见 `CHANNEL_DEFAULT_KINDS`）。⚠️ 仅 `standby` 通道还会读两个旧布尔
+   * ⇒ `['chat']` 再追加各自的 `greet` / `touch`（旧 config 行为逐字不变）。
    *
-   * ⚠️ 这里**不判可用性**（池空不空）—— 那是 `resolveStandbyKinds` 在 `index.ts` 里的事，
-   *   本函数产出的只是"面板该勾哪几个"（见 `SettingsView.standbyKinds` 的注释）。
+   * ⚠️ 这里**不判可用性**（池空不空）—— 那是 `resolveTriggerKinds` 在 `index.ts` 里的事，
+   *   本函数产出的只是"面板该勾哪几个"（见 `SettingsView.*Kinds` 的注释）。
    */
-  standbyKinds: resolveStandbyIntent(
+  standbyKinds: resolveTriggerIntent(
+    'standby',
     cfg.subtitle?.standbyKinds,
     cfg.subtitle?.standbyGreetEnabled,
     cfg.subtitle?.standbyTouchEnabled
   ),
+  /** ★ 缺省 `['touch']`（= 点击只从 `touch` 池随机，与改动前一致） */
+  touchKinds: resolveTriggerIntent('touch', cfg.subtitle?.touchKinds),
+  /** ★ 缺省 `['greet']`（= 四个自动时机仍只播问候） */
+  resumeKinds: resolveTriggerIntent('resume', cfg.subtitle?.resumeKinds),
   /**
    * ★ 缺省 `'legacy'`（= 改动前的规则表，见 `TouchFeedbackMode` 注释）。
    *
@@ -881,8 +909,6 @@ export const sameView = (a: SettingsView, b: SettingsView): boolean => {
     a.subtitleAnchorU !== b.subtitleAnchorU ||
     a.subtitleAnchorV !== b.subtitleAnchorV ||
     a.voiceEnabled !== b.voiceEnabled ||
-    // ★ 问候是否入触摸池也要比：否则"只改了这一项"会被判成"没变化"而不重载
-    a.greetInTouchPool !== b.greetInTouchPool ||
     // ★ 对齐基准也要比：否则"只改了画面调整页的对齐方式"会被判成"没变化"而不重载
     a.fitAspect !== b.fitAspect ||
     // ★ 轿厢姿态也要比：否则"只改了画面调整页"会被判成"没变化"而不重载
@@ -922,18 +948,28 @@ export const sameView = (a: SettingsView, b: SettingsView): boolean => {
     }
   }
   /**
-   * ★★ 待机可触发的事件（多选）同理，**必须按内容比**：
-   * `readView` 每次都产出一个**新数组**（`resolveStandbyIntent` 的返回值），
+   * ★★ 三个通道的「可触发的事件」（多选）同理，**必须按内容比**：
+   * `readView` 每次都产出一个**新数组**（`resolveTriggerIntent` 的返回值），
    * 拿引用比必然不等 ⇒ 每次启动都被判成"有变化" ⇒ **白重载一次**
    * （正是本函数上面那段注释警告的坑）。
+   *
+   * ⚠️ 三个通道**逐个都要比** —— 漏掉任何一个 ⇒"只改了那一个通道的勾选"不重载（静默失效）。
+   *   共用一个 `sameKinds` 小工具，避免写三遍同样的循环时漏掉一个。
    */
-  if (a.standbyKinds.length !== b.standbyKinds.length) {
-    return false;
-  }
-  for (let i = 0; i < a.standbyKinds.length; i++) {
-    if (a.standbyKinds[i] !== b.standbyKinds[i]) {
+  const sameKinds = (x: TriggerEventKind[], y: TriggerEventKind[]): boolean => {
+    if (x.length !== y.length) {
       return false;
     }
-  }
-  return true;
+    for (let i = 0; i < x.length; i++) {
+      if (x[i] !== y[i]) {
+        return false;
+      }
+    }
+    return true;
+  };
+  return (
+    sameKinds(a.standbyKinds, b.standbyKinds) &&
+    sameKinds(a.touchKinds, b.touchKinds) &&
+    sameKinds(a.resumeKinds, b.resumeKinds)
+  );
 };
