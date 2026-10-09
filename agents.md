@@ -131,8 +131,10 @@ Other config knobs (meshes, layers, `minAspect` / `maxAspect`, `dpr: "auto"`, pa
    lock different quantities, so each one's *leak* is on the opposite side and the artwork, not the
    config, decides that side: `'width'` locks visible width to the base layer ⇒ **the lower bound is
    the artwork** (`base.bw/base.bh`, a smaller `minAspect` is ignored); `'height'` locks visible
-   height to `2·|base.z|·tan(fov/2)` ⇒ **the upper bound is the artwork** (widest texture layer ÷
-   that visible height, a larger `maxAspect` is ignored). Beyond those bounds the frame letterboxes
+   height to `2·|base.z|·tan(fov/2)` ⇒ **the upper bound is the artwork**
+   (`2 × min(cameraX→union-left, union-right→cameraX)` ÷ that visible height — the union of all
+   `texture`/`video` layer x-ranges, taking the **tighter side**, because the window is centred on
+   `cameraX` and the union is usually asymmetric; a larger `maxAspect` is ignored). Beyond those bounds the frame letterboxes
    and shows the red `__fitErr` bar — that path is the *only* supported failure mode; never let a
    baseline silently render clear-color black at the edges.
 4. **Config and bundle must be updated in pairs.** A `config.json` change that affects framing

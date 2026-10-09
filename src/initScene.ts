@@ -18,7 +18,7 @@
  */
 
 import THREE from 'three';
-import { Configs, TextureMeshConfig } from './config.type';
+import { Configs, TextureMeshConfig, VideoMeshConfig } from './config.type';
 
 export let scene: THREE.Scene = null;
 export let renderer: THREE.WebGLRenderer = null;
@@ -118,12 +118,15 @@ export const initScene = (configs: Configs) => {
     const fovDesign = configs.fov ?? 75;
 
     /**
-     * 扫一遍 texture 层，取两样素材事实（**闸门的两侧就由它们给出**，见下面的 `artMin/artMax`）：
+     * 扫一遍「带显式宽高的层」（`texture` / `video`，两者字段同构），取三样素材事实
+     * （**闸门的两侧就由它们给出**，见下面的 `artMinAspect` / `artMaxAspect`）：
      *
+     * - **x 覆盖并集** `[covL, covR]`：所有这类层的 x 区间并集。「按高」基准下能不能横向铺满，
+     *   判据是**整个并集**能否盖住可见窗口 —— ★ 不是"最宽那一层"，见 `artMaxAspect`。
      * - **z 最小的那层**（「最底层的铺满素材」）：它的**下边界 y** 是垂直锚点要钉住的位置，
      *   它的**宽高比** `bw/bh` = 素材下界（垂直方向把背景用满的极限）。
-     * - **最宽的 texture 层**：`wmax` = 素材上界（横向能把画面铺满的极限）。
-     *   ⚠️ 只统计 texture 层 —— **只有它带显式宽高**（spine 给的是 scale、particle 给的是贴图）。
+     * ⚠️ `spine` / `particle` **不参与**：它们没有显式宽高（spine 给 scale、particle 给贴图）；
+     *   base 仍只从 `texture` 里挑（保持既有行为，不含 video）。
      */
     const base = (() => {
       const meshes = configs.meshes || [];
@@ -131,24 +134,32 @@ export const initScene = (configs: Configs) => {
       let bottom = 0;
       let bw = 0;
       let bh = 0;
-      let wmax = 0;
+      let covL = Infinity;
+      let covR = -Infinity;
       for (let i = 0; i < meshes.length; i++) {
-        const m = meshes[i] as TextureMeshConfig;
-        if (!m || m.type !== 'texture' || !m.position) {
+        const m = meshes[i] as TextureMeshConfig | VideoMeshConfig;
+        if (!m || !m.position) {
+          continue;
+        }
+        if (m.type !== 'texture' && m.type !== 'video') {
           continue;
         }
         const w = (m.width || 1) * (m.scale || 1);
-        if (w > wmax) {
-          wmax = w;
+        const x = m.position.x;
+        if (x - w / 2 < covL) {
+          covL = x - w / 2;
         }
-        if (m.position.z < zMin) {
+        if (x + w / 2 > covR) {
+          covR = x + w / 2;
+        }
+        if (m.type === 'texture' && m.position.z < zMin) {
           zMin = m.position.z;
           bw = w;
           bh = (m.height || 1) * (m.scale || 1);
           bottom = m.position.y - bh / 2;
         }
       }
-      return { bottom, bw, bh, wmax, z: zMin };
+      return { bottom, bw, bh, covL, covR, z: zMin };
     })();
 
     /**
@@ -182,7 +193,7 @@ export const initScene = (configs: Configs) => {
      * | 基准 | 锁住 | 可见世界量 | 会露黑的一侧 | 素材给出的边界 |
      * |---|---|---|---|---|
      * | `'width'`  | 可见宽 ≡ `base.bw` | 可见高 = `base.bw / 视口比例` | 窗口**太高**（上下露黑） | 下界 `base.bw/base.bh` |
-     * | `'height'` | 可见高 ≡ `visibleH`  | 可见宽 = `visibleH × 视口比例` | 窗口**太宽**（左右露黑） | 上界 `wmax / visibleH` |
+     * | `'height'` | 可见高 ≡ `visibleH`  | 可见宽 = `visibleH × 视口比例` | 窗口**太宽**（左右露黑） | 上界 `2·min(相机→并集左, 相机→并集右) / visibleH` |
      *
      * ⇒ 「按宽」的横向永不露黑（可见宽恒等于素材宽），所以它**没有素材上界**；
      *   「按高」的纵向是常量，所以它**没有素材下界**。
@@ -200,11 +211,34 @@ export const initScene = (configs: Configs) => {
      */
     /** 「按高」基准下恒定的可见世界高（= 2·|base.z|·tan(fov_d/2)） */
     const visibleH = 2 * Math.abs(base.z) * tanHalfDesign;
+    /** 相机水平位置 —— 可见窗口是以它为**中心**的，所以覆盖必须"两侧分别"够长 */
+    const camX = configs.cameraX ?? 0;
     /** 素材下界：底层背景**垂直**铺满的极限（`'width'` 基准下才会被用满） */
     const artMinAspect = base.bh > 0 ? base.bw / base.bh : 1.54;
-    /** 素材上界：最宽贴图层**横向**铺满的极限（`'height'` 基准下才会被用满） */
+    /**
+     * 素材上界：**横向**铺满的极限（`'height'` 基准下才会被用满）
+     * = `min(相机→并集左边, 相机→并集右边) × 2 ÷ 可见世界高`。
+     *
+     * ★★ 为什么必须**两侧分别算、再取较紧的一侧**（2026-10-09 修正）：
+     *   可见窗口以 `cameraX` 为中心，而图层并集**通常不关于相机对称**
+     *   （S9 那套距相机 左 1959 / 右 2231）⇒ 「并集总跨度」和「最宽那一层」两种粗略算法都会**算松**
+     *   —— 露黑总是先从**较短的那一侧**开始，只有这一侧才能给出正确边界。
+     *
+     * 实测吻合（越界后露黑像素数，逐像素级）：
+     * | config | 该公式给的边界 | 实测 |
+     * |---|---|---|
+     * | 仓库 dev config（单层、相机居中）| **1.6450**（右侧紧：1767/2148.5×2）| @1.80 左 21 / 右 38 px、@2.30 左 146 / 右 163 px，**与预测逐像素相同** |
+     * | S9 `12_探针_去灰线`（12 层、相机 −33.96）| **2.2667**（左侧紧：1959/1728.9×2）| @2.35 左侧 19 px（预测 20.9）、右侧 0（预测 0）|
+     * ⚠️ 前提：并集最外侧那层在边缘处**不透明**（透明边会透出底色，而 config 里看不出来）。
+     */
+    const halfWToCover =
+      isFinite(base.covL) && isFinite(base.covR)
+        ? Math.min(camX - base.covL, base.covR - camX)
+        : Infinity;
     const artMaxAspect =
-      visibleH > 0 && base.wmax > 0 ? base.wmax / visibleH : Infinity;
+      visibleH > 0 && halfWToCover > 0
+        ? (2 * halfWToCover) / visibleH
+        : Infinity;
     /** 没有素材边界的另一侧，沿用这道人为闸门（老缺省） */
     const GATE_MAX_ASPECT = 2.4;
 
@@ -302,16 +336,24 @@ export const initScene = (configs: Configs) => {
        * ★ 两侧的来源不同 ⇒ 给的出口也必须不同（否则等于教用户去改一个改不动的值）：
        *   `'height'` 的上界来自素材（写宽了会被收回）；`'width'` 的下界来自素材（写松了会被收回）。
        */
+      /** 并集数字只在真的有层时才有意义（没层时 `covL/covR` 是 ±Infinity） */
+      const covText = isFinite(halfWToCover)
+        ? '（贴图层并集距相机 左 ' +
+          Math.round(camX - base.covL) +
+          ' / 右 ' +
+          Math.round(base.covR - camX) +
+          '，取较紧的一侧 ÷ 可见世界高 ' +
+          Math.round(visibleH) +
+          '）'
+        : '';
       const hint =
         fitAspect === 'height'
           ? ' 渲染（letterbox 居中留边）。\n' +
             '上界 ' +
             maxAspect.toFixed(4) +
-            ' 由素材给出（最宽贴图层 ' +
-            Math.round(base.wmax) +
-            ' ÷ 可见世界高 ' +
-            Math.round(visibleH) +
-            '）：把窗口调窄即可；\n' +
+            ' 由素材给出' +
+            covText +
+            '：把窗口调窄即可；\n' +
             '或调小 config.json 的 fov（可见世界高随之变小、上界变大），' +
             '亦可改用「按画幅宽对齐」（fitAspect: "width"）。'
           : ' 渲染（letterbox 居中留边）。\n' +
