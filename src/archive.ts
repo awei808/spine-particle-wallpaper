@@ -222,17 +222,22 @@ const buildRows = (cfg: Configs): Row[] => {
   /**
    * ① 问候 —— ★ 2026-10-08 起按**数组**列举（`subtitle.greet`；旧时段表 `greeting` 自动兼容）。
    *
-   * 第 1/2/3 条分别对应清晨/中午/傍晚（顺序即时段顺序），
-   * 再往后的条**按时取不到**（按时问候只有早/中/晚三个位子）⇒ 单独标成"追加候选"。
+   * `greetMode==='time'`：第 1/2/3 条分别对应清晨/中午/傍晚（`GreetMode` 注释里的对位约定），
+   * 再往后的条**按时取不到** ⇒ 单独标成"追加候选"，让用户一眼看出它们只参与随机。
    */
   const greetSource = sub?.greet ?? sub?.greeting;
   const greetIds = normalizeGreetIds(greetSource);
+  const greetMode = sub?.greetMode === 'random' ? '随机' : '按时段';
   greetIds.forEach((id, i) => {
     const e = findByActionId(dialogues, id);
     if (!e) {
       return;
     }
     const seat = '#' + (i + 1) + '/' + greetIds.length;
+    if (greetMode === '随机') {
+      rows.push(makeRow('问候 · 随机 ' + seat, '问候时机 · 整个 greet 列表随机', e));
+      return;
+    }
     if (i < SLOT_ORDER.length) {
       const slot = SLOT_ORDER[i];
       const r = sub?.greetingRanges?.[slot] ?? DEFAULT_TIME_RANGES[slot];
@@ -248,7 +253,7 @@ const buildRows = (cfg: Configs): Row[] => {
     rows.push(
       makeRow(
         '问候 · 追加 ' + seat,
-        'greet 列表第 ' + (i + 1) + ' 条 · 按时问候没有对应时段，不会被自动问候取到',
+        'greet 列表第 ' + (i + 1) + ' 条 · 按时模式下没有对应时段，仅随机模式能抽到',
         e
       )
     );
@@ -285,10 +290,12 @@ const buildRows = (cfg: Configs): Row[] => {
         }
         const seat = '#' + (i + 1) + '/' + greetIds.length;
         const name =
-          i < SLOT_ORDER.length
+          greetMode === '随机'
+            ? '待机问候 · 随机 ' + seat
+            : i < SLOT_ORDER.length
             ? '待机问候 · ' + SLOT_LABEL[SLOT_ORDER[i]]
             : '待机问候 · 追加 ' + seat;
-        rows.push(makeRow(name, gate + twoWay + ' · 按时段', e));
+        rows.push(makeRow(name, gate + twoWay + ' · ' + greetMode, e));
       });
     }
     /**
@@ -426,8 +433,11 @@ const buildNotes = (cfg: Configs): string[] => {
       ? '播一条按时段的问候'
       : '从「休闲待机 + 点击触摸」那 ' + standbyTouchPool.length + ' 条里随机播一条';
 
-  /** 问候的取条口径（与 `pickGreetingEntry` 保持一致） */
-  const greetTake = '按当前时刻取 greet 列表里对应序号那条（第 1 条=清晨、第 2 条=中午、第 3 条=傍晚）';
+  /** 问候的取条方式（与表格同名列保持同一套判据） */
+  const greetTake =
+    sub?.greetMode === 'random'
+      ? '从 greet 列表里随机取 1 条（不看时间）'
+      : '按当前时刻取 greet 列表里对应序号那条（第 1 条=清晨、第 2 条=中午、第 3 条=傍晚）';
   notes.push(
     '「问候时机」= 下列任一：① 壁纸载入后 ' +
       delaySec +
@@ -464,6 +474,21 @@ const buildNotes = (cfg: Configs): string[] => {
   );
   notes.push(
     '触摸的动作与语音有「叠加 / 排队」两种模式；若启用了常驻动作序列，触摸会排到序列之后。'
+  );
+  /**
+   * ★ 播放动作期间点击怎么处理（2026-10-08 新增）—— 表格里每一行都受它影响，
+   *   写成一行细则比逐行重复更清楚。
+   */
+  const feedbackText =
+    sub?.touchFeedbackMode === 'queue'
+      ? '排进播放队列：等当前这条演完自动接上（响应有延迟，但动作都演得完整）'
+      : sub?.touchFeedbackMode === 'none'
+      ? '不做任何反馈：演出期间点击不产生任何动作或台词'
+      : '立即播放新动作：打断当前这条，立刻播新的（默认，最跟手）';
+  notes.push(
+    '「播放动作时点击」当前是：' +
+      feedbackText +
+      '（在「设置 → 动作」页改）。三档都不影响空闲时的点击 —— 空闲时点击一定立即播。'
   );
 
   return notes;

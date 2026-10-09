@@ -43,6 +43,7 @@ import { PointerTrail } from './pointerTrail';
 import {
   TouchZoneConfig,
   DialogueEntry,
+  GreetMode,
   DEFAULT_CABIN_GROUPS,
 } from './config.type';
 import {
@@ -478,6 +479,8 @@ const main = async () => {
    * ⇒ 不会再出现"两处读了两种口径"。
    */
   const greetSource = subtitleCfg?.greet ?? subtitleCfg?.greeting;
+  /** 问候的取条方式（缺省 `'time'`）。详见 `GreetMode` 的表格 */
+  const greetMode: GreetMode = subtitleCfg?.greetMode ?? 'time';
   /**
    * 「待机触摸」池 —— **聊天池**（`chat`，或旧字段 `standby`）**并上** `touch`（点击触摸）
    * 解析出的条目（2026-09-30 用户修正："开启后可触发 64004 到 64010"）。
@@ -535,7 +538,8 @@ const main = async () => {
    *   刻意复用它而不是另写一份 —— "取条 + 去重 + `trigger('greet')`"
    *   就是"触发一次问候"的完整语义，另写必然与上面几路慢慢漂移。
    *
-   * ★ 取条与"开机 / 回到桌面"等那几路共用同一个 `pickGreetingEntry` ⇒ 口径唯一。
+   * ★ 取条方式由 `greetMode` 决定（`'time'` 按时段 / `'random'` 随机），
+   *   与"开机 / 回到桌面"等那几路共用同一个 `pickGreetingEntry` ⇒ 口径唯一。
    */
   const tryGreeting = (reason: string): boolean => {
     if (!touchController) {
@@ -549,7 +553,8 @@ const main = async () => {
       dialogues,
       greetSource,
       subtitleCfg?.greetingRanges ?? {},
-      new Date()
+      new Date(),
+      greetMode
     );
     if (!entry) {
       return false;
@@ -958,6 +963,12 @@ const main = async () => {
                      * 未启用序列时传 `undefined` ⇒ 触摸继续叠加在 track 2，行为不变。
                      */
                     queueTrack: idleSequence ? IDLE_TRACK : undefined,
+                    /**
+                     * ★ 正在播动作时点击该怎么处理（`config.subtitle.touchFeedbackMode`，
+                     *   缺省 `'immediate'` = 打断并立刻播新的）。三档语义见该类型的注释，
+                     *   用户在「设置 → 动作」页可随时改。
+                     */
+                    touchFeedbackMode: subtitleCfg?.touchFeedbackMode,
                     /** 触摸播完 ⇒ 把 track 0 交还序列，从下一条继续 */
                     onActionFinished: (mixSeconds) =>
                       idleSequence?.resume(mixSeconds),

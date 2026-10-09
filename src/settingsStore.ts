@@ -46,7 +46,7 @@
  * 而 `location.reload()` 天然干净，代价只是切换时黑屏约 1 秒。
  */
 
-import { Configs, FerrisWheelConfig } from './config.type';
+import { Configs, FerrisWheelConfig, GreetMode, TouchFeedbackMode } from './config.type';
 // 只为读"探针当前生效值"的缺省（见 readView）——probe 不反向依赖本模块，无循环
 import { PROBE_OPTS } from './probe';
 
@@ -148,6 +148,20 @@ export type SettingsOverrides = {
    */
   standbyTouchEnabled?: boolean;
   /**
+   * 正在播动作时**点击**该怎么处理（对应 `config.subtitle.touchFeedbackMode`）。
+   *
+   * ★ 语义表见 `TouchFeedbackMode` 的注释；**缺省 `'immediate'`**（面板第一档）。
+   * ⚠️ 落盘即进覆盖层 ⇒ 与 `config.json` 里写的值**同名同语义**，只是优先级更高。
+   */
+  touchFeedbackMode?: TouchFeedbackMode;
+  /**
+   * 问候事件的取条方式（对应 `config.subtitle.greetMode`）。
+   *
+   * `'time'` = 按当前系统时刻取 `greet` 池里同一序号那条；`'random'` = 池内随机。
+   * 缺省 `'time'`。
+   */
+  greetMode?: GreetMode;
+  /**
    * 探针（调试）相关开关。对应 config 的 `probe.*` / `touch.showZones`。
    *
    * `probeEnabled` 的**缺省**取自编译期（`--env probe=off` 的包默认关），
@@ -213,8 +227,12 @@ export type SettingsView = {
   standbyIdleSec: number;
   /** 待机到点是否自动触发「问候」（greet）事件 */
   standbyGreetEnabled: boolean;
-  /** 待机到点是否自动触发「触摸」事件（池 = `standby` + `touch`，随机取一条） */
+  /** 待机到点是否自动触发「触摸」事件（池 = `chat` + `touch`，随机取一条） */
   standbyTouchEnabled: boolean;
+  /** 正在播动作时点击的处理方式（对应 `config.subtitle.touchFeedbackMode`） */
+  touchFeedbackMode: TouchFeedbackMode;
+  /** 问候事件的取条方式（对应 `config.subtitle.greetMode`） */
+  greetMode: GreetMode;
   /** 探针总开关（= 编译期闸门 ⊗ config.probe.enabled） */
   probeEnabled: boolean;
   probeHud: boolean;
@@ -329,7 +347,9 @@ export const applyOverrides = (cfg: Configs, o: SettingsOverrides): Configs => {
     o.greetInTouchPool !== undefined ||
     o.subtitlePosition !== undefined ||
     o.standbyGreetEnabled !== undefined ||
-    o.standbyTouchEnabled !== undefined;
+    o.standbyTouchEnabled !== undefined ||
+    o.touchFeedbackMode !== undefined ||
+    o.greetMode !== undefined;
   if (needSubtitle) {
     out.subtitle = { ...(cfg.subtitle ?? {}) };
     if (o.subtitleEnabled !== undefined) {
@@ -369,6 +389,17 @@ export const applyOverrides = (cfg: Configs, o: SettingsOverrides): Configs => {
     }
     if (o.standbyTouchEnabled !== undefined) {
       out.subtitle.standbyTouchEnabled = o.standbyTouchEnabled;
+    }
+    /**
+     * ★★ 两个新事件的覆盖写在 `needSubtitle` 分支**之内** —— 它们都是 `subtitle` 下的字段，
+     *    若像 `standbyIdleSec` 那样单独再 spread 一次 `out.subtitle`，同一 patch 里
+     *    其它 subtitle 字段的修改会被它后面的分支写回旧值（该坑注释已写过两次）。
+     */
+    if (o.touchFeedbackMode !== undefined) {
+      out.subtitle.touchFeedbackMode = o.touchFeedbackMode;
+    }
+    if (o.greetMode !== undefined) {
+      out.subtitle.greetMode = o.greetMode;
     }
   }
 
@@ -531,6 +562,19 @@ export const readView = (cfg: Configs): SettingsView => ({
    *   ⚠️ 判据**不能**写成 `!== false` —— 那会让缺字段的旧 config 被判成"开"。
    */
   standbyTouchEnabled: cfg.subtitle?.standbyTouchEnabled === true,
+  /**
+   * ★ 缺省 `'immediate'`（见 `TouchFeedbackMode` 注释里选它的理由）。
+   *
+   * 判据写成"只认另两个合法值"而不是"认缺省值" ⇒ 写了无效字符串时也回落到缺省档，
+   * 与 `touch.ts` 的解析口径同向（不可能拆成两种解析，否则"面板显示的和实际行为不同"）。
+   */
+  touchFeedbackMode:
+    cfg.subtitle?.touchFeedbackMode === 'queue' ||
+    cfg.subtitle?.touchFeedbackMode === 'none'
+      ? cfg.subtitle.touchFeedbackMode
+      : 'immediate',
+  /** ★ 缺省 `'time'`（= 改动前"按时段问候"的行为）；判据同上：只认 `'random'` 这一个例外值 */
+  greetMode: cfg.subtitle?.greetMode === 'random' ? 'random' : 'time',
   // ★ `enabled` 的**缺省**取决于编译期（`--env probe=off` 的发布包默认关），
   //   所以不能写死 true，否则正式版里面板会显示"开"而实际没挂（理论≠实际）。
   //   `PROBE_OPTS.enabled` 初值 = `__PROBE__`，且已被 `applyProbeConfig` 按
@@ -788,7 +832,11 @@ export const sameView = (a: SettingsView, b: SettingsView): boolean => {
     a.standbyIdleSec !== b.standbyIdleSec ||
     // ★ 待机自动触发的两个类别开关也要比（2026-09-30）：漏比 ⇒"只改了这项"不重载
     a.standbyGreetEnabled !== b.standbyGreetEnabled ||
-    a.standbyTouchEnabled !== b.standbyTouchEnabled
+    a.standbyTouchEnabled !== b.standbyTouchEnabled ||
+    // ★ 触摸反馈策略也要比（2026-10-08）：漏比 ⇒"只改了这一档"不重载
+    a.touchFeedbackMode !== b.touchFeedbackMode ||
+    // ★ 问候触发方式同理（2026-10-08）：漏比 ⇒"只改了这一项"不重载
+    a.greetMode !== b.greetMode
   ) {
     return false;
   }

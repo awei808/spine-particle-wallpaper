@@ -37,12 +37,34 @@
  *   2. 它没有状态判断（不管当前是否 idle 都切），也没有队列概念（直接打断）。
  *   3. 它会每帧改写 `boneName` 骨骼的 x/y（实测位移会存活），会平白多出一个被拽偏的骨骼。
  *
+ * ## ★ `touchFeedbackMode`：**正在播动作时**用户点击该怎么处理（2026-10-08 新增）
+ *
+ * | 模式 | 正在播 touch | 正在播 greet / standby |
+ * |---|---|---|
+ * | `'immediate'`（**缺省**） | 打断并立刻播新的 | 打断并立刻播新的 |
+ * | `'queue'` | 排到当前这条之后播 | 排到当前这条之后播 |
+ * | `'none'` | 无反馈 | 无反馈 |
+ *
+ * ⚠️ `'immediate'` 与改动前**唯一的差别**是"触摸播动期间再点"那一格 ——
+ *   改动前是忽略（第二下点了没反应），现在改成"打断并重播新的一条"。
+ *   依据是本规则表下面那句用户原话：**"用户点一下没反应会以为壁纸卡了"**。
+ *   想逐帧还原旧行为 ⇒ 配 `'none'`（对这一格它与改动前完全等价）。
+ *
  * ## ★ 两种播放模式（`options.queueTrack` 决定，2026-09-27）
  *
  * | 模式 | 何时 | 怎么播 | 播完 |
  * |---|---|---|---|
  * | **叠加**（默认，`queueTrack == null`） | 未启用常驻序列（track 0 是 idle 循环） | `addAnimation(2, name, false, 0)`，占 **track 2** | `clearTrack(2)`，露出 track 0 的 idle |
  * | **排队**（`queueTrack === 0`） | index.ts 检测到序列接管了 track 0 | `addAnimation(0, name, false, 0)`，排到 **track 0 队尾**，等当前常驻动作播完自动接上 | 不能 `clearTrack(0)`（会把序列一起清掉）⇒ 回调 `onActionFinished` 让序列 `resume()` |
+ *
+ * ⇒ **`touchFeedbackMode:'queue'` 在两种模式下走的是两套实现**：排队模式直接复用
+ *   spine 自己的 track 队列（`addAnimation` 天然排在后面）；叠加模式没有那套队列，
+ *   由本模块用一个容量 1 的待播槽实现（`pendingQueue`，见 `TOUCH_QUEUE_MAX`）。
+ *
+ * ⇒ **`touchFeedbackMode:'immediate'` 同理没有新代码**：叠加模式走
+ *   `clearActive()` + `addAnimation`（= 立刻接手），排队模式仍是 `addAnimation`
+ *   （= 接在当前这条之后）—— **与改动前一字不差的同一条路径**，
+ *   唯一的差别是"这次点击不再被提前 return 掉"（详见 `playAction` 的注释）。
  *
  * ### 为什么启用序列时必须排队（而不是继续叠加）
  *
@@ -74,7 +96,11 @@
  */
 
 import * as threejsSpine from 'threejs-spine-3.8-runtime-es6';
-import { DialogueEntry, TouchZoneConfig } from './config.type';
+import {
+  DialogueEntry,
+  TouchFeedbackMode,
+  TouchZoneConfig,
+} from './config.type';
 import { pickRandomFromPool } from './dialogue';
 
 /** 触摸动画占用的轨道号。模板的 cursorFollow/cursorPress 占 track 1。 */
@@ -125,6 +151,19 @@ export const TOUCH_MIX_OUT = 0.25;
 export const TOUCH_MIX_IN = 0.25;
 
 /**
+ * `'queue'` 模式下**待播槽的容量**（叠加模式专用，2026-10-08）。
+ *
+ * ★★ 取 **1** 是沿用本项目既定的「队列容量 1」口径（文件头需求表第 3 条）：
+ * 同一时间只允许多一条等候。连点两下以上时只保留**最后一次**的选择
+ * —— 壁纸是装饰性交互，攒一串动作让用户等几十秒没有价值。
+ * 想要更长队列 ⇒ 改这一个常量即可（消费逻辑已经在按数组写）。
+ *
+ * ⚠️ 排队模式（`queueTrack !== null`）**不受此限制**：那条路径直接排在 spine 的
+ * track 队列尾上，容量由 spine 自己管。
+ */
+export const TOUCH_QUEUE_MAX = 1;
+
+/**
  * 一个触摸热区。几何用**归一化视口坐标**（0~1，原点左上，与 `clientX/clientY` 同向），
  * 这样既与分辨率、窗口比例无关，也能直接喂给 DOM 覆盖层的百分比定位。
  *
@@ -155,41 +194,68 @@ export type GateDecision =
   | 'play'
   /** 被"队列容量 1"拦下（计一次 skipped） */
   | 'skip'
+  /** 排到当前动作之后播（`'queue'` 模式专用；本次不立刻播） */
+  | 'queue'
   /** 被"不打断正在播的动作"拦下（不计 skipped —— 那是自动触发的正常让位，不是用户操作被吞） */
   | 'reject';
 
 /**
  * 动作闸门：决定一个新的动作请求该怎么处理。**纯函数，导出以便单测**。
  *
- * ## 规则表（3 种来源 × 4 种当前状态）
+ * ## 规则表（`touchFeedbackMode === 'immediate'`，缺省）
  *
  * | 新动作 \ 正在播 | 无 | touch | greet / standby |
  * |---|---|---|---|
- * | **touch**（用户点击） | `play` | **`skip`** | **`play`**（打断并播） |
+ * | **touch**（用户点击） | `play` | **`play`**（打断并播新的） | **`play`**（打断并播） |
  * | **greet / standby**（自动） | `play` | `reject` | `reject` |
+ *
+ * ## 规则表（`touchFeedbackMode === 'queue'`）
+ *
+ * | 新动作 \ 正在播 | 无 | touch | greet / standby |
+ * |---|---|---|---|
+ * | **touch**（用户点击） | `play` | **`queue`** | **`queue`** |
+ *
+ * ## 规则表（`touchFeedbackMode === 'none'`）
+ *
+ * | 新动作 \ 正在播 | 无 | touch | greet / standby |
+ * |---|---|---|---|
+ * | **touch**（用户点击） | `play` | **`skip`** | **`skip`** |
  *
  * ## 为什么这样定
  *
- * - **触摸之间是 `skip`**（队列容量 1）：用户在动画播放中连点，第 2 次起忽略。
- *   计 `skipped`，因为它反映"用户的输入被吞了"，是值得观测的信号。
- * - **触摸可以打断 greet / standby**：用户点一下没反应会以为壁纸卡了。
+ * - **触摸是"用户的输入"**，三种模式只决定"有东西在播时如何应对"，空闲时一律放行。
+ *    `'immediate'`：`touch.ts` 顶部那句用户原话（"点一下没反应会以为壁纸卡了"）
+ *    要求"永远有反应" ⇒ 一律打断。
  * - **greet / standby 不打断任何东西**：它们是自动行为，抢用户的戏或互相抢戏都不合理。
  *   计 `reject` 而非 `skip`，因为它不是"用户操作被吞"。
+ *   ⚠️ 它们也**不排队** —— 自动事件的时机本身就是有价值的信号，排队到几十秒后播没意义，
+ *     丢弃即可（这正是 `reject` 与 `queue` 的分工：同一来源、不同处置）。
  *
  * ⚠️ 与"是否处于 idle"的判定（`isIdle()`）是**两件事**，不要合并：
  * 闸门看的是"有没有动作占着轨道"，`isIdle()` 看的是"track 0 上是不是常驻动画"。
  * 后者用于防"角色已经切到别的常驻状态了、还往里塞触摸动画"。
+ *
+ * @param mode 配置里的 `subtitle.touchFeedbackMode`；缺省 `'immediate'` ⇒ 只传前两个参数
+ *   的既有调用方行为与改动前一致（旧的回归脚本仍能成立）。
  */
 export const decideAction = (
   activeSource: ActionSource | null,
-  source: ActionSource
+  source: ActionSource,
+  mode: TouchFeedbackMode = 'immediate'
 ): GateDecision => {
   if (!activeSource) {
     return 'play';
   }
   if (source === 'touch') {
-    // 触摸互相排队（容量 1）；但可以打断自动播放的 greet / standby
-    return activeSource === 'touch' ? 'skip' : 'play';
+    if (mode === 'none') {
+      // 正在播 ⇒ 完全无反馈（= 改动前"触摸 ⊥ 触摸"那一格的旧行为）
+      return 'skip';
+    }
+    if (mode === 'queue') {
+      return 'queue';
+    }
+    // 'immediate'：一律打断并播新的一条
+    return 'play';
   }
   // 自动播放（greet / standby）：不打断任何正在播的动作
   return 'reject';
@@ -235,6 +301,16 @@ export type TouchControllerOptions = {
    * 轨道号属于装配期配置，由装配方给最清楚。
    */
   queueTrack?: number;
+  /**
+   * **正在播动作时**点击该怎么处理（对应 `config.subtitle.touchFeedbackMode`）。
+   *
+   * - `'immediate'`（缺省）⇒ 打断并立刻播新的；
+   * - `'queue'` ⇒ 排到当前这条之后（叠加模式走本模块的待播槽，排队模式走 spine 的队列）；
+   * - `'none'` ⇒ 正在播时点击什么都不做。
+   *
+   * 详见文件头的规则表；不传 = `'immediate'` ⇒ 旧的调用方行为不变。
+   */
+  touchFeedbackMode?: TouchFeedbackMode;
   /**
    * 排队模式下动作**播完**的回调。参数 = 交还轨道时的淡入时长（秒），
    * 装配方应转交给 `idleSequence.resume(mixSeconds)`。
@@ -298,6 +374,8 @@ export type TouchController = {
     firedCount: number;
     greetCount: number;
     standbyCount: number;
+    /** `'queue'` 模式下还在等着的条数（叠加模式才有；排队模式恒 0） */
+    queuedCount: number;
     /** 命中区域内、但因"忙"或"非 idle"被忽略的次数 */
     skippedCount: number;
     /** 按下位置落在**所有区域之外**的次数 */
@@ -361,6 +439,7 @@ const createNoopController = (
     firedCount: 0,
     greetCount: 0,
     standbyCount: 0,
+    queuedCount: 0,
     skippedCount: 0,
     missCount: 0,
     lastPick: '',
@@ -398,10 +477,24 @@ export const createTouchController = (
   const queueTrack =
     typeof options.queueTrack === 'number' ? options.queueTrack : null;
   const onActionFinished = options.onActionFinished;
+  /** 触摸反馈模式（缺省 `'immediate'` = 改动前的行为） */
+  const feedbackMode: TouchFeedbackMode = options.touchFeedbackMode ?? 'immediate';
 
   if (!state || !touchNames.length) {
     return createNoopController(idleName, touchNames, zones, touchPool.length);
   }
+
+  /**
+   * 叠加模式（没有 spine 队列可用）下 `'queue'` 的**待播槽**。
+   *
+   * ★ 容量 = `TOUCH_QUEUE_MAX`（= 1，见其注释）。存的是 `{animation, entry}` 而不是
+   *   只存 `entry` —— 没配念白池时会退化成"随机挑动画名"（`playTouch` 的老分支），
+   *   那种情况下 `entry` 是 `null`，动画名必须另外留住。
+   */
+  type PendingAction = { animation: string; entry: DialogueEntry | null };
+  const pendingQueue: PendingAction[] = [];
+  /** 待播的实际播放被推迟到一个宏任务里执行（避开 `AnimationState.update` 的重入）； dispose 时要撤 */
+  let pendingTimer = 0;
 
   let firedCount = 0;
   let greetCount = 0;
@@ -487,7 +580,21 @@ export const createTouchController = (
     }
   };
 
-  /** 真正开始播一个动作。调用前**必须**已经通过可打断性判定 */
+  /**
+   * 真正开始播一个动作。调用前**必须**已经通过可打断性判定。
+   *
+   * ## ★★ 为什么**没有**"真正打断"那一套 API（2026-10-08 定案）
+   *
+   * 直觉上"立即播放"该是 `setAnimation`（它 dispose 掉当前的和排队的一切）。实测把它用在
+   * **排队模式**上会当场退化：**起始跳变 158.8 单位、7 个部件瞬时消失**（`_regress/60` 的
+   * A3/A4 直接 FAIL）—— 因为 `setAnimation` 会把常驻序列正演到一半的那条砍掉，
+   * 从一个任意相位硬切进触摸动作的起手式。这正是本项目当初从"叠加"改"排队"要治的病。
+   *
+   * ⇒ `'immediate'` 的实现就是**"不再提前 return"**：照旧走 `clearActive()` + `addAnimation`，
+   *   与改动前"触摸打断 greet/standby"走的是**同一条代码路径**，一行新的播放操作都没有。
+   *   ⚠️ 在排队模式下它就表现为"接在序列之后"（挤掉正在播的触摸动作），
+   *   这与该模式下改动前的行为完全一致，不是偷懒 —— 那条轨道与序列共用，硬抢必然出问题。
+   */
   const playAction = (
     animationName: string,
     source: ActionSource,
@@ -566,6 +673,23 @@ export const createTouchController = (
         activeEntry = null;
         activeSource = null;
         /**
+         * ★ `'queue'` 模式（叠加模式专用）：还有排队的 ⇒ **别混出**，直接接下一条。
+         *
+         * 为什么走宏任务：此刻正处在 `AnimationState.update()` 的 complete 回调里，
+         * 再同步 `addAnimation` 会重入同一条 update。这与"序列 resume 要等一个宏任务"
+         * 是同一个理由（见 `trigger` 里的交接保护）。这 0 毫秒的间隔里画面停在上一条的
+         * 末帧，紧接着由新动作的 mix 淡入，看不见停顿。
+         */
+        if (queueTrack === null && pendingQueue.length) {
+          const next = pendingQueue.shift() as PendingAction;
+          pendingTimer = window.setTimeout(() => {
+            pendingTimer = 0;
+            playAction(next.animation, 'touch', next.entry);
+          }, 0);
+          return;
+        }
+
+        /**
          * ★ 排队模式：把轨道**交还**给常驻序列 —— 这里绝不能 `clearTrack`，
          * 那条轨道上还挂着序列，清掉会露出 setup pose。
          * 序列收到回调后会走一个宏任务再 `setAnimation(0, 下一条)` 继续。
@@ -610,6 +734,24 @@ export const createTouchController = (
   };
 
   /**
+   * 塞进待播槽（叠加模式的 `'queue'` 专用）。超出容量 ⇒ **丢掉最老的**，留最新那条。
+   *
+   * ⚠️ **返回 false**（`trigger` 的契约是"这次有没有真的播起来"）—— 排进队里的这一下
+   *   此刻并没有播；它会在当前这条 `complete` 时另起一次播放（那时才计 `firedCount`）。
+   *   若这里返回 true，`playTouch` 会把 `lastPick` 记成"已经播过"，探针读数就骗人了。
+   */
+  const enqueuePending = (
+    animationName: string,
+    entry: DialogueEntry | null
+  ): boolean => {
+    if (pendingQueue.length >= TOUCH_QUEUE_MAX) {
+      pendingQueue.shift();
+    }
+    pendingQueue.push({ animation: animationName, entry });
+    return false;
+  };
+
+  /**
    * 播一个动作的**唯一闸门**：所有来源都从这里进，打断规则只判一次。
    * 规则本身在 `decideAction`（纯函数，可单测）；这里只负责副作用（计数、`isIdle` 校验）。
    */
@@ -622,13 +764,32 @@ export const createTouchController = (
       return false;
     }
 
-    const decision = decideAction(activeEntry ? activeSource : null, source);
+    const decision = decideAction(
+      activeEntry ? activeSource : null,
+      source,
+      feedbackMode
+    );
     if (decision === 'skip') {
       skippedCount++;
       return false;
     }
     if (decision === 'reject') {
       return false;
+    }
+    /**
+     * ★ `'queue'` 的落点：判的是"播放模式"，不是"有没有 interrupting 权限"。
+     *
+     * · **排队模式**（`queueTrack !== null`）：spine 自己的 track 队列就够了
+     *   —— `addAnimation` 天然排在正在播的那条之后，不用我们中介。
+     * · **叠加模式**：track 2 上没有队列概念 ⇒ 塞进 `pendingQueue`，
+     *   由当前这条的 `complete` 回调接着播（见那里的注释）。
+     *
+     * ⚠️ 两条路都是"这次不立刻播" ⇒ 返回 false（`playTouch` 据此不记 `lastPick`）。
+     */
+    if (decision === 'queue') {
+      return queueTrack !== null
+        ? playAction(animationName, source, entry)
+        : enqueuePending(animationName, entry);
     }
 
     /**
@@ -672,6 +833,12 @@ export const createTouchController = (
       }
     }
 
+    /**
+     * ★ `'immediate'`：没有 a touch-only API 要调 —— 直接落到下面那行即可。
+     *
+     * 叠加模式下 `clearActive()` 已经先把 track 2 清了 ⇒ `addAnimation` 就是"立刻接手"；
+     * 排队模式下它是"排在序列之后"，与该模式改动前的行为一致（见 `playAction` 的注释）。
+     */
     return playAction(animationName, source, entry);
   };
 
@@ -731,21 +898,29 @@ export const createTouchController = (
   return {
     dispose: () => {
       document.removeEventListener('mousedown', onMouseDown, false);
+      if (pendingTimer) {
+        window.clearTimeout(pendingTimer);
+        pendingTimer = 0;
+      }
+      pendingQueue.length = 0;
       clearActive();
     },
     trigger,
-    isBusy: () => !!activeEntry,
+    /** 正在播 = 有 track entry；**待播也算忙**（否则 `queue` 模式下双击会被待机 tick 插队） */
+    isBusy: () => !!activeEntry || pendingQueue.length > 0,
     playingAnimation: () => activeEntry?.animation?.name ?? '',
     snapshot: () => ({
       idleName,
       touchNames,
       poolSize: touchPool.length,
-      busy: !!activeEntry,
+      /** 与 `isBusy()` 同一口径：待播那条也算"有事在做" */
+      busy: !!activeEntry || pendingQueue.length > 0,
       playing: activeEntry?.animation?.name ?? '',
       source: activeSource ?? '',
       firedCount,
       greetCount,
       standbyCount,
+      queuedCount: pendingQueue.length,
       skippedCount,
       missCount,
       lastPick,

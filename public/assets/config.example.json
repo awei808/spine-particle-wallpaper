@@ -33,7 +33,9 @@
     "dialogues": [],
     "greet": [],
     "chat": [],
-    "touch": []
+    "touch": [],
+    "greetMode": "time",
+    "touchFeedbackMode": "immediate"
   },
   "bgm": {
     "enabled": true,

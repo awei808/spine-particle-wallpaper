@@ -29,7 +29,7 @@
  * | 场景 | 入口 | 口径 |
  * |---|---|---|
  * | 点击热区 | `pickTouchEntry` →（`touch.ts`） | 从 **`touch` 池**的 actionId 里**随机**取一条 |
- * | 首次打开 / 回到桌面 / 回到前台 / WE 暂停后恢复 | `pickGreetingEntry` | 从 **`greet` 池**取**当前时段对应序号**那条 |
+ * | 首次打开 / 回到桌面 / 回到前台 / WE 暂停后恢复 | `pickGreetingEntry` | 从 **`greet` 池**取：按 `greetMode` = 当前时段下标 **或** 随机 |
  * | 长时间无互动（待机到点） | `resolveStandbyTouchIds` + `pickRandomFromPool` | 从 **`chat` + `touch` 合并池**里随机取一条 |
  *
  * ★★ **三条事件列表的头号事实（2026-10-08 改）**：`greet` / `chat` / `touch`
@@ -52,6 +52,7 @@ import {
   DialogueEntry,
   DialogueSlotKey,
   DialogueTimeRange,
+  GreetMode,
 } from './config.type';
 
 /** 时段遍历顺序：按早 → 中 → 晚找第一个命中的 */
@@ -171,7 +172,7 @@ export type GreetSource = number[] | Partial<Record<DialogueSlotKey, number>>;
  * 把问候来源摊平成**去重保序**的 actionId 数组。两者都不是 ⇒ 空数组（永不抛）。
  *
  * ★ 旧口径按 `SLOT_ORDER`（早→中→晚）摊平 ⇒ 数组顺序天然就是"时段序号"，
- *   这正是 `pickGreetingEntry` 按下标取条所依赖的形状。
+ *   这正是 `GreetMode==='time'` 按下标取条所依赖的形状（见 `pickGreetingEntry`）。
  */
 export const normalizeGreetIds = (src?: GreetSource): number[] => {
   const out: number[] = [];
@@ -358,17 +359,16 @@ export const pickRandomFromPool = (
   return pool[i] ?? null;
 };
 
-/**
- * 按**当前时段**取问候条目。
- *
- * 取不到（停在了没有对应序号的时段、或池里那条 id 不在 `dialogues`）时降级为**池内随机**；
- * 池本身为空、或时段分界被改坏（`ranges` 覆盖不到全天）⇒ 返回 `null`（不猜）。
- */
+/** 按时段取问候条目；该时段没配或条目缺失时返回 `null` */
 export const pickGreetingEntry = (
   entries: DialogueEntry[],
   greet: GreetSource | undefined,
   ranges: Partial<Record<DialogueSlotKey, DialogueTimeRange>>,
-  date: Date
+  date: Date,
+  /** 'time' = 按时段取（缺省，= 改动前的行为）；'random' = 池内随机 */
+  mode: GreetMode = 'time',
+  /** 随机源（`random` 模式下 + 降级路径都会用；可注入便于单测） */
+  random: () => number = Math.random
 ): DialogueEntry | null => {
   const ids = normalizeGreetIds(greet);
   if (!ids.length) {
@@ -378,16 +378,17 @@ export const pickGreetingEntry = (
   if (!pool.length) {
     return null;
   }
+  /** 随机模式：与时刻无关，直接从池里抽一条 */
+  if (mode === 'random') {
+    return pickRandomFromPool(pool, random);
+  }
   /**
    * 按时模式：**按时段取对应的那一条**。
    *
    * | 形状 | 取值方式 |
    * |---|---|
-   * | **数组**（新口径） | `greet[slotIndex]`，morning→0 / noon→1 / evening→2（顺序即时段顺序） |
+   * | **数组**（新口径） | `greet[slotIndex]`，morning→0 / noon→1 / evening→2（约定见 `GreetMode` 注释） |
    * | **旧时段表** | 直接 `greeting[slot]`（与改动前**逐字一致**） |
-   *
-   * ★ 降级路径（下面那句）用**缺省随机源**，不需要从外面注入 ——「池的顺序与时段不对位」
-   *   是配置问题，不是播放逻辑，注入随机源没有观测价值。
    */
   const slot = resolveTimeSlot(date, ranges);
   if (!slot) {
@@ -399,7 +400,7 @@ export const pickGreetingEntry = (
    * ★ 降级而非静默失效：按序号找不到（池的顺序与时段不对位，或池不足 3 条）
    *   ⇒ **池内随机**。宁可是"时段对不上"，也不要"到点了什么都不播"。
    */
-  return byTime ?? pickRandomFromPool(pool);
+  return byTime ?? pickRandomFromPool(pool, random);
 };
 
 /**

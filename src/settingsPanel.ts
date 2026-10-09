@@ -1216,7 +1216,11 @@ export const createSettingsPanel = (
    *   下面新增的两个开关（问候 / 闲聊）**共用这一个阈值**，名字里再写死 "chat" 就误导了。
    */
   standbyLabel.textContent = '待机触发事件时长';
-  const standbySliderBox = createEl('div', 'flex:1 1 auto;min-width:0', standbyRow);
+  const standbySliderBox = createEl(
+    'div',
+    'flex:1 1 auto;min-width:0',
+    standbyRow
+  );
   /** 滑块 0~100 映射 5~300 秒（覆盖 5 秒到 5 分钟） */
   const STANDBY_MIN_SEC = 5;
   const STANDBY_MAX_SEC = 300;
@@ -1231,7 +1235,9 @@ export const createSettingsPanel = (
       )
     );
   const sliderToSec = (s: number): number =>
-    Math.round(STANDBY_MIN_SEC + (s / 100) * (STANDBY_MAX_SEC - STANDBY_MIN_SEC));
+    Math.round(
+      STANDBY_MIN_SEC + (s / 100) * (STANDBY_MAX_SEC - STANDBY_MIN_SEC)
+    );
   const fmtStandby = (sec: number): string =>
     sec >= 60
       ? Math.floor(sec / 60) + ' 分 ' + (sec % 60) + ' 秒'
@@ -1285,6 +1291,59 @@ export const createSettingsPanel = (
     'wb-set-standby-touch',
     '待机自动触发touch事件',
     '空闲超过上面的时长后，从「休闲待机 + 全部点击触摸」里随机播一条（含动作、字幕与语音）'
+  );
+
+  /**
+   * ★★ 正在播动作时点击该怎么处理（2026-10-08 新增）。
+   *
+   * 三档语义见 `TouchFeedbackMode` 的注释；闸门判据在 `touch.decideAction`（纯函数、可单测）。
+   *
+   * ★ 用自绘分段而不是下拉的原因与其它项一样：**原生表单控件会在 CEF 里崩**
+   * （见面板文件头的环境说明），且中文长标签横排会被压成竖排 ⇒ `stack = true` 独占一行。
+   */
+  const selTouchFeedback = createSegmented(
+    'wb-set-touch-feedback',
+    [
+      ['immediate', '立即播放新动作'],
+      ['queue', '排进播放队列'],
+      ['none', '不做任何反馈'],
+    ] as const,
+    true
+  );
+  addRow(
+    '播放动作时点击',
+    selTouchFeedback.el,
+    '已经有动作在演的时候再点一下：「立即播放」= 打断当前这条、立刻播新的一条（默认，最跟手，但上一条会被掐断）；' +
+      '「排进播放队列」= 等当前这条演完自动接上（动作完整，代价是响应延迟 = 当前动作的剩余时长）；' +
+      '「不做任何反馈」= 演的过程中点击无效。三档都不影响空闲时的点击。保存后重载生效。',
+    pages.sequence,
+    true
+  );
+
+  /**
+   * ★★ 问候事件的取条方式（2026-10-08 新增）。
+   *
+   * 「按系统时间」= 按当前钟点在 `subtitle.greet` 池里取对应序号那条
+   *   （第 1 条=清晨、第 2 条=中午、第 3 条=傍晚，分界由 `greetingRanges` 定）；
+   * 「随机」= 每次从整个问候池里随机抽一条，与钟点无关。
+   */
+  const selGreetMode = createSegmented(
+    'wb-set-greet-mode',
+    [
+      ['time', '按系统时间'],
+      ['random', '随机触发'],
+    ] as const,
+    true
+  );
+  addRow(
+    '问候触发方式',
+    selGreetMode.el,
+    '开机、回到桌面、回到前台、离开其他应用超过 15 秒回来，以及待机到点，都会触发一次问候。' +
+      '这里决定**从 greet 列表里取哪一条**：「按系统时间」= 清晨/中午/傍晚各取对应那条；' +
+      '「随机」= 不看时间，整个列表随机。列表本身在 config.json 的 subtitle.greet 里，用户可以直接增删。' +
+      '保存后重载生效。',
+    pages.sequence,
+    true
   );
 
   /* ── tab 4：画面调整 ───────────────────────── */
@@ -1484,6 +1543,8 @@ export const createSettingsPanel = (
     paintStandbyValue();
     cbStandbyGreet.checked = draft.standbyGreetEnabled;
     cbStandbyTouch.checked = draft.standbyTouchEnabled;
+    selTouchFeedback.value = draft.touchFeedbackMode;
+    selGreetMode.value = draft.greetMode;
     seqBody.style.opacity = draft.idleSequenceEnabled ? '1' : '0.45';
     seqBody.style.pointerEvents = draft.idleSequenceEnabled ? 'auto' : 'none';
     cbProbe.checked = draft.probeEnabled;
@@ -1587,6 +1648,20 @@ export const createSettingsPanel = (
     draft.standbyTouchEnabled = cbStandbyTouch.checked;
   });
 
+  /* 播放动作时点击怎么处理 / 问候取哪一条 —— 两个白名单校验后可写回 draft */
+  selTouchFeedback.addEventListener('change', () => {
+    const v = selTouchFeedback.value as SettingsView['touchFeedbackMode'];
+    if (v === 'immediate' || v === 'queue' || v === 'none') {
+      draft.touchFeedbackMode = v;
+    }
+  });
+  selGreetMode.addEventListener('change', () => {
+    const v = selGreetMode.value as SettingsView['greetMode'];
+    if (v === 'time' || v === 'random') {
+      draft.greetMode = v;
+    }
+  });
+
   /* 调试（探针）四个开关 —— 保存后重载生效 */
   cbProbe.addEventListener('change', () => {
     draft.probeEnabled = cbProbe.checked;
@@ -1629,6 +1704,8 @@ export const createSettingsPanel = (
       standbyIdleSec: draft.standbyIdleSec,
       standbyGreetEnabled: draft.standbyGreetEnabled,
       standbyTouchEnabled: draft.standbyTouchEnabled,
+      touchFeedbackMode: draft.touchFeedbackMode,
+      greetMode: draft.greetMode,
       probeEnabled: draft.probeEnabled,
       probeHud: draft.probeHud,
       probeCrosshair: draft.probeCrosshair,
