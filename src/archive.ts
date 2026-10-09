@@ -346,10 +346,12 @@ const buildRows = (cfg: Configs, st: ArchiveState): Row[] => {
       return;
     }
     const mergedPool = mergeKindPools(kinds, st.pools);
-    /** 勾了多类 ⇒ 并成一个大池随机（池内每条等概率，类别之间按条目数加权） */
+    /** 勾了多类 ⇒ 合成一个池一起抽（池内每条等概率，所以条目多的类别更容易抽到） */
     const tail =
       kinds.length > 1
-        ? ' · 并池随机（共 ' + mergedPool.length + ' 条，按条目数加权）'
+        ? ' · 合成一个池随机（共 ' +
+          mergedPool.length +
+          ' 条，条目多的类别更容易抽到）'
         : ' · 池内随机 1 条';
     kinds.forEach((k) => {
       if (k === 'chat') {
@@ -520,17 +522,12 @@ const describeChannel = (st: ArchiveState, kind: TriggerChannel): string => {
       : '按当前时刻取 greet 列表里对应序号那条（第 1 条=清晨、第 2 条=中午、第 3 条=傍晚）';
   }
   const pool = mergeKindPools(kinds, st.pools);
-  const parts = kinds.map(
-    (k) => KIND_TEXT[k] + ' ' + st.pools[k].length + ' 条'
-  );
   return (
     '把「' +
     kinds.map((k) => KIND_TEXT[k]).join('、') +
-    '」并成一个大池（' +
-    parts.join(' + ') +
-    ' = 共 ' +
+    '」合成一个池，随机抽 1 条（共 ' +
     pool.length +
-    ' 条）随机取 1 条'
+    ' 条，条目多的类别更容易抽到）'
   );
 };
 
@@ -563,14 +560,14 @@ const buildNotes = (cfg: Configs, st: ArchiveState): string[] => {
     '「长时间待机可触发的事件」的计时从壁纸载入起算；只要有任何动作正在播放就重新起算，' +
       '所以不会在演出中途插话。静置 ' +
       fmtSec(standbySec) +
-      ' 秒后：' +
+      ' 后：' +
       describeChannel(st, 'standby') +
       '。'
   );
   notes.push(
     '「点击触摸」= 点中任一热区后从池中随机取 1 条；池 = ' +
       (st.channels.touch.length
-        ? '「触摸可触发的事件」勾中的类别并池，共 ' +
+        ? '「触摸可触发的事件」勾中的类别合成一个池，共 ' +
           mergeKindPools(st.channels.touch, st.pools).length +
           ' 条（配置里 touch 列表 ' +
           st.touchIds.length +
@@ -601,7 +598,7 @@ const buildNotes = (cfg: Configs, st: ArchiveState): string[] => {
     '「播放动作时点击」当前是：' +
       feedbackText +
       '（在「设置 → 动作」页改）。四档都不影响空闲时的点击 —— 空闲时点击一定立即播。' +
-      '另外两个通道都是**自动触发**，一律不打断正在演的动作。'
+      '另外两个通道都是自动触发，一律不打断正在演的动作。'
   );
 
   return notes;
