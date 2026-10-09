@@ -197,6 +197,26 @@ export const hasGreetIds = (greet?: GreetSource): boolean =>
   normalizeGreetIds(greet).length > 0;
 
 /**
+ * 选**问候来源**：`greet` 数组优先；**空数组视同没配**，退回旧时段表 `greeting`。
+ *
+ * ## ★★ 这一层为什么必须有（2026-10-09 修）
+ *
+ * 调用方原先写的是 `subtitleCfg?.greet ?? subtitleCfg?.greeting` —— 而 `??`
+ * **只对 `null`/`undefined` 回退** ⇒ `"greet": []`（照抄 `config.example.json`
+ * 最容易出现的形状）会把问候**整类静默关掉**，哪怕旁边 `greeting` 好好配着三个时段。
+ * config 没有 schema 校验，"看着配了、其实全哑"是最难排查的一类问题。
+ *
+ * ★ 判据与 `resolveChatIds` 对 `chat: []` 的**完全一致**（那里也是"空数组退回旧字段"）——
+ *   两条来源本来是一起改名成数组的，口径不该劈叉。
+ *
+ * ⚠️ 两边都没配 ⇒ `undefined`（调用方按"没配"处理，与改动前逐字一致）。
+ */
+export const resolveGreetSource = (
+  greet: number[] | undefined,
+  greeting: Partial<Record<DialogueSlotKey, number>> | undefined
+): GreetSource | undefined => (greet?.length ? greet : greeting);
+
+/**
  * 「聊天」池（长时间无互动时触发的那些念白）的解析。
  *
  * 新口径 = `subtitle.chat`（数组）优先；没配时才退回旧的 `subtitle.standby`（单条 id）。

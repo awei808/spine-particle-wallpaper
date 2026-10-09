@@ -73,6 +73,7 @@ import {
   hasGreetIds,
   normalizeGreetIds,
   resolveChatIds,
+  resolveGreetSource,
   resolveStandbyKinds,
   resolveTouchIds,
 } from './dialogue';
@@ -224,7 +225,9 @@ const buildRows = (cfg: Configs): Row[] => {
    * `greetMode==='time'`：第 1/2/3 条分别对应清晨/中午/傍晚（`GreetMode` 注释里的对位约定），
    * 再往后的条**按时取不到** ⇒ 单独标成"追加候选"，让用户一眼看出它们只参与随机。
    */
-  const greetSource = sub?.greet ?? sub?.greeting;
+  // ★ 「新数组优先、空数组退回旧时段表」的口径集中在 `dialogue.resolveGreetSource` ——
+  //   这里不另写 `??`（`??` 对空数组不回退 ⇒ 会把整类问候静默关掉）
+  const greetSource = resolveGreetSource(sub?.greet, sub?.greeting);
   const greetIds = normalizeGreetIds(greetSource);
   const greetMode = sub?.greetMode === 'random' ? '随机' : '按时段';
   greetIds.forEach((id, i) => {
@@ -443,7 +446,9 @@ const buildNotes = (cfg: Configs): string[] => {
    *   不在这里另写一套 if —— 否则表格与细则会随配置漂移。
    * ⚠️ `buildNotes` 里没有 `dialogues` 局部量（那是 `buildRows` 的），故直接取 `sub?.dialogues`。
    */
-  const greetSource = sub?.greet ?? sub?.greeting;
+  // ★ 「新数组优先、空数组退回旧时段表」的口径集中在 `dialogue.resolveGreetSource` ——
+  //   这里不另写 `??`（`??` 对空数组不回退 ⇒ 会把整类问候静默关掉）
+  const greetSource = resolveGreetSource(sub?.greet, sub?.greeting);
   const standbyChatPool = buildPool(
     sub?.dialogues ?? [],
     resolveChatIds(sub?.chat, sub?.standby)

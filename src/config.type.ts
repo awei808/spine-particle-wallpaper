@@ -1086,7 +1086,13 @@ export type SubtitleConfig = {
    *    （例如把 64005 同时放进 `touch` 和 `chat`）；需要去重的合并在
    *    `dialogue.ts` 的合并函数里做，这里按用户写的原样保留。
    */
-  /** **问候（greet）事件池**。`greetMode==='time'` 时按下标对位时段，详见上面的表格 */
+  /**
+   * **问候（greet）事件池**。`greetMode==='time'` 时按下标对位时段，详见上面的表格。
+   *
+   * ⚠️ **空数组视同没配** ⇒ 退回旧时段表 `greeting`（判据 `dialogue.resolveGreetSource`，
+   * 与 `chat: []` 退回 `standby` **同一口径**）—— 照抄 `config.example.json` 的空数组
+   * 不该把整类问候静默关掉。
+   */
   greet?: number[];
   /**
    * **聊天（chat）事件池** —— 「长时间无互动」到点后可触发的那些念白。
@@ -1119,9 +1125,10 @@ export type SubtitleConfig = {
   /**
    * ⚠️ **旧口径**：按时段映射的问候 actionId（如 `{morning:64001,...}`）。
    *
-   * 已被 `greet` 数组取代 —— 保留仅为向后兼容：**没配 `greet` 时**由
-   * `dialogue.normalizeGreetIds` 按 `SLOT_ORDER` 顺序把这里的值摊平成数组，
-   * 旧 config 的行为逐字不变。**新配置请一律用 `greet` 数组。**
+   * 已被 `greet` 数组取代 —— 保留仅为向后兼容：**没配 `greet`、或 `greet` 是空数组**时
+   * （判据见 `dialogue.resolveGreetSource`），由 `dialogue.normalizeGreetIds` 按
+   * `SLOT_ORDER` 顺序把这里的值摊平成数组，旧 config 的行为逐字不变。
+   * **新配置请一律用 `greet` 数组。**
    */
   greeting?: Partial<Record<DialogueSlotKey, number>>;
   /** 问候时段分界（小时）。缺省见 `dialogue.ts` 的 `DEFAULT_TIME_RANGES` */

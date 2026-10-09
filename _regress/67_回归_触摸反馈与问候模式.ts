@@ -48,6 +48,7 @@ import {
   normalizeGreetIds,
   pickGreetingEntry,
   resolveChatIds,
+  resolveGreetSource,
   resolveTouchIds,
 } from '../src/dialogue';
 import { decideAction } from '../src/touch';
@@ -136,13 +137,39 @@ eq(
   [hasGreetIds(greetArr), hasGreetIds(greetMap), hasGreetIds(undefined)],
   [true, true, false]
 );
+/* ── A2. 问候来源：greet 数组 ⇄ 旧时段表（★空数组视同没配） ── */
+console.log(
+  '\nA2. resolveGreetSource：空数组退回旧时段表（与 chat:[] 退 standby 同口径）'
+);
 eq(
-  'A7 ★新字段优先：同时给了 greet 与 greeting ⇒ 用数组（index.ts 的读法）',
-  normalizeGreetIds(
-    ({ greet: greetArr, greeting: greetMap } as unknown as Slots)
-      .greet as number[]
-  ),
-  [64001, 64002, 64003]
+  'A7 数组非空 ⇒ 用数组（不与旧表合并）',
+  resolveGreetSource(greetArr, greetMap),
+  greetArr
+);
+eq(
+  'A8 ★★空数组 ⇒ 退回旧时段表 —— 原先 `greet ?? greeting` 只对 null/undefined 回退，这里会静默关掉整类问候',
+  resolveGreetSource([], greetMap),
+  greetMap
+);
+eq(
+  'A9 数组没配 ⇒ 用旧时段表',
+  resolveGreetSource(undefined, greetMap),
+  greetMap
+);
+eq(
+  'A10 两边都没配 ⇒ undefined（调用方按"没配"处理）',
+  resolveGreetSource(undefined, undefined),
+  undefined
+);
+eq(
+  'A11 ★空数组且没有旧时段表 ⇒ undefined（不返回空数组，与"没配"统一）',
+  resolveGreetSource([], undefined),
+  undefined
+);
+eq(
+  'A12 ★端到端：空数组退到旧表后 hasGreetIds 仍为 true（问候不会整类消失）',
+  hasGreetIds(resolveGreetSource([], greetMap)),
+  true
 );
 
 /* ── B. 问候取条：按系统时间 / 随机 ─────────────────────── */
@@ -488,6 +515,7 @@ if (!fs.existsSync(BUNDLE)) {
     'greetMode',
     'normalizeGreetIds',
     'resolveChatIds',
+    'resolveGreetSource',
     'idForSlot',
     'wb-set-touch-feedback',
     'wb-set-greet-mode',

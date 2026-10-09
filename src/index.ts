@@ -52,6 +52,7 @@ import {
   pickGreetingEntry,
   pickRandomFromPool,
   resolveChatIds,
+  resolveGreetSource,
   resolveStandbyKinds,
   resolveTouchIds,
 } from './dialogue';
@@ -474,11 +475,15 @@ const main = async () => {
    * ★★ 问候事件的**来源**（2026-10-08 起统一走数组 `greet`）。
    *
    * 新 config 写 `"greet": [64001, 64002, 64003]`（用户可以直接增删）；
-   * 没配时才退回旧的时段表 `greeting`（**老 config 行为逐字不变**）。
+   * **没配、或写成空数组**时才退回旧的时段表 `greeting`（**老 config 行为逐字不变**）——
+   * 判据在 `dialogue.resolveGreetSource`（纯函数、可单测），与 `chat: []` 退 `standby` 同一口径。
    * 后面三处（触摸池合并、问候取条、待机可用性判据）全部只用这一个对象，
    * ⇒ 不会再出现"两处读了两种口径"。
    */
-  const greetSource = subtitleCfg?.greet ?? subtitleCfg?.greeting;
+  const greetSource = resolveGreetSource(
+    subtitleCfg?.greet,
+    subtitleCfg?.greeting
+  );
   /** 问候的取条方式（缺省 `'time'`）。详见 `GreetMode` 的表格 */
   const greetMode: GreetMode = subtitleCfg?.greetMode ?? 'time';
   /**

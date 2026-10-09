@@ -77,6 +77,7 @@ Unity 手游里的 Spine 角色 + 粒子特效 + 触摸动作，搬上桌面并�
 > 旧字段 `greeting`（时段 → actionId 的映射）、`standby`（单条 actionId）以及两个布尔
 > `standbyGreetEnabled` / `standbyTouchEnabled` 仍然被兼容读取，老配置不会被改坏；
 > 新配置请直接用上面的三条数组 + `standbyKinds`。
+> `greet` / `chat` 写成**空数组**时视同"没配"，会退回旧字段 —— 不会静默关掉整类事件。
 
 ## 快速开始
 

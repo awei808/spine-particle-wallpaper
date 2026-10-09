@@ -80,6 +80,8 @@ a long idle_).
 > The legacy `greeting` (slot → actionId map), `standby` (single actionId) and the two booleans
 > `standbyGreetEnabled` / `standbyTouchEnabled` are still read for backwards compatibility;
 > new configs should just use the three arrays above plus `standbyKinds`.
+> An **empty** `greet` / `chat` array counts as _not configured_ and falls back to the legacy
+> field (it will not silently disable the whole event class).
 
 ## Quick start
 
