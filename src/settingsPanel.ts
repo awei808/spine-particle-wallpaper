@@ -1350,6 +1350,43 @@ export const createSettingsPanel = (
   rowTarget = pages.view;
 
   /**
+   * 全屏适配的**对齐基准**（二选一）。
+   *
+   * ★★ 为什么会有两个选项（2026-10-08 用户拍板做成设置项）：
+   * 两种基准各有可取之处，且**只影响整体放大/缩小**（不改任何层的相对摆位），
+   * 所以最合适的做法是让用户自己挑，而不是替他定死。
+   *
+   *   · **按画幅高**（缺省）⇒ 可见高度恒等于设计画幅的高度，
+   *     与**游戏内的实际取景一致**（实测与游戏实录 z=1.01、NCC 0.866）；
+   *     屏幕比设计画幅窄时会裁掉左右两侧，比设计画幅宽时会多露出一些背景。
+   *   · **按画幅宽** ⇒ 可见宽度恒等于底层背景的宽度，
+   *     **任何屏幕比例都不会裁掉左右内容**；代价是相对游戏画面偏小
+   *     （16:9 下约是按高对齐的 78%）。
+   *
+   * 两者在屏幕比例恰好等于设计画幅比例时**完全重合**。
+   * 取证与定量关系见 `config.type.ts` 的 `fitAspect` 注释。
+   */
+  const selFitAspect = createSegmented(
+    'wb-set-fitaspect',
+    [
+      ['height', '按画幅高对齐（默认）'],
+      ['width', '按画幅宽对齐（左右不裁）'],
+    ] as const,
+    true
+  );
+  addRow(
+    '画面对齐基准',
+    selFitAspect.el,
+    '决定画面按哪一边对齐：' +
+      '「按画幅高」= 上下范围恒定、与游戏内取景一致，屏幕越窄左右裁得越多、越宽左右露得越多；' +
+      '「按画幅宽」= 左右范围恒定、任何屏幕比例都不裁掉两侧内容，但整体比游戏画面小一些' +
+      '（16:9 下约为按高对齐的 78%）。两种只在屏幕比例≠设计画幅比例时有差别。' +
+      '保存后重载生效。',
+    pages.view,
+    true
+  );
+
+  /**
    * 摩天轮轿厢姿态角（二选一）。
    *
    * ★★ 为什么会有两个选项（取证见 09 文档 `04_渲染差异记录.md` §D1）：
@@ -1532,6 +1569,7 @@ export const createSettingsPanel = (
     });
     cbVoice.checked = draft.voiceEnabled;
     cbGreetPool.checked = draft.greetInTouchPool;
+    selFitAspect.value = draft.fitAspect;
     selCabin.value = draft.cabinMode;
     cbTrail.checked = draft.pointerTrailEnabled;
     cbSeq.checked = draft.idleSequenceEnabled;
@@ -1605,6 +1643,12 @@ export const createSettingsPanel = (
   });
   cbGreetPool.addEventListener('change', () => {
     draft.greetInTouchPool = cbGreetPool.checked;
+  });
+  selFitAspect.addEventListener('change', () => {
+    const v = selFitAspect.value as SettingsView['fitAspect'];
+    if (v === 'height' || v === 'width') {
+      draft.fitAspect = v;
+    }
   });
   selCabin.addEventListener('change', () => {
     const v = selCabin.value as SettingsView['cabinMode'];
@@ -1696,6 +1740,7 @@ export const createSettingsPanel = (
       voiceEnabled: draft.voiceEnabled,
       voiceVolume: draft.voiceVolume,
       greetInTouchPool: draft.greetInTouchPool,
+      fitAspect: draft.fitAspect,
       cabinMode: draft.cabinMode,
       pointerTrailEnabled: draft.pointerTrailEnabled,
       idleSequenceEnabled: draft.idleSequenceEnabled,

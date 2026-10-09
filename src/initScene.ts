@@ -132,12 +132,34 @@ export const initScene = (configs: Configs) => {
           bottom = m.position.y - bh / 2;
         }
       }
-      return { bottom, bw, bh };
+      return { bottom, bw, bh, z: zMin };
     })();
 
     const minAspect =
       configs.minAspect ?? (base.bh > 0 ? base.bw / base.bh : 1.54);
     const maxAspect = configs.maxAspect ?? 2.4;
+
+    /**
+     * 对齐基准（见 `config.type.ts` 的 `fitAspect`）。
+     *
+     * ★ 缺省 **`'height'`**（2026-10-08 用户拍板；与游戏内取景一致）。
+     *   老工程（S9/盛夏游乐场）在 `config.json` 里显式写了 `"fitAspect": "width"`，
+     *   所以缺省值翻转不会让它们悄悄变样。
+     *
+     *   · `'height'` ⇒ 可见高恒 = 设计态可见高；**fov 恒定 = `fovDesign`**
+     *                  （等价于把「设计比例下的取景」原样搬到任何比例上，横向多露/少露）
+     *   · `'width'`  ⇒ 可见宽恒 = 底层铺满层 world 宽；fov 随视口比例反比变
+     *                  （`tan(fov_r/2) = tan(fov_d/2)·aspect_d/aspect_w`）
+     *
+     * ★ 为什么 `'height'` 时 fov 就是 `fovDesign`：
+     *   设计态下 `aspect_w = aspect_d`，`tan(fov_r/2) = tan(fov_d/2)`，
+     *   而“可见高”只由 `tan(fov/2)` 与该平面的 |z| 决定 ⇒ 想让它恒定，
+     *   只需让 `tan(fov/2)` 恒定；把分母那个 `aspect_d/aspect_w` 去掉即是。
+     */
+    const fitAspect: 'width' | 'height' =
+      configs.fitAspect === 'width' ? 'width' : 'height';
+    /** 设计态的半高正切（= tan(fovDesign/2)），`'height'` 基准下就是实际值 */
+    const tanHalfDesign = Math.tan((fovDesign * Math.PI) / 360);
 
     const calc = (): FitResult => {
       let vw = window.innerWidth || w0;
@@ -162,17 +184,22 @@ export const initScene = (configs: Configs) => {
         ch = vh;
       }
 
-      // 水平锁定：tan(fov/2) = tan(fov_d/2) · aspect_d / aspect_w
+      // 水平锁定（`'width'`）：tan(fov/2) = tan(fov_d/2) · aspect_d / aspect_w
+      // 画幅高锁定（`'height'`）：tan(fov/2) 恒定 = tan(fov_d/2)
       const fov =
-        (2 *
-          Math.atan(
-            (Math.tan((fovDesign * Math.PI) / 360) * (w0 / h0)) / (cw / ch)
-          ) *
-          180) /
-        Math.PI;
+        fitAspect === 'height'
+          ? fovDesign
+          : (2 * Math.atan((tanHalfDesign * (w0 / h0)) / (cw / ch)) * 180) /
+            Math.PI;
 
       // 垂直锚点：把可见窗口的下边界钉在底层素材的下边界上（camY 恒 >= 0）
-      const halfH = base.bw / 2 / (cw / ch);
+      // ★ 两种基准下"可见半高"的算法不同：
+      //   `'width'`  —— 可见宽 ≡ base.bw ⇒ 半高 = base.bw/2/aspect
+      //   `'height'` —— 半高由 fov 与 base 平面直接给出 = |base.z|·tan(fovDesign/2)
+      const halfH =
+        fitAspect === 'height'
+          ? Math.abs(base.z) * tanHalfDesign
+          : base.bw / 2 / (cw / ch);
       const camY = halfH + base.bottom > 0 ? halfH + base.bottom : 0;
 
       return {
