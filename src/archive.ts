@@ -70,7 +70,9 @@ import {
   SLOT_ORDER,
   buildPool,
   findByActionId,
-  hasGreetingSlots,
+  hasGreetIds,
+  normalizeGreetIds,
+  resolveChatIds,
   resolveStandbyKinds,
   resolveStandbyTouchIds,
   resolveTouchIds,
@@ -217,18 +219,36 @@ const buildRows = (cfg: Configs): Row[] => {
   const dialogues: DialogueEntry[] = sub?.dialogues ?? [];
   const rows: Row[] = [];
 
-  /* ① 时段问候 —— 顺序用 SLOT_ORDER，与运行时"找第一个命中的时段"一致 */
-  SLOT_ORDER.forEach((slot) => {
-    const id = sub?.greeting?.[slot];
-    const e = typeof id === 'number' ? findByActionId(dialogues, id) : null;
+  /**
+   * ① 问候 —— ★ 2026-10-08 起按**数组**列举（`subtitle.greet`；旧时段表 `greeting` 自动兼容）。
+   *
+   * 第 1/2/3 条分别对应清晨/中午/傍晚（顺序即时段顺序），
+   * 再往后的条**按时取不到**（按时问候只有早/中/晚三个位子）⇒ 单独标成"追加候选"。
+   */
+  const greetSource = sub?.greet ?? sub?.greeting;
+  const greetIds = normalizeGreetIds(greetSource);
+  greetIds.forEach((id, i) => {
+    const e = findByActionId(dialogues, id);
     if (!e) {
       return;
     }
-    const r = sub?.greetingRanges?.[slot] ?? DEFAULT_TIME_RANGES[slot];
+    const seat = '#' + (i + 1) + '/' + greetIds.length;
+    if (i < SLOT_ORDER.length) {
+      const slot = SLOT_ORDER[i];
+      const r = sub?.greetingRanges?.[slot] ?? DEFAULT_TIME_RANGES[slot];
+      rows.push(
+        makeRow(
+          '问候 · ' + SLOT_LABEL[slot],
+          hourRangeText(r.start, r.end) + ' ＋ 问候时机',
+          e
+        )
+      );
+      return;
+    }
     rows.push(
       makeRow(
-        '问候 · ' + SLOT_LABEL[slot],
-        hourRangeText(r.start, r.end) + ' ＋ 问候时机',
+        '问候 · 追加 ' + seat,
+        'greet 列表第 ' + (i + 1) + ' 条 · 按时问候没有对应时段，不会被自动问候取到',
         e
       )
     );
@@ -245,62 +265,65 @@ const buildRows = (cfg: Configs): Row[] => {
    */
   const standbyTouchPool = buildPool(
     dialogues,
-    resolveStandbyTouchIds(sub?.standby, sub?.touch)
+    resolveStandbyTouchIds(sub?.standby, sub?.touch, sub?.chat)
   );
   const standbyKinds = resolveStandbyKinds(
     sub?.standbyTouchEnabled,
     sub?.standbyGreetEnabled,
     standbyTouchPool.length > 0,
-    hasGreetingSlots(sub?.greeting)
+    hasGreetIds(greetSource)
   );
   if (standbyKinds.length) {
     const gate = '无操作静置 ' + fmtSec(standbySec);
     const twoWay = standbyKinds.length > 1 ? ' · 随机二选一' : '';
-    /* 问候：仅当勾了「待机自动触发greet事件」才占行（3 条按时段，与上面 ① 同一批条目） */
+    /* 问候：仅当勾了「待机自动触发greet事件」才占行（与上面 ① 同一批条目） */
     if (standbyKinds.indexOf('greet') >= 0) {
-      SLOT_ORDER.forEach((slot) => {
-        const id = sub?.greeting?.[slot];
-        const e = typeof id === 'number' ? findByActionId(dialogues, id) : null;
+      greetIds.forEach((id, i) => {
+        const e = findByActionId(dialogues, id);
+        if (!e) {
+          return;
+        }
+        const seat = '#' + (i + 1) + '/' + greetIds.length;
+        const name =
+          i < SLOT_ORDER.length
+            ? '待机问候 · ' + SLOT_LABEL[SLOT_ORDER[i]]
+            : '待机问候 · 追加 ' + seat;
+        rows.push(makeRow(name, gate + twoWay + ' · 按时段', e));
+      });
+    }
+    /**
+     * 聊天 / 休闲待机：**`chat` 列表逐条占行**（2026-10-08 起是数组，通常只有 1 条）。
+     *
+     * ★ 池里其余条目（`subtitle.touch` 那几条）**就是下面 ③「点击触摸」那几行** ——
+     *   逐条再列一遍会让表里出现两遍同样的念白，行数也会顶穿一屏。
+     *   池的构成写在「触发条件」列里，一眼能看出"静置到点会从 N 条里随机"。
+     */
+    if (standbyKinds.indexOf('touch') >= 0) {
+      const chatIds = resolveChatIds(sub?.chat, sub?.standby);
+      chatIds.forEach((id, i) => {
+        const e = findByActionId(dialogues, id);
         if (!e) {
           return;
         }
         rows.push(
-          makeRow('待机问候 · ' + SLOT_LABEL[slot], gate + twoWay + ' · 按时段', e)
-        );
-      });
-    }
-    /**
-     * 触摸：**整个池只占 1 行**（64004 那条）。
-     *
-     * ★ 池里其余条目（`subtitle.touch` 的 6 条）**就是上面 ③「点击触摸」那 6 行** ——
-     *   逐条再列一遍会让表里出现两遍同样的念白，行数也会顶穿一屏。
-     *   池的构成写在「触发条件」列里，一眼能看出"静置到点会从 7 条里随机"。
-     */
-    if (
-      standbyKinds.indexOf('touch') >= 0 &&
-      typeof sub?.standby === 'number'
-    ) {
-      const e = findByActionId(dialogues, sub.standby);
-      if (e) {
-        rows.push(
           makeRow(
-            '待机闲聊',
+            '待机闲聊 #' + (i + 1),
             gate +
               twoWay +
               ' · 池内随机 1 条（共 ' +
               standbyTouchPool.length +
-              ' 条：休闲待机 + 点击触摸）',
+              ' 条：聊天 + 点击触摸）',
             e
           )
         );
-      }
+      });
     }
   }
 
   /* ③ 点击触摸 —— 池子用运行时同一套纯函数现算 */
   const pool = buildPool(
     dialogues,
-    resolveTouchIds(sub?.touch, sub?.greeting, sub?.greetInTouchPool)
+    resolveTouchIds(sub?.touch, greetSource, sub?.greetInTouchPool)
   );
   const touchCount = (sub?.touch ?? []).length;
   pool.forEach((e, i) => {
@@ -385,15 +408,16 @@ const buildNotes = (cfg: Configs): string[] => {
    *   不在这里另写一套 if —— 否则表格与细则会随配置漂移。
    * ⚠️ `buildNotes` 里没有 `dialogues` 局部量（那是 `buildRows` 的），故直接取 `sub?.dialogues`。
    */
+  const greetSource = sub?.greet ?? sub?.greeting;
   const standbyTouchPool = buildPool(
     sub?.dialogues ?? [],
-    resolveStandbyTouchIds(sub?.standby, sub?.touch)
+    resolveStandbyTouchIds(sub?.standby, sub?.touch, sub?.chat)
   );
   const standbyKinds = resolveStandbyKinds(
     sub?.standbyTouchEnabled,
     sub?.standbyGreetEnabled,
     standbyTouchPool.length > 0,
-    hasGreetingSlots(sub?.greeting)
+    hasGreetIds(greetSource)
   );
   const which =
     standbyKinds.length > 1
@@ -402,13 +426,18 @@ const buildNotes = (cfg: Configs): string[] => {
       ? '播一条按时段的问候'
       : '从「休闲待机 + 点击触摸」那 ' + standbyTouchPool.length + ' 条里随机播一条';
 
+  /** 问候的取条口径（与 `pickGreetingEntry` 保持一致） */
+  const greetTake = '按当前时刻取 greet 列表里对应序号那条（第 1 条=清晨、第 2 条=中午、第 3 条=傍晚）';
   notes.push(
     '「问候时机」= 下列任一：① 壁纸载入后 ' +
       delaySec +
       ' 秒；② 页面重新变为可见；③ 窗口重新获得焦点；④ Wallpaper Engine 暂停后恢复' +
       '（恢复这一路还要求离开不少于 15 秒，切一下窗口马上回来不会触发）' +
       (standbyKinds.indexOf('greet') >= 0 ? '；⑤ 待机静置到点' : '') +
-      '。相邻两次问候至少间隔 5 秒；若此刻正在播触摸动作则跳过，等下一个信号。'
+      '。取哪一条：' +
+      greetTake +
+      '；列表本身写在 config.json 的 subtitle.greet 里。' +
+      '相邻两次问候至少间隔 5 秒；若此刻正在播触摸动作则跳过，等下一个信号。'
   );
   notes.push(
     standbyKinds.length
@@ -425,7 +454,7 @@ const buildNotes = (cfg: Configs): string[] => {
       ((sub?.touch ?? []).length || 0) +
       ' 条触碰念白' +
       (sub?.greetInTouchPool === true
-        ? '，另并入 3 条时段问候（开关已打开）'
+        ? '，另并入整个 greet 列表（开关已打开）'
         : '') +
       '。同一条念白对应的动画只有 5 个（greet / chat / touch1 / touch2 / touch3）——' +
       '多条念白共用同一个动作是骨架资源本身的情况。'

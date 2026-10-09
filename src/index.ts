@@ -47,7 +47,7 @@ import {
 } from './config.type';
 import {
   buildPool,
-  hasGreetingSlots,
+  hasGreetIds,
   pickGreetingEntry,
   pickRandomFromPool,
   resolveStandbyKinds,
@@ -470,8 +470,17 @@ const main = async () => {
   const standbyIdleMs = subtitleCfg?.standbyIdleMs ?? 25000;
   const greetingDelayMs = subtitleCfg?.greetingDelayMs ?? 3000;
   /**
-   * 「待机触摸」池 —— `standby`（休闲待机 64004）**并上** `touch`（点击触摸
-   * 64005~64010）解析出的条目（2026-09-30 用户修正："开启后可触发 64004 到 64010"）。
+   * ★★ 问候事件的**来源**（2026-10-08 起统一走数组 `greet`）。
+   *
+   * 新 config 写 `"greet": [64001, 64002, 64003]`（用户可以直接增删）；
+   * 没配时才退回旧的时段表 `greeting`（**老 config 行为逐字不变**）。
+   * 后面三处（触摸池合并、问候取条、待机可用性判据）全部只用这一个对象，
+   * ⇒ 不会再出现"两处读了两种口径"。
+   */
+  const greetSource = subtitleCfg?.greet ?? subtitleCfg?.greeting;
+  /**
+   * 「待机触摸」池 —— **聊天池**（`chat`，或旧字段 `standby`）**并上** `touch`（点击触摸）
+   * 解析出的条目（2026-09-30 用户修正："开启后可触发 64004 到 64010"）。
    *
    * ★ 动作与字幕**同源**（与点击触摸同一口径）：取了哪条就播它的 `animation`、
    *   显示它的台词，天然配套不会串。
@@ -480,7 +489,11 @@ const main = async () => {
    */
   const standbyTouchPool: DialogueEntry[] = buildPool(
     dialogues,
-    resolveStandbyTouchIds(subtitleCfg?.standby, subtitleCfg?.touch)
+    resolveStandbyTouchIds(
+      subtitleCfg?.standby,
+      subtitleCfg?.touch,
+      subtitleCfg?.chat
+    )
   );
 
   /**
@@ -492,13 +505,13 @@ const main = async () => {
    *
    * ★ 判据集中在 `dialogue.resolveStandbyKinds`（纯函数、可单测），这里只把 config
    *   读成入参 —— 与 `resolveTouchIds` 同一套架构口径（见 `dialogue.ts` 文件头）。
-   * `touch` 要求上面那个池非空，`greet` 要求 `greeting` 时段表至少配了一个时段。
+   * `touch` 要求上面那个池非空，`greet` 要求问候池（`greet`）至少有一条候选。
    */
   const standbyKinds = resolveStandbyKinds(
     subtitleCfg?.standbyTouchEnabled,
     subtitleCfg?.standbyGreetEnabled,
     standbyTouchPool.length > 0,
-    hasGreetingSlots(subtitleCfg?.greeting)
+    hasGreetIds(greetSource)
   );
 
   /**
@@ -519,8 +532,10 @@ const main = async () => {
    * 没有这层会出现"一句话连播三遍"。
    *
    * ★ 第 5 个入口 = **待机到点**（`tickStandby` 的 `greet` 分支，2026-09-30）。
-   *   刻意复用它而不是另写一份 —— "按时段选取 + 去重 + `trigger('greet')`"
+   *   刻意复用它而不是另写一份 —— "取条 + 去重 + `trigger('greet')`"
    *   就是"触发一次问候"的完整语义，另写必然与上面几路慢慢漂移。
+   *
+   * ★ 取条与"开机 / 回到桌面"等那几路共用同一个 `pickGreetingEntry` ⇒ 口径唯一。
    */
   const tryGreeting = (reason: string): boolean => {
     if (!touchController) {
@@ -532,7 +547,7 @@ const main = async () => {
     }
     const entry = pickGreetingEntry(
       dialogues,
-      subtitleCfg?.greeting ?? {},
+      greetSource,
       subtitleCfg?.greetingRanges ?? {},
       new Date()
     );
@@ -913,13 +928,13 @@ const main = async () => {
                  * 命中热区时随机取一条 ⇒ 播哪个动作就显示哪句台词，天然配套不会串。
                  *
                  * ★ `subtitle.greetInTouchPool`（缺省 false）打开时，`resolveTouchIds`
-                 * 会把「问候」时段表里的 actionId 追加进 id 列表 ——
+                 * 会把**问候池**（`greet`，或旧 `greeting`）的 actionId 追加进 id 列表 ——
                  * 点热区也能随机到打招呼的语音/动作。
                  * 只并 id、不改条目 ⇒ 上面那条"动作与字幕同源"的口径原样成立。
                  */
                 const touchIds = resolveTouchIds(
                   subtitleCfg?.touch,
-                  subtitleCfg?.greeting,
+                  greetSource,
                   subtitleCfg?.greetInTouchPool
                 );
                 const touchPool = buildPool(dialogues, touchIds);

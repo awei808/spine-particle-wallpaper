@@ -28,9 +28,16 @@
  *
  * | 场景 | 入口 | 口径 |
  * |---|---|---|
- * | 点击热区 | `pickTouchEntry` | 从 `subtitle.touch` 的 actionId 列表里**随机**取一条 |
- * | 首次打开 / 回到桌面 | `pickGreetingEntry` | 按**当前本地时刻**落在哪个时段，取对应 actionId |
- * | 空闲 N 秒 | （直接用 `subtitle.standby` 的 id 查表） | 固定条目 |
+ * | 点击热区 | `pickTouchEntry` →（`touch.ts`） | 从 **`touch` 池**的 actionId 里**随机**取一条 |
+ * | 首次打开 / 回到桌面 / 回到前台 / WE 暂停后恢复 | `pickGreetingEntry` | 从 **`greet` 池**取**当前时段对应序号**那条 |
+ * | 长时间无互动（待机到点） | `resolveStandbyTouchIds` + `pickRandomFromPool` | 从 **`chat` + `touch` 合并池**里随机取一条 |
+ *
+ * ★★ **三条事件列表的头号事实（2026-10-08 改）**：`greet` / `chat` / `touch`
+ *    全部统一为 **actionId 数组**，且它们是 config 里唯一的真相来源
+ *    —— 用户想让某类多一条候选，往数组里加一个 id 即可，**不需要重建 bundle**。
+ *    旧的 `greeting`（时段→id 映射）与 `standby`（单条 id）保留为**兼容输入**，
+ *    经 `normalizeGreetIds` / `resolveChatIds` 摊平成同一种数组后再参与后续选取
+ *    ⇒ **新旧两路共用同一套选取代码**，不会出现两套口径。
  *
  * ## ⚠️ "随机"这件事的成色
  *
@@ -143,20 +150,85 @@ export const buildPool = (
   return pool;
 };
 
+/* ══════════════════════════════════════════════════════════════════════
+ * 事件列表的**归一化**（2026-10-08）
+ *
+ * 新的写入口径一律是数组（`greet` / `chat` / `touch`），旧的口径是
+ * `greeting`（时段→id 映射）与 `standby`（单条 id）。两套口径在这里摊平，
+ * 后面的所有选取代码只认"去重保序的 actionId 数组"这一种形状。
+ * ══════════════════════════════════════════════════════════════════════ */
+
 /**
- * 由 `subtitle.{touch,greeting,greetInTouchPool}` 解析出**触摸池的 actionId 列表**。
+ * 问候配置的两种形状：
+ * - **数组**（新口径，`config.subtitle.greet`）；
+ * - **时段映射**（旧口径，`config.subtitle.greeting`）。
+ *
+ * ⚠️ 两种都必须接受 —— 老 config.json 与既有回归脚本（64/65）仍在传后者。
+ */
+export type GreetSource = number[] | Partial<Record<DialogueSlotKey, number>>;
+
+/**
+ * 把问候来源摊平成**去重保序**的 actionId 数组。两者都不是 ⇒ 空数组（永不抛）。
+ *
+ * ★ 旧口径按 `SLOT_ORDER`（早→中→晚）摊平 ⇒ 数组顺序天然就是"时段序号"，
+ *   这正是 `pickGreetingEntry` 按下标取条所依赖的形状。
+ */
+export const normalizeGreetIds = (src?: GreetSource): number[] => {
+  const out: number[] = [];
+  const push = (id: unknown): void => {
+    if (typeof id === 'number' && out.indexOf(id) < 0) {
+      out.push(id);
+    }
+  };
+  if (Array.isArray(src)) {
+    src.forEach(push);
+    return out;
+  }
+  for (let i = 0; i < SLOT_ORDER.length; i++) {
+    push(src?.[SLOT_ORDER[i]]);
+  }
+  return out;
+};
+
+/** 问候池是否至少有一条候选（两种形状通用） */
+export const hasGreetIds = (greet?: GreetSource): boolean =>
+  normalizeGreetIds(greet).length > 0;
+
+/**
+ * 「聊天」池（长时间无互动时触发的那些念白）的解析。
+ *
+ * 新口径 = `subtitle.chat`（数组）优先；没配时才退回旧的 `subtitle.standby`（单条 id）。
+ * ⇒ 只配了旧字段的老 config 行为**逐字不变**。
+ */
+export const resolveChatIds = (
+  chat: number[] | undefined,
+  standby: number | undefined
+): number[] => {
+  if (chat?.length) {
+    const out: number[] = [];
+    chat.forEach((id) => {
+      if (typeof id === 'number' && out.indexOf(id) < 0) {
+        out.push(id);
+      }
+    });
+    return out;
+  }
+  return typeof standby === 'number' ? [standby] : [];
+};
+
+/**
+ * 由 `subtitle.{touch,greet,greetInTouchPool}` 解析出**触摸池的 actionId 列表**。
  *
  * 开关关闭（缺省）⇒ 原样返回 `touch`，行为与改动前完全一致；
- * 开启 ⇒ 把「问候」时段表 `greeting` 里的 actionId 追加到**末尾**，
+ * 开启 ⇒ 把**问候池**的 actionId 追加到**末尾**，
  * 让点击热区也能随机到打招呼的语音/动作，而不只靠"开机 / 回到桌面"这类自动信号。
  *
- * 口径（2026-09-29 用户确认）：**按 `greeting` 全量并入，不写死 id** ——
- * 加时段、换 id 只改 config，不需要重建 bundle。因此晚间问候
- * （`evening`，动作是 `chat` 而非 `greet`）也会进来。
+ * 口径（2026-09-29 用户确认）：**按问候池全量并入，不写死 id** ——
+ * 加候选、换 id 只改 config，不需要重建 bundle。因此晚间问候
+ * （动作是 `chat` 而非 `greet`）也会进来。
  *
- * 两个去重/容错细节，避免"配重复了 ⇒ 某条被随机到的概率翻倍"这种静默偏差：
- *   - 已在 `touch` 里的 id 不再追加（保序：先原样保留，再按 `SLOT_ORDER` 补）；
- *   - 时段值非数字（`greeting` 是 `Partial`）时跳过。
+ * 去重细节：已在 `touch` 里的 id 不再追加（保序：先原样保留 `touch`，再补问候池），
+ * 避免"配重复了 ⇒ 某条被随机到的概率翻倍"这种静默偏差。
  *
  * ⚠️ 本函数**只产出 id 列表**，不解析条目 —— 解析交给 `buildPool`，
  * 于是"id 指向不存在的条目就静默跳过"这条兜底口径对两条来源一视同仁。
@@ -166,19 +238,18 @@ export const buildPool = (
  */
 export const resolveTouchIds = (
   touch: number[] | undefined,
-  greeting: Partial<Record<DialogueSlotKey, number>> | undefined,
+  greet: GreetSource | undefined,
   greetInTouchPool: boolean | undefined
 ): number[] => {
   const out = (touch ?? []).slice();
   if (greetInTouchPool !== true) {
     return out;
   }
-  for (let i = 0; i < SLOT_ORDER.length; i++) {
-    const id = greeting?.[SLOT_ORDER[i]];
-    if (typeof id === 'number' && out.indexOf(id) < 0) {
+  normalizeGreetIds(greet).forEach((id) => {
+    if (out.indexOf(id) < 0) {
       out.push(id);
     }
-  }
+  });
   return out;
 };
 
@@ -193,41 +264,41 @@ export const resolveTouchIds = (
 export type StandbyEventKind = 'greet' | 'touch';
 
 /**
- * 「待机触摸」池的 actionId 列表 = `standby`（休闲待机）+ `touch`（点击触摸），**保序去重**。
+ * 「待机触摸」池的 actionId 列表 = **聊天池** + `touch`（点击触摸），**保序去重**。
+ *
+ * ★ 2026-10-08 起"聊天"那一段来自 **`chat` 数组**；数组未配时才退回旧的单值字段
+ *   `standby`（解析见 `resolveChatIds`，老 config 行为逐字不变）。
  *
  * ★ 2026-09-30 用户拍板：「开启待机自动触发 touch 事件后，**64004 到 64010 都可触发**」
- *   —— 所以 `standby` 不是单独一类，而是这个池的**第 1 条**。
+ *   —— 所以聊天池不是单独一类，而是这个池的**前几条**。
  * ⚠️ 池里因此含 64004，而它**不再固定播放**（原来待机到点必播它）。
  *
- * 顺序 = `[standby, ...touch]`，重复 id 只保留首次出现（`touch` 里再写一次 `standby`
- * 不会让它被随机到的概率翻倍）。去重口径与 `resolveTouchIds` 一致。
+ * 顺序 = `[...chat, ...touch]`，重复 id 只保留首次出现（`touch` 里再写一次
+ * `standby` 不会让它被随机到的概率翻倍）。去重口径与 `resolveTouchIds` 一致。
  */
 export const resolveStandbyTouchIds = (
   standby: number | undefined,
-  touch: number[] | undefined
+  touch: number[] | undefined,
+  chat?: number[]
 ): number[] => {
-  const out: number[] = [];
+  const out: number[] = resolveChatIds(chat, standby);
   const push = (id: unknown): void => {
     if (typeof id === 'number' && out.indexOf(id) < 0) {
       out.push(id);
     }
   };
-  push(standby);
   (touch ?? []).forEach(push);
   return out;
 };
 
-/** `subtitle.greeting` 里是否至少配了一个时段的 actionId（`standbyGreetEnabled` 的可用性判据） */
-export const hasGreetingSlots = (
-  greeting: Partial<Record<DialogueSlotKey, number>> | undefined
-): boolean => {
-  for (let i = 0; i < SLOT_ORDER.length; i++) {
-    if (typeof greeting?.[SLOT_ORDER[i]] === 'number') {
-      return true;
-    }
-  }
-  return false;
-};
+/**
+ * 问候池是否非空（`standbyGreetEnabled` 的可用性判据）。
+ *
+ * ⚠️ **旧名**：2026-10-08 起问候是数组，建议用 `hasGreetIds`；
+ * 本函数是它的别名（两者完全等价），保留以免既有脚本失效。
+ */
+export const hasGreetingSlots = (greeting?: GreetSource): boolean =>
+  hasGreetIds(greeting);
 
 /**
  * 解析「待机到点后**可以播**哪些类别」—— 纯函数，开关判据集中在这里，便于单测。
@@ -287,19 +358,57 @@ export const pickRandomFromPool = (
   return pool[i] ?? null;
 };
 
-/** 按时段取问候条目；该时段没配或条目缺失时返回 `null` */
+/**
+ * 按**当前时段**取问候条目。
+ *
+ * 取不到（停在了没有对应序号的时段、或池里那条 id 不在 `dialogues`）时降级为**池内随机**；
+ * 池本身为空、或时段分界被改坏（`ranges` 覆盖不到全天）⇒ 返回 `null`（不猜）。
+ */
 export const pickGreetingEntry = (
   entries: DialogueEntry[],
-  greeting: Partial<Record<DialogueSlotKey, number>>,
+  greet: GreetSource | undefined,
   ranges: Partial<Record<DialogueSlotKey, DialogueTimeRange>>,
   date: Date
 ): DialogueEntry | null => {
-  const slot = resolveTimeSlot(date, ranges);
-  if (!slot) {
+  const ids = normalizeGreetIds(greet);
+  if (!ids.length) {
     return null;
   }
-  const actionId = greeting?.[slot];
-  return typeof actionId === 'number'
-    ? findByActionId(entries, actionId)
-    : null;
+  const pool = buildPool(entries, ids);
+  if (!pool.length) {
+    return null;
+  }
+  /**
+   * 按时模式：**按时段取对应的那一条**。
+   *
+   * | 形状 | 取值方式 |
+   * |---|---|
+   * | **数组**（新口径） | `greet[slotIndex]`，morning→0 / noon→1 / evening→2（顺序即时段顺序） |
+   * | **旧时段表** | 直接 `greeting[slot]`（与改动前**逐字一致**） |
+   *
+   * ★ 降级路径（下面那句）用**缺省随机源**，不需要从外面注入 ——「池的顺序与时段不对位」
+   *   是配置问题，不是播放逻辑，注入随机源没有观测价值。
+   */
+  const slot = resolveTimeSlot(date, ranges);
+  if (!slot) {
+    // 时段被改坏（ranges 覆盖不到全天）⇒ 沿用改动前的口径：不猜、返回 null
+    return null;
+  }
+  const byTime = findByActionId(entries, idForSlot(greet, slot));
+  /**
+   * ★ 降级而非静默失效：按序号找不到（池的顺序与时段不对位，或池不足 3 条）
+   *   ⇒ **池内随机**。宁可是"时段对不上"，也不要"到点了什么都不播"。
+   */
+  return byTime ?? pickRandomFromPool(pool);
 };
+
+/**
+ * 按时段取**问候池**里对应的 actionId（不存在 ⇒ `undefined`）。
+ *
+ * ★ 两种形状各按各自的约定取、互不借用 —— 旧 config 的行为因此不会被改坏。
+ */
+export const idForSlot = (
+  greet: GreetSource | undefined,
+  slot: DialogueSlotKey
+): number | undefined =>
+  Array.isArray(greet) ? greet[SLOT_ORDER.indexOf(slot)] : greet?.[slot];

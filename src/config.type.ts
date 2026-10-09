@@ -920,15 +920,52 @@ export type SubtitleConfig = {
 
   /* ── 数据 ────────────────────────────────────────────── */
 
-  /** 念白条目总表（**唯一数据源**；下面三处只用 actionId 引用它，避免文案写两遍） */
+  /** 念白条目总表（**唯一数据源**；下面三条事件列表只用 actionId 引用它，避免文案写两遍） */
   dialogues?: DialogueEntry[];
-  /** 触摸池：命中热区时从这些 actionId 里**随机**取一条（动作+字幕同源，天然配套） */
-  touch?: number[];
+
   /**
-   * 是否把「问候」条目**并入触摸池**（缺省 **false** = 保持旧行为：点击只从 `touch` 里随机）。
+   * ═══════ 三条「可触发事件」列表（2026-10-08 起统一为**数组**）═══════
    *
-   * ★ 并入的是 `greeting` 时段表里的**全部** actionId（不是写死 64001/64002）——
-   * 加时段、换 id 只改 config，**不需要重建 bundle**。
+   * **"哪些事件可能被触发"的唯一真相就在这三个数组里**（不再是"单条 id + 代码里的 if"），
+   * 用户可以自由增删 —— 例如下面这份抄自游戏 `CfgSoulSpineActionControlTable`：
+   *
+   * ```json
+   * "greet": [64001, 64002, 64003],
+   * "chat":  [64004],
+   * "touch": [64005, 64006, 64007, 64008, 64009, 64010]
+   * ```
+   *
+   * 想多一条候选就在数组里加一个 actionId，**不需要重建 bundle**。
+   * 三条列表的元素都必须是 `dialogues` 里存在的 actionId —— 找不到的 id 会被
+   * **静默跳过**（见 `dialogue.buildPool` 的注释），所以写错一个数字只会"少一条候选"，
+   * 不会让整类事件失效。
+   *
+   * | 列表 | 触发时机 | 取条方式 |
+   * |---|---|---|
+   * | `greet` | 开机 / 回到桌面 / 回到前台 / WE 暂停后恢复 /（可选）待机到点 | 按**当前系统时刻**取对应序号那条（清晨/中午/傍晚） |
+   * | `chat` | **长时间无互动**（静置超过 `standbyIdleMs`）且勾了「待机自动触发touch事件」 | 池内随机 |
+   * | `touch` | 点中任一触摸热区 | 池内随机 |
+   *
+   * ⚠️ 三条列表**互不排斥**：同一个 actionId 写进多个列表完全合法
+   *    （例如把 64005 同时放进 `touch` 和 `chat`）；需要去重的合并在
+   *    `dialogue.ts` 的合并函数里做，这里按用户写的原样保留。
+   */
+  /** **问候（greet）事件池**。`greetMode==='time'` 时按下标对位时段，详见上面的表格 */
+  greet?: number[];
+  /**
+   * **聊天（chat）事件池** —— 「长时间无互动」到点后可触发的那些念白。
+   *
+   * ★ 2026-10-08 由旧的单值字段 `standby` 升级为数组：**"待机该说什么"从此由用户说了算**。
+   */
+  chat?: number[];
+  /** **触摸（touch）事件池**：命中热区时从这里**随机**取一条（动作+字幕同源，天然配套） */
+  touch?: number[];
+
+  /**
+   * 是否把「问候」条目**并入触摸池**（缺省 **false** = 点击只从 `touch` 里随机）。
+   *
+   * ★ 并入的是 **`greet` 池里的全部** actionId（不再写死 64001/64002）——
+   * 加候选只改 config，**不需要重建 bundle**。
    *
    * ⚠️ 各条目的**动作并不相同**：S9 的 `morning`/`noon` 是 `greet`，`evening` 是 `chat`。
    * 口径（2026-09-29 用户确认）= **"只要它本来就是被当作打招呼触发的，就一并并入"**
@@ -938,7 +975,13 @@ export type SubtitleConfig = {
    * 落盘后经 `settingsStore.applyOverrides` 覆盖本字段并**重载生效**。
    */
   greetInTouchPool?: boolean;
-  /** 问候：按当前本地时刻选一个 actionId */
+  /**
+   * ⚠️ **旧口径**：按时段映射的问候 actionId（如 `{morning:64001,...}`）。
+   *
+   * 已被 `greet` 数组取代 —— 保留仅为向后兼容：**没配 `greet` 时**由
+   * `dialogue.normalizeGreetIds` 按 `SLOT_ORDER` 顺序把这里的值摊平成数组，
+   * 旧 config 的行为逐字不变。**新配置请一律用 `greet` 数组。**
+   */
   greeting?: Partial<Record<DialogueSlotKey, number>>;
   /** 问候时段分界（小时）。缺省见 `dialogue.ts` 的 `DEFAULT_TIME_RANGES` */
   greetingRanges?: Partial<Record<DialogueSlotKey, DialogueTimeRange>>;
@@ -950,8 +993,8 @@ export type SubtitleConfig = {
    * ## ★ 2026-09-30 起它是**共享阈值**，不再单指 "chat"
    *
    * 到点后播哪一类事件由下面两个开关决定（面板都在「动作」页）：
-   *   - `standbyGreetEnabled` ⇒ 播一条**按时段**的问候（走 `greeting` 时段表）；
-   *   - `standbyTouchEnabled`（缺省**关**） ⇒ 从 **`standby` + `touch` 合并的池**里
+   *   - `standbyGreetEnabled` ⇒ 播一条**按时段**的问候（走 `greet` 池）；
+   *   - `standbyTouchEnabled`（缺省**关**） ⇒ 从 **`chat` + `touch` 合并的池**里
    *     **随机**取一条（S9 = 64004 休闲待机 + 64005~64010 点击触摸，共 7 条）。
    * 两个都开 ⇒ **随机二选一**（先挑类别，再在该类里随机）；两个都关 ⇒ 待机不播任何东西。
    *
@@ -960,16 +1003,16 @@ export type SubtitleConfig = {
    */
   standbyIdleMs?: number;
   /**
-   * 「休闲待机」那条念白的 actionId（S9 = 64004）。
+   * ⚠️ **旧口径**：「休闲待机」那一条念白的 actionId（S9 = 64004）。已被 `chat` 数组取代。
    *
-   * ★ 它与 `touch` 一起构成**「待机触摸」池**（见 `resolveStandbyTouchIds`）——
-   *   到点后从整个池里随机取一条，所以它**不再固定播放**。
+   * 保留仅为向后兼容：**没配 `chat` 时**，`resolveStandbyTouchIds` 会把它当成
+   * `chat` 池的唯一一条（旧 config 行为逐字不变）。**新配置请一律用 `chat` 数组。**
    */
   standby?: number;
   /**
    * 待机到点后是否自动触发「问候」（greet）事件。缺省 **false**。
    *
-   * 取哪一条由 `greeting` 时段表按**当前本地时刻**决定 —— 与「开机 / 回到桌面」
+   * 取哪一条按**当前本地时刻**从 `greet` 池取对应序号那条 —— 与「开机 / 回到桌面」
    * 那几路走的是**同一套**选取（`pickGreetingEntry`），所以不会出现"两套问候口径"。
    *
    * ⚠️ 与那几路共享 5 秒去重窗口（`GREETING_DEDUPE_SEC`）。
@@ -980,9 +1023,9 @@ export type SubtitleConfig = {
    *
    * ## ★ 这一类是**一个池**，不是单条
    *
-   * 池 = `standby`（休闲待机 64004）**并上** `touch`（点击触摸 64005~64010），
+   * 池 = `chat`（聊天 / 休闲待机 64004）**并上** `touch`（点击触摸 64005~64010），
    * 去重后**随机取一条**（用户拍板：「开启后可触发 64004 到 64010」）。
-   * ⚠️ 因此 64004 **不再固定播放** —— 想恢复"每次都播它"就只配 `standby`、把 `touch` 清空。
+   * ⚠️ 因此 64004 **不再固定播放** —— 想恢复"每次都播它"就只配 `chat`、把 `touch` 清空。
    *
    * ## ⚠️ 缺省 false 的连带后果（已知、用户认可）
    *

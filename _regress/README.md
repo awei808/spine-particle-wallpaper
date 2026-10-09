@@ -30,6 +30,7 @@ npx ts-node --transpile-only _regress/<脚本名>.ts [参数...]
 | `64_回归_问候并入触摸池.ts` | `argv[2]` = bundle、`argv[3]` = config | `WK_BUNDLE` / `WK_CONFIG` | `dist/bundle.js` / `public/assets/config.json` |
 | `65_回归_待机事件选择.ts` | 同上 | `WK_BUNDLE` / `WK_CONFIG` | 同上 |
 | `66_回归_音频总闸边界.ts` | **无**（用 DOM 桩，不需要外部文件） | — | — |
+| `67_回归_事件列表数组化.ts` | `argv[2]` = bundle（其余用例自带数据，不需要 config） | `WK_BUNDLE` | `dist/bundle.js` |
 
 例：
 
@@ -57,5 +58,6 @@ npx ts-node --transpile-only _regress/64_回归_问候并入触摸池.ts
 | `64` | 问候念白并入触摸池后的事件选择 |
 | `65` | 待机触发时的事件选择 |
 | `66` | 音频总闸的各条边界（暂停/恢复/幂等/stop 后不复活等），**纯 DOM 桩，无外部依赖** |
+| `67` | 事件列表（`greet` / `chat` / `touch` 三条数组）的读取与向后兼容（旧 `greeting` / `standby` 与数组行为等价） |
 
 退出码 `0` = 全通过，非 `0` = 有失败项。

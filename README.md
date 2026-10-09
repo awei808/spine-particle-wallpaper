@@ -38,6 +38,31 @@ This repository grew into a **framework** on top of that rendering core:
 - **Settings panel** — edit options at runtime and persist them to WE properties.
 - **Debug probe** — `__WB_DIALOGUE__` / `__WB_FX__` snapshot APIs, designed for headless Chrome + CDP regression runs.
 
+## Event lists and trigger rules
+
+What the character says, and when, is entirely driven by the `subtitle` block of `config.json`.
+**Editing it does not require a rebuild**:
+
+```json
+"subtitle": {
+  "greet": [64001, 64002, 64003],
+  "chat":  [64004],
+  "touch": [64005, 64006, 64007, 64008, 64009, 64010],
+}
+```
+
+| List | When it fires | Which line is picked |
+| --- | --- | --- |
+| `greet` (greetings) | startup / back to desktop / window regains focus / WE resume / (optional) idle timeout | entry #1/#2/#3 by **system clock** (morning/noon/evening) |
+| `chat` (idle chatter) | long inactivity (idle longer than `standbyIdleMs`) | random from `chat` + `touch` |
+| `touch` | any hit zone is clicked | random from the pool |
+
+Every entry is an `actionId` from `subtitle.dialogues` — **add a candidate by adding a number**
+(e.g. `"greet": [64001, 64002, 64003, 64004]`).
+
+> The legacy `greeting` (slot → actionId map) and `standby` (single actionId) fields are still read
+> for backwards compatibility; new configs should just use the three arrays above.
+
 ## Quick start
 
 ```bash

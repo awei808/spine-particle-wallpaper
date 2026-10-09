@@ -29,7 +29,11 @@
       "enabled": true,
       "volume": 0.8,
       "path": "./assets/voice/"
-    }
+    },
+    "dialogues": [],
+    "greet": [],
+    "chat": [],
+    "touch": []
   },
   "bgm": {
     "enabled": true,
