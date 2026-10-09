@@ -45,8 +45,16 @@ export const updateCursorFromClient = (clientX: number, clientY: number) => {
  * ⚠️ 本段最初是**直接 patch 进 bundle.js** 的（`_work_全屏适配/03/13/16_patch_*.py`），
  * 2026-09-20 做热区改造时按 bundle 里**实际生效的代码**逐字还原回 TS。
  * 还原口径：与补丁后 bundle 的 `initScene` 模块**逐语句等价**（含 `camY` 三元表达式的
- * 运算优先级、`Math.round` 已去除这两处易错点）。改这里必须重跑
- * `_work_全屏适配/07_单测_fit逻辑.js` 与 `14_验证_新下限与回归.py`。
+ * 运算优先级、`Math.round` 已去除这两处易错点）。
+ *
+ * ★ 改这里的验收方式（2026-10-09 更新；原 `_work_全屏适配/07_单测_fit逻辑.js` 与
+ *   `14_验证_新下限与回归.py` 已随该目录归档、不在工作区）：必须**用真实渲染量**，不能只看代码。
+ *   起静态服务 + 无头 Chrome，用 `Emulation.setDeviceMetricsOverride` 造出各种视口比例，然后读两样：
+ *   ① canvas 的 `getBoundingClientRect()` —— 比例在范围内 = 等于视口；越界 = 按边界 letterbox、
+ *      且**居中**（如 500×500 视口下 canvas = `500x458 @(0,21)`）；
+ *   ② `#__fitErr` 红条是否存在。
+ *   两者合起来才能区分「正确 letterbox」与「**静默露黑**」—— 后者的 canvas 等于视口，
+ *   且画面左右/上下出现 renderer clear-color 的黑（`#__fitErr` 不存在，控制台也不报错）。
  */
 type FitResult = {
   /** 本次生效的渲染倍率（`configs.dpr` 解析后的实际值） */
@@ -110,9 +118,12 @@ export const initScene = (configs: Configs) => {
     const fovDesign = configs.fov ?? 75;
 
     /**
-     * 扫出「最底层的铺满素材」——z 最小的 texture 层。
-     * 它的**宽高比**就是 minAspect 的默认值（垂直方向能把背景用满的极限），
-     * 它的**下边界 y** 是垂直锚点要钉住的位置。
+     * 扫一遍 texture 层，取两样素材事实（**闸门的两侧就由它们给出**，见下面的 `artMin/artMax`）：
+     *
+     * - **z 最小的那层**（「最底层的铺满素材」）：它的**下边界 y** 是垂直锚点要钉住的位置，
+     *   它的**宽高比** `bw/bh` = 素材下界（垂直方向把背景用满的极限）。
+     * - **最宽的 texture 层**：`wmax` = 素材上界（横向能把画面铺满的极限）。
+     *   ⚠️ 只统计 texture 层 —— **只有它带显式宽高**（spine 给的是 scale、particle 给的是贴图）。
      */
     const base = (() => {
       const meshes = configs.meshes || [];
@@ -120,24 +131,25 @@ export const initScene = (configs: Configs) => {
       let bottom = 0;
       let bw = 0;
       let bh = 0;
+      let wmax = 0;
       for (let i = 0; i < meshes.length; i++) {
         const m = meshes[i] as TextureMeshConfig;
         if (!m || m.type !== 'texture' || !m.position) {
           continue;
         }
+        const w = (m.width || 1) * (m.scale || 1);
+        if (w > wmax) {
+          wmax = w;
+        }
         if (m.position.z < zMin) {
           zMin = m.position.z;
-          bw = (m.width || 1) * (m.scale || 1);
+          bw = w;
           bh = (m.height || 1) * (m.scale || 1);
           bottom = m.position.y - bh / 2;
         }
       }
-      return { bottom, bw, bh, z: zMin };
+      return { bottom, bw, bh, wmax, z: zMin };
     })();
-
-    const minAspect =
-      configs.minAspect ?? (base.bh > 0 ? base.bw / base.bh : 1.54);
-    const maxAspect = configs.maxAspect ?? 2.4;
 
     /**
      * 对齐基准（见 `config.type.ts` 的 `fitAspect`）。
@@ -160,6 +172,50 @@ export const initScene = (configs: Configs) => {
       configs.fitAspect === 'width' ? 'width' : 'height';
     /** 设计态的半高正切（= tan(fovDesign/2)），`'height'` 基准下就是实际值 */
     const tanHalfDesign = Math.tan((fovDesign * Math.PI) / 360);
+
+    /**
+     * ★★ 闸门 `[minAspect, maxAspect]` **按基准各自绑定到素材能给的那一侧**
+     *   （2026-10-09 定；此前是一个基准无关的共用区间）。
+     *
+     * 为什么必须分家：两种基准锁的是**不同的一个自由量**，于是"开始露黑"的边界各在一边 ——
+     *
+     * | 基准 | 锁住 | 可见世界量 | 会露黑的一侧 | 素材给出的边界 |
+     * |---|---|---|---|---|
+     * | `'width'`  | 可见宽 ≡ `base.bw` | 可见高 = `base.bw / 视口比例` | 窗口**太高**（上下露黑） | 下界 `base.bw/base.bh` |
+     * | `'height'` | 可见高 ≡ `visibleH`  | 可见宽 = `visibleH × 视口比例` | 窗口**太宽**（左右露黑） | 上界 `wmax / visibleH` |
+     *
+     * ⇒ 「按宽」的横向永不露黑（可见宽恒等于素材宽），所以它**没有素材上界**；
+     *   「按高」的纵向是常量，所以它**没有素材下界**。
+     *
+     * ## 取值规则（显式写的值也**不能突破素材**）
+     *
+     * - `'width'`：`min = max(写的 ?? 素材下界, 素材下界)` —— 写松了会被收回，否则会**静默**在上下露黑；
+     *   `max = 写的 ?? 2.4`（素材无上界，沿用人为闸门兜住"极端宽"）。
+     * - `'height'`：`min = 写的 ?? 素材下界`（素材无下界，缺省沿用旧值，保持既有工程不变）；
+     *   `max = min(写的 ?? 2.4, 素材上界)` —— 写宽了会被收回，否则会**静默**在左右露黑。
+     *
+     * ★ 效果：越界一律走"红条 + letterbox 居中"的显式路径，**不再有静默露黑**；
+     *   而所有显式写了 `minAspect`/`maxAspect` 的老工程（S9 系全部是
+     *   `1.0911 / 2.4` + `'width'`）**行为逐字不变**。
+     */
+    /** 「按高」基准下恒定的可见世界高（= 2·|base.z|·tan(fov_d/2)） */
+    const visibleH = 2 * Math.abs(base.z) * tanHalfDesign;
+    /** 素材下界：底层背景**垂直**铺满的极限（`'width'` 基准下才会被用满） */
+    const artMinAspect = base.bh > 0 ? base.bw / base.bh : 1.54;
+    /** 素材上界：最宽贴图层**横向**铺满的极限（`'height'` 基准下才会被用满） */
+    const artMaxAspect =
+      visibleH > 0 && base.wmax > 0 ? base.wmax / visibleH : Infinity;
+    /** 没有素材边界的另一侧，沿用这道人为闸门（老缺省） */
+    const GATE_MAX_ASPECT = 2.4;
+
+    const minAspect =
+      fitAspect === 'width'
+        ? Math.max(configs.minAspect ?? artMinAspect, artMinAspect)
+        : configs.minAspect ?? artMinAspect;
+    const maxAspect =
+      fitAspect === 'height'
+        ? Math.min(configs.maxAspect ?? GATE_MAX_ASPECT, artMaxAspect)
+        : configs.maxAspect ?? GATE_MAX_ASPECT;
 
     const calc = (): FitResult => {
       let vw = window.innerWidth || w0;
@@ -242,6 +298,27 @@ export const initScene = (configs: Configs) => {
         ].join(';');
         document.body.appendChild(el);
       }
+      /**
+       * ★ 两侧的来源不同 ⇒ 给的出口也必须不同（否则等于教用户去改一个改不动的值）：
+       *   `'height'` 的上界来自素材（写宽了会被收回）；`'width'` 的下界来自素材（写松了会被收回）。
+       */
+      const hint =
+        fitAspect === 'height'
+          ? ' 渲染（letterbox 居中留边）。\n' +
+            '上界 ' +
+            maxAspect.toFixed(4) +
+            ' 由素材给出（最宽贴图层 ' +
+            Math.round(base.wmax) +
+            ' ÷ 可见世界高 ' +
+            Math.round(visibleH) +
+            '）：把窗口调窄即可；\n' +
+            '或调小 config.json 的 fov（可见世界高随之变小、上界变大），' +
+            '亦可改用「按画幅宽对齐」（fitAspect: "width"）。'
+          : ' 渲染（letterbox 居中留边）。\n' +
+            '下界 ' +
+            minAspect.toFixed(4) +
+            ' 由素材给出（底层背景的宽高比）：把窗口调矮即可，写更小的 minAspect 也压不下去；\n' +
+            '要更宽的比例可改 config.json 的 maxAspect（上界那一侧才是人为闸门）。';
       el.textContent =
         '[画幅不支持] 视口 ' +
         v.rw +
@@ -255,7 +332,7 @@ export const initScene = (configs: Configs) => {
         maxAspect.toFixed(4) +
         '\n已按边界 ' +
         v.aspect.toFixed(4) +
-        ' 渲染（letterbox 居中留边）。请调整窗口比例，或改 config.json 的 minAspect / maxAspect。';
+        hint;
       console.error(
         '[fit] aspect ' +
           v.a.toFixed(4) +

@@ -127,6 +127,14 @@ Other config knobs (meshes, layers, `minAspect` / `maxAspect`, `dpr: "auto"`, pa
    at design aspect is locked to the bottom-most (`z` smallest) texture layer; `fov` does NOT
    change it. To reframe, **move the mesh's `y`, not the FOV** — changing FOV shifts every
    layer's z-plane compensation at once.
+   **The `[minAspect, maxAspect]` gate is bound to `fitAspect` (2026-10-09).** The two baselines
+   lock different quantities, so each one's *leak* is on the opposite side and the artwork, not the
+   config, decides that side: `'width'` locks visible width to the base layer ⇒ **the lower bound is
+   the artwork** (`base.bw/base.bh`, a smaller `minAspect` is ignored); `'height'` locks visible
+   height to `2·|base.z|·tan(fov/2)` ⇒ **the upper bound is the artwork** (widest texture layer ÷
+   that visible height, a larger `maxAspect` is ignored). Beyond those bounds the frame letterboxes
+   and shows the red `__fitErr` bar — that path is the *only* supported failure mode; never let a
+   baseline silently render clear-color black at the edges.
 4. **Config and bundle must be updated in pairs.** A `config.json` change that affects framing
    (e.g. `fitAspect`, `minAspect`) only takes effect with a matching bundle reload.
 5. **Frame-driven fades freeze on WE pause.** WE web wallpaper stops `requestAnimationFrame`
