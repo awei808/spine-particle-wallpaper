@@ -1,15 +1,17 @@
 /**
- * 回归：**① 播放动作事件时的触摸反馈**（immediate / queue / none）
+ * 回归：**① 播放动作事件时的触摸反馈**（legacy / immediate / queue / none）
  *      + **② 问候事件的触发方式**（按系统时间 / 随机）
  *      + **③ 三条事件列表统一成数组**（greet / chat / touch）
  *
- * ## 需求（用户 2026-10-08）
+ * ## 需求（用户 2026-10-08 / 10-09）
  *
  *   1. 「壁纸内置设置中需要加几个配置：播放动作事件时触摸反馈 =
  *      立即播放新动作事件 / 将新动作事件加入播放队列 / 无任何反馈」；
  *   2. 「问候事件触发条件 = 根据系统时间触发对应时间问候 / 随机触发问候事件」；
  *   3. 「在 config.json 里用**数组**表示问候 / 聊天（长时间无互动时触发）/
- *      触摸可触发的事件列表，并允许用户直接修改事件列表」。
+ *      触摸可触发的事件列表，并允许用户直接修改事件列表」；
+ *   4. （10-09）「播放动作时点击新增一个选项：**仅在问候（、聊天）事件时立即播放新动作**，
+ *      作为兼容旧版本的默认设置」⇒ 新增 `'legacy'` 档并把它定为缺省。
  *
  * ## ★★ 三条最容易踩的坑（都钉成测例）
  *
@@ -17,15 +19,14 @@
  *     必须与新的 `greet` / `chat` **行为等价** ⇒ A5 / B5 / C2 / D2 专门回归这两种形状。
  *   - **`sameView` 漏比** ⇒ "只改了这一项"不重载 ⇒ 面板上看着改了、实际没生效。
  *     ⇒ F5/F6 逐字段断言"必须判为不同"。
- *   - **`touchFeedbackMode` 的缺省是 `'immediate'`，而它比改动前多一格：**
- *     改动前"触摸 ⊥ 触摸"是 `skip`（第二下点了没反应），现在改成 `play`（打断重播）。
- *     这是**刻意的行为变更**（理由见 `TouchFeedbackMode` 注释），E2 把它钉住，
- *     免得日后有人"顺手改回来"却不知道自己在改用户的选项。
+ *   - **缺省档必须是 `'legacy'`**（= 2026-10-08 改动前的规则表：触摸 ⊥ 触摸 ⇒ `skip`、
+ *     触摸打断问候/聊天 ⇒ `play`）。E2/E2b/E2c/F1/F10/F12 把它钉住 ——
+ *     只有 `'immediate'` 那一档才与改动前不同（"触摸播动期间再点"由忽略变重播）。
  *
  * ## 与 64 / 65 号脚本的分工
  *
  * 64 验"问候并入触摸池"、65 验"待机触发哪一类"。本脚本验的是**事件列表本身怎么读**
- * 与**有东西在播时点击怎么处置** —— 两者都是新能力，不与前面撞车。
+ * 与**有东西在播时点击怎么处置**（纯判定 + 配置链路）；68 号验的是同一批模式的**真实播放行为**。
  *
  * ## 测的是真模块，不是复刻
  *
@@ -272,34 +273,44 @@ eq(
   [64005, 64001, 64002, 64003]
 );
 
-/* ── E. 触摸反馈三模式（touch.decideAction） ────────────── */
+/* ── E. 触摸反馈四模式（touch.decideAction） ────────────── */
 console.log('\nE. decideAction：正在播动作时的点击该怎么处理');
 eq(
-  'E1 空闲（没有在播的）⇒ 三档都是 play',
+  'E1 空闲（没有在播的）⇒ 四档都是 play',
   [
+    decideAction(null, 'touch', 'legacy'),
     decideAction(null, 'touch', 'immediate'),
     decideAction(null, 'touch', 'queue'),
     decideAction(null, 'touch', 'none'),
   ],
-  ['play', 'play', 'play']
+  ['play', 'play', 'play', 'play']
 );
 eq(
-  'E2 ★immediate（缺省）：触摸 ⊥ 触摸 ⇒ **play**（改动前这里是 skip —— 刻意的变更）',
-  decideAction('touch', 'touch', 'immediate'),
-  'play'
+  'E2 ★legacy（缺省）：触摸 ⊥ 触摸 ⇒ **skip**（= 改动前的规则表，逐条等价）',
+  decideAction('touch', 'touch', 'legacy'),
+  'skip'
 );
 eq(
-  'E2b 只传两个参数 ⇒ 同 immediate（旧调用方行为不被悄悄改坏）',
-  decideAction('touch', 'touch'),
-  'play'
-);
-eq(
-  'E3 immediate：触摸 打断 greet / standby',
+  'E2b legacy：触摸 打断 greet / standby（旧口径的另一半）',
   [
+    decideAction('greet', 'touch', 'legacy'),
+    decideAction('standby', 'touch', 'legacy'),
+  ],
+  ['play', 'play']
+);
+eq(
+  'E2c ★只传两个参数 ⇒ 同 legacy（旧调用方与改动前完全同行为）',
+  [decideAction('touch', 'touch'), decideAction('greet', 'touch')],
+  ['skip', 'play']
+);
+eq(
+  'E3 immediate：一律打断（含"触摸 ⊥ 触摸"那一格 —— 与改动前的唯一差别就在这里）',
+  [
+    decideAction('touch', 'touch', 'immediate'),
     decideAction('greet', 'touch', 'immediate'),
     decideAction('standby', 'touch', 'immediate'),
   ],
-  ['play', 'play']
+  ['play', 'play', 'play']
 );
 eq(
   'E4 ★queue：触摸 ⊥ 任何在播的 ⇒ queue（排到当前这条之后）',
@@ -319,14 +330,15 @@ eq(
   ['skip', 'skip']
 );
 eq(
-  'E6 ★自动触发（greet / standby）**永不打断**也未入队，三档同 ⇒ reject',
+  'E6 ★自动触发（greet / standby）**永不打断**也未入队，四档同 ⇒ reject',
   [
+    decideAction('touch', 'greet', 'legacy'),
     decideAction('touch', 'greet', 'immediate'),
     decideAction('touch', 'greet', 'queue'),
     decideAction('touch', 'greet', 'none'),
     decideAction('greet', 'standby'),
   ],
-  ['reject', 'reject', 'reject', 'reject']
+  ['reject', 'reject', 'reject', 'reject', 'reject']
 );
 
 /* ── F. 面板 → 覆盖层 → 生效配置的链路 ──────────────────── */
@@ -347,9 +359,9 @@ const cfgNew = {
 
 const vNew = readView(cfgNew);
 eq(
-  'F1 ★出厂值：touchFeedbackMode = immediate（新 config 没写该字段）',
+  'F1 ★出厂值：touchFeedbackMode = legacy（新 config 没写该字段 ⇒ 旧版行为）',
   vNew.touchFeedbackMode,
-  'immediate'
+  'legacy'
 );
 eq('F2 ★出厂值：greetMode = time（没写该字段）', vNew.greetMode, 'time');
 
@@ -394,18 +406,24 @@ eq(
 const baseView = readView(cfgNew);
 ok('F6 同值 ⇒ sameView = true', sameView(baseView, readView(cfgNew)) === true);
 ok(
-  'F7 ★只改 touchFeedbackMode（immediate → queue）⇒ 判为"有变化"',
+  'F7 ★只改 touchFeedbackMode（legacy → immediate）⇒ 判为"有变化"',
   sameView(
     baseView,
-    readView(applyOverrides(cfgNew, { touchFeedbackMode: 'queue' }))
+    readView(applyOverrides(cfgNew, { touchFeedbackMode: 'immediate' }))
   ) === false
 );
 ok(
-  'F8 ★只改 touchFeedbackMode（immediate → none）⇒ 判为"有变化"',
-  sameView(
-    baseView,
-    readView(applyOverrides(cfgNew, { touchFeedbackMode: 'none' }))
-  ) === false
+  'F8 ★只改 touchFeedbackMode（legacy → queue / none）⇒ 都判为"有变化"',
+  [
+    sameView(
+      baseView,
+      readView(applyOverrides(cfgNew, { touchFeedbackMode: 'queue' }))
+    ),
+    sameView(
+      baseView,
+      readView(applyOverrides(cfgNew, { touchFeedbackMode: 'none' }))
+    ),
+  ].every((v) => v === false)
 );
 ok(
   'F9 ★只改 greetMode（time → random）⇒ 判为"有变化"',
@@ -430,9 +448,9 @@ const cfgOld = {
 } as unknown as Configs;
 const vOld = readView(cfgOld);
 eq(
-  'F10 ★旧 config 缺新字段 ⇒ 回落到 immediate / time（不准 throws、也不准变行为）',
+  'F10 ★旧 config 缺新字段 ⇒ 回落到 legacy / time（不准 throws、也不准变行为）',
   [vOld.touchFeedbackMode, vOld.greetMode],
-  ['immediate', 'time']
+  ['legacy', 'time']
 );
 eq(
   'F11 ★旧 config 的问候/聊天/触摸三张表照旧工作',
@@ -449,7 +467,7 @@ eq(
   [64001, [64004, 64005, 64006]]
 );
 eq(
-  'F12 非法值 ⇒ 回落到缺省（"面板显示的和实际行为"不会劈叉）',
+  'F12 非法值 ⇒ 回落到缺省 legacy / time（"面板显示的和实际行为"不会劈叉）',
   (() => {
     const bad = JSON.parse(JSON.stringify(cfgNew)) as Configs;
     bad.subtitle.touchFeedbackMode = 'bogus' as 'none';
@@ -457,7 +475,7 @@ eq(
     const v = readView(bad);
     return [v.touchFeedbackMode, v.greetMode];
   })(),
-  ['immediate', 'time']
+  ['legacy', 'time']
 );
 
 /* ── G. 出货产物：改动必须真的进了 bundle ────────────────── */
@@ -481,6 +499,7 @@ if (!fs.existsSync(BUNDLE)) {
   }
   // 面板文案（用户可见）也必须到包 —— 这是"加了这个选项"最直接的证据
   for (const word of [
+    '仅问候/聊天时立即',
     '立即播放新动作',
     '排进播放队列',
     '不做任何反馈',

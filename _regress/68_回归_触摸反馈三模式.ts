@@ -1,5 +1,5 @@
 /**
- * 回归：**播放动作事件时的触摸反馈三模式**（2026-10-08 新增）跑真实模块。
+ * 回归：**播放动作事件时的触摸反馈四模式**（2026-10-08 新增，10-09 补 legacy + 改缺省）跑真实模块。
  *
  * 67 号脚本验的是**纯判定**（`decideAction` 这张表）与**配置链路**；本脚本验的是真正的
  * **播放行为** —— 走的是 `src/touch.ts` + spine runtime，骨架是真解出来的（与 60 号同一套脚手架）。
@@ -14,14 +14,16 @@
  *      A5 待播槽容量 = 1 ⇒ 连点三次，队列长度**不超过 1**（不会攒一串让你等到天荒地老）
  *
  *   B. `'none'`：正在播时点击 ⇒ 第二次**既没播也没入队**，且只被计一次 `skipped`
- *   C. `'immediate'`（缺省）：第二次点击 ⇒ **当场重放**（返回 true），拼起来的播放次数 = 2
- *   D. 两种播放模式都不留 定时器：`dispose` 后 `pendingTimers() === 0`
+ *   C. `'immediate'`：第二次点击 ⇒ **当场重放**（返回 true），拼起来的播放次数 = 2
+ *   D. `'legacy'`（**缺省**）：分两半验 ——
+ *      D2/D5 正在演**触摸动作**时点击 ⇒ 忽略（返回 false，计 skipped）= 改动前口径；
+ *      D8/D9 正在演**问候**时点击 ⇒ 照样打断并立刻改播（返回 true，不计 skipped）
  *
  * ## 为什么只测叠加模式
  *
  * 排队模式（启用常驻序列）下 `'queue'` / `'immediate'` 都直接落在 spine 自己的
  * track 队列上（见 `touch.ts` 文件头），那条路径 60 号脚本已经守住（A6 连点不堆积）。
- * ★ 本脚本补的是**叠加模式那套自研待播槽** —— 它是这次唯一新增的运行时机制。
+ * ★ 本脚本补的是**叠加模式那套自研待播槽**，以及四档在叠加模式下的真实手感。
  *
  * ## 用法
  *
@@ -121,19 +123,12 @@ const nameOf = (state: any, track: number): string => {
   return e && e.animation ? e.animation.name : '';
 };
 
-/**
- * 跑一个场景。**叠加模式**（不传 `queueTrack`），因为常驻序列那套由 60 号守住。
- *
- * @param mode          触摸反馈模式
- * @param clickSeconds  依次在这些时刻模拟一次热区点击
- */
-function run(mode: TouchFeedbackMode, clickSeconds: number[], total: number) {
+/** 造一套 controller（叠加模式 = 不传 `queueTrack`）。`mode` 不传 ⇒ 走 `touch.ts` 的缺省档 */
+function makeRig(mode?: TouchFeedbackMode) {
   const skeleton = new Skeleton(sd);
   const state = new AnimationState(new AnimationStateData(sd));
   state.setAnimation(0, 'idle', true); // 与真实装配顺序一致（见 60 号脚本的注释）
-  const meshStub: any = { state, skeleton };
-
-  const tc = createTouchController(meshStub, {
+  const tc = createTouchController({ state, skeleton } as any, {
     skeletonFile: 'regress',
     idleAnimationName: 'idle',
     touchAnimations: ['touch2'],
@@ -142,6 +137,17 @@ function run(mode: TouchFeedbackMode, clickSeconds: number[], total: number) {
     random: () => 0,
     touchFeedbackMode: mode,
   });
+  return { skeleton, state, tc };
+}
+
+/**
+ * 跑一个场景。**叠加模式**（不传 `queueTrack`），因为常驻序列那套由 60 号守住。
+ *
+ * @param mode          触摸反馈模式
+ * @param clickSeconds  依次在这些时刻模拟一次热区点击
+ */
+function run(mode: TouchFeedbackMode, clickSeconds: number[], total: number) {
+  const { skeleton, state, tc } = makeRig(mode);
 
   const frame = (sec: number): number => Math.round(sec / DT);
   const results: boolean[] = [];
@@ -275,9 +281,9 @@ console.log('\n================ B none（不做任何反馈） ================'
   );
 }
 
-/* ── C. immediate（缺省）：当场重放 ──────────────────────── */
+/* ── C. immediate：当场重放 ──────────────────────── */
 console.log(
-  '\n================ C immediate（立即播放新动作，缺省档） ================'
+  '\n================ C immediate（立即播放新动作） ================'
 );
 {
   const r = run('immediate', [2, 5], 20);
@@ -298,30 +304,81 @@ console.log(
     'firedCount=' + r.snap.firedCount
   );
 }
+
+/* ── D. legacy（缺省）：旧口径 —— 触摸在演忽略点击、问候/聊天在演被打断 ── */
+console.log(
+  '\n================ D legacy（仅问候/聊天时立即，**缺省档**） ================'
+);
 {
-  // ★ 不传 touchFeedbackMode ⇒ 与 'immediate' 同（旧调用方不被悄悄改坏）
-  const skeleton = new Skeleton(sd);
-  const state = new AnimationState(new AnimationStateData(sd));
-  state.setAnimation(0, 'idle', true);
-  const tc = createTouchController({ state, skeleton } as any, {
-    skeletonFile: 'regress',
-    idleAnimationName: 'idle',
-    touchAnimations: ['touch2'],
-    zones: [{ id: 'hit1', u0: 0, v0: 0, u1: 1, v1: 1 } as any],
-    touchPool: [],
-    random: () => 0,
-  });
-  state.setAnimation(2, 'touch2', false);
+  // 显式传 'legacy'
+  const r = run('legacy', [2, 5], 20);
+  check(r.results[0] === true, 'D1 空闲时点击 ⇒ 播', String(r.results[0]));
+  check(
+    r.results[1] === false,
+    'D2 ★正在演触摸动作时点击 ⇒ 忽略（= 改动前的 skip）',
+    String(r.results[1])
+  );
+  check(
+    r.snap.firedCount === 1 && r.snap.skippedCount === 1,
+    'D3 ★只播了 1 条、且被吞的点击有计数',
+    'fired=' + r.snap.firedCount + ' skipped=' + r.snap.skippedCount
+  );
+  check(r.lastQueued === 0, 'D4 不入队', 'queuedCount=' + r.lastQueued);
+}
+{
+  // ★ 不传 touchFeedbackMode ⇒ 与 'legacy' 同（旧调用方与改动前完全同行为）
+  //
+  // ⚠️ 这里必须用 `tc.trigger` 起第一条，**不能**直接 `state.setAnimation(2, …)`：
+  //    控制器只认自己播过的动作（`activeEntry`/`activeSource` 是它的私有状态），
+  //    绕过它去改轨道 ⇒ 闸门看到的是"没有在播" ⇒ 恒判 play（本脚本初版就踩了这个自摆乌龙）。
+  const { state, skeleton, tc } = makeRig();
+  const first = tc.trigger(
+    { actionId: 1, animation: 'touch2', label: 'x' } as any,
+    'touch'
+  );
   step(state, skeleton);
   const again = tc.trigger(
     { actionId: 1, animation: 'touch2', label: 'x' } as any,
     'touch'
   );
+  check(first === true, 'D5a 先播一条触摸动作', String(first));
   check(
-    again === true,
-    'C5 ★缺省档 == immediate（不传字段也当场重放）',
+    again === false,
+    'D5 ★缺省档 == legacy（不传字段时，"触摸在演再点击"被忽略）',
     String(again)
   );
+  check(
+    tc.snapshot().skippedCount === 1,
+    'D6 该次点击计为 skipped（探针可观测）',
+    'skipped=' + tc.snapshot().skippedCount
+  );
+  tc.dispose();
+}
+{
+  // ★ legacy 的另一半：正在演**问候**时点击 ⇒ 打断并立刻播新的（旧口径）
+  const { state, skeleton, tc } = makeRig();
+  const greetOn = tc.trigger(
+    { actionId: 1, animation: 'greet', label: 'greet' } as any,
+    'greet'
+  );
+  step(state, skeleton);
+  const before = nameOf(state, 2);
+  const again = tc.trigger(
+    { actionId: 1, animation: 'touch2', label: 'x' } as any,
+    'touch'
+  );
+  check(greetOn === true && before === 'greet', 'D7 先播一条问候', before);
+  check(
+    again === true,
+    'D8 ★legacy：正在演问候时点击 ⇒ 立刻改播新的（沿用旧口径，与 immediate 相同）',
+    String(again)
+  );
+  check(
+    tc.snapshot().skippedCount === 0,
+    'D9 这次不算"被吞"（没计 skipped）',
+    'skipped=' + tc.snapshot().skippedCount
+  );
+  tc.dispose();
 }
 
 console.log(

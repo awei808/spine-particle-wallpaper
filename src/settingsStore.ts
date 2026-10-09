@@ -167,7 +167,7 @@ export type SettingsOverrides = {
   /**
    * 正在播动作时**点击**该怎么处理（对应 `config.subtitle.touchFeedbackMode`）。
    *
-   * ★ 语义表见 `TouchFeedbackMode` 的注释；**缺省 `'immediate'`**（面板第一档）。
+   * ★ 语义表见 `TouchFeedbackMode` 的注释；**缺省 `'legacy'`**（面板第一档，= 改动前的规则表）。
    * ⚠️ 落盘即进覆盖层 ⇒ 与 `config.json` 里写的值**同名同语义**，只是优先级更高。
    */
   touchFeedbackMode?: TouchFeedbackMode;
@@ -248,7 +248,7 @@ export type SettingsView = {
   standbyGreetEnabled: boolean;
   /** 待机到点是否自动触发「触摸」事件（池 = `chat` + `touch`，随机取一条） */
   standbyTouchEnabled: boolean;
-  /** 正在播动作时点击的处理方式（对应 `config.subtitle.touchFeedbackMode`） */
+  /** 正在播动作时点击的处理方式（对应 `config.subtitle.touchFeedbackMode`；缺省 `legacy`） */
   touchFeedbackMode: TouchFeedbackMode;
   /** 问候事件的取条方式（对应 `config.subtitle.greetMode`） */
   greetMode: GreetMode;
@@ -598,16 +598,17 @@ export const readView = (cfg: Configs): SettingsView => ({
    */
   standbyTouchEnabled: cfg.subtitle?.standbyTouchEnabled === true,
   /**
-   * ★ 缺省 `'immediate'`（见 `TouchFeedbackMode` 注释里选它的理由）。
+   * ★ 缺省 `'legacy'`（= 改动前的规则表，见 `TouchFeedbackMode` 注释）。
    *
-   * 判据写成"只认另两个合法值"而不是"认缺省值" ⇒ 写了无效字符串时也回落到缺省档，
+   * 判据写成"只认另外三个合法值"而不是"认缺省值" ⇒ 写了无效字符串时也回落到缺省档，
    * 与 `touch.ts` 的解析口径同向（不可能拆成两种解析，否则"面板显示的和实际行为不同"）。
    */
   touchFeedbackMode:
+    cfg.subtitle?.touchFeedbackMode === 'immediate' ||
     cfg.subtitle?.touchFeedbackMode === 'queue' ||
     cfg.subtitle?.touchFeedbackMode === 'none'
       ? cfg.subtitle.touchFeedbackMode
-      : 'immediate',
+      : 'legacy',
   /** ★ 缺省 `'time'`（= 改动前"按时段问候"的行为）；判据同上：只认 `'random'` 这一个例外值 */
   greetMode: cfg.subtitle?.greetMode === 'random' ? 'random' : 'time',
   // ★ `enabled` 的**缺省**取决于编译期（`--env probe=off` 的发布包默认关），

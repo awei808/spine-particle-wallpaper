@@ -35,7 +35,7 @@
     "chat": [],
     "touch": [],
     "greetMode": "time",
-    "touchFeedbackMode": "immediate"
+    "touchFeedbackMode": "legacy"
   },
   "bgm": {
     "enabled": true,

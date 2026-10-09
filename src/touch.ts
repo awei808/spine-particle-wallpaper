@@ -41,14 +41,14 @@
  *
  * | 模式 | 正在播 touch | 正在播 greet / standby |
  * |---|---|---|
- * | `'immediate'`（**缺省**） | 打断并立刻播新的 | 打断并立刻播新的 |
+ * | `'legacy'`（**缺省**） | 忽略（计一次 skipped） | 打断并立刻播新的 |
+ * | `'immediate'` | 打断并立刻播新的 | 打断并立刻播新的 |
  * | `'queue'` | 排到当前这条之后播 | 排到当前这条之后播 |
  * | `'none'` | 无反馈 | 无反馈 |
  *
- * ⚠️ `'immediate'` 与改动前**唯一的差别**是"触摸播动期间再点"那一格 ——
- *   改动前是忽略（第二下点了没反应），现在改成"打断并重播新的一条"。
- *   依据是本规则表下面那句用户原话：**"用户点一下没反应会以为壁纸卡了"**。
- *   想逐帧还原旧行为 ⇒ 配 `'none'`（对这一格它与改动前完全等价）。
+ * ⚠️ 缺省档是 `'legacy'` = **改动前的原规则表** ⇒ 本字段是纯新增能力，
+ *   升级不改变任何既有观感。`'immediate'` 才与改动前有差别（"触摸播动期间再点"那一格
+ *   由忽略变成打断重播，依据是本文件顶部那句用户原话：**"用户点一下没反应会以为壁纸卡了"**）。
  *
  * ## ★ 两种播放模式（`options.queueTrack` 决定，2026-09-27）
  *
@@ -202,20 +202,28 @@ export type GateDecision =
 /**
  * 动作闸门：决定一个新的动作请求该怎么处理。**纯函数，导出以便单测**。
  *
- * ## 规则表（`touchFeedbackMode === 'immediate'`，缺省）
+ * ## 规则表（`touchFeedbackMode === 'legacy'`，**缺省**）
+ *
+ * | 新动作 \ 正在播 | 无 | touch | greet / standby |
+ * |---|---|---|---|
+ * | **touch**（用户点击） | `play` | **`skip`** | **`play`**（打断并播） |
+ * | **greet / standby**（自动） | `play` | `reject` | `reject` |
+ *
+ * ⇒ **这一档就是 2026-10-08 改动前的原规则表**（见 `TouchFeedbackMode` 注释）。
+ *
+ * ## 规则表（`'immediate'`）
  *
  * | 新动作 \ 正在播 | 无 | touch | greet / standby |
  * |---|---|---|---|
  * | **touch**（用户点击） | `play` | **`play`**（打断并播新的） | **`play`**（打断并播） |
- * | **greet / standby**（自动） | `play` | `reject` | `reject` |
  *
- * ## 规则表（`touchFeedbackMode === 'queue'`）
+ * ## 规则表（`'queue'`）
  *
  * | 新动作 \ 正在播 | 无 | touch | greet / standby |
  * |---|---|---|---|
  * | **touch**（用户点击） | `play` | **`queue`** | **`queue`** |
  *
- * ## 规则表（`touchFeedbackMode === 'none'`）
+ * ## 规则表（`'none'`）
  *
  * | 新动作 \ 正在播 | 无 | touch | greet / standby |
  * |---|---|---|---|
@@ -223,10 +231,10 @@ export type GateDecision =
  *
  * ## 为什么这样定
  *
- * - **触摸是"用户的输入"**，三种模式只决定"有东西在播时如何应对"，空闲时一律放行。
- *    `'immediate'`：`touch.ts` 顶部那句用户原话（"点一下没反应会以为壁纸卡了"）
- *    要求"永远有反应" ⇒ 一律打断。
- * - **greet / standby 不打断任何东西**：它们是自动行为，抢用户的戏或互相抢戏都不合理。
+ * - **触摸是"用户的输入"**，四种模式只决定"有东西在播时如何应对"，空闲时一律放行。
+ *   `'legacy'`（缺省）= 旧口径：正在播触摸动作时忽略点击、正在播问候/聊天时打断；
+ *   `'immediate'` = 一律打断（依据 `touch.ts` 顶部那句用户原话"点一下没反应会以为壁纸卡了"）。
+ * - **greet / standby 不打断任何东西**（四档一致）：它们是自动行为，抢用户的戏或互相抢戏都不合理。
  *   计 `reject` 而非 `skip`，因为它不是"用户操作被吞"。
  *   ⚠️ 它们也**不排队** —— 自动事件的时机本身就是有价值的信号，排队到几十秒后播没意义，
  *     丢弃即可（这正是 `reject` 与 `queue` 的分工：同一来源、不同处置）。
@@ -235,24 +243,28 @@ export type GateDecision =
  * 闸门看的是"有没有动作占着轨道"，`isIdle()` 看的是"track 0 上是不是常驻动画"。
  * 后者用于防"角色已经切到别的常驻状态了、还往里塞触摸动画"。
  *
- * @param mode 配置里的 `subtitle.touchFeedbackMode`；缺省 `'immediate'` ⇒ 只传前两个参数
- *   的既有调用方行为与改动前一致（旧的回归脚本仍能成立）。
+ * @param mode 配置里的 `subtitle.touchFeedbackMode`；缺省 `'legacy'`
+ *   ⇒ 只传前两个参数的既有调用方**与改动前完全同行为**（`_regress/60` 的 A6 就是靠这一档守住）。
  */
 export const decideAction = (
   activeSource: ActionSource | null,
   source: ActionSource,
-  mode: TouchFeedbackMode = 'immediate'
+  mode: TouchFeedbackMode = 'legacy'
 ): GateDecision => {
   if (!activeSource) {
     return 'play';
   }
   if (source === 'touch') {
     if (mode === 'none') {
-      // 正在播 ⇒ 完全无反馈（= 改动前"触摸 ⊥ 触摸"那一格的旧行为）
+      // 正在播 ⇒ 完全无反馈
       return 'skip';
     }
     if (mode === 'queue') {
       return 'queue';
+    }
+    if (mode === 'legacy') {
+      // ★ 旧口径：只有"正在播的是自动事件（问候/聊天）"才打断；触摸动作在演时点击被忽略
+      return activeSource === 'touch' ? 'skip' : 'play';
     }
     // 'immediate'：一律打断并播新的一条
     return 'play';
@@ -304,11 +316,12 @@ export type TouchControllerOptions = {
   /**
    * **正在播动作时**点击该怎么处理（对应 `config.subtitle.touchFeedbackMode`）。
    *
-   * - `'immediate'`（缺省）⇒ 打断并立刻播新的；
+   * - `'legacy'`（缺省）⇒ 正在播触摸动作时忽略点击、正在播问候/聊天时打断（= 旧口径）；
+   * - `'immediate'` ⇒ 无论如何都打断并立刻播新的；
    * - `'queue'` ⇒ 排到当前这条之后（叠加模式走本模块的待播槽，排队模式走 spine 的队列）；
    * - `'none'` ⇒ 正在播时点击什么都不做。
    *
-   * 详见文件头的规则表；不传 = `'immediate'` ⇒ 旧的调用方行为不变。
+   * 详见文件头的规则表；不传 = `'legacy'` ⇒ 旧的调用方行为与改动前完全一致。
    */
   touchFeedbackMode?: TouchFeedbackMode;
   /**
@@ -477,9 +490,8 @@ export const createTouchController = (
   const queueTrack =
     typeof options.queueTrack === 'number' ? options.queueTrack : null;
   const onActionFinished = options.onActionFinished;
-  /** 触摸反馈模式（缺省 `'immediate'` = 改动前的行为） */
-  const feedbackMode: TouchFeedbackMode =
-    options.touchFeedbackMode ?? 'immediate';
+  /** 触摸反馈模式（缺省 `'legacy'` = 改动前的规则表，逐条等价） */
+  const feedbackMode: TouchFeedbackMode = options.touchFeedbackMode ?? 'legacy';
 
   if (!state || !touchNames.length) {
     return createNoopController(idleName, touchNames, zones, touchPool.length);

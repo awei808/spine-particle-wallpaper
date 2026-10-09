@@ -1294,9 +1294,12 @@ export const createSettingsPanel = (
   );
 
   /**
-   * ★★ 正在播动作时点击该怎么处理（2026-10-08 新增）。
+   * ★★ 正在播动作时点击该怎么处理（2026-10-08 新增；2026-10-09 补「仅问候/聊天时立即」并定为缺省）。
    *
-   * 三档语义见 `TouchFeedbackMode` 的注释；闸门判据在 `touch.decideAction`（纯函数、可单测）。
+   * 四档语义见 `TouchFeedbackMode` 的注释；闸门判据在 `touch.decideAction`（纯函数、可单测）。
+   *
+   * ★ 第一档 `'legacy'` = **改动前的规则表**（触摸动作在演时点击被忽略、问候/聊天在演时被打断），
+   *   放在首位是因为它是缺省档 —— 用户不动它就等于"升级后行为不变"。
    *
    * ★ 用自绘分段而不是下拉的原因与其它项一样：**原生表单控件会在 CEF 里崩**
    * （见面板文件头的环境说明），且中文长标签横排会被压成竖排 ⇒ `stack = true` 独占一行。
@@ -1304,6 +1307,7 @@ export const createSettingsPanel = (
   const selTouchFeedback = createSegmented(
     'wb-set-touch-feedback',
     [
+      ['legacy', '仅问候/聊天时立即'],
       ['immediate', '立即播放新动作'],
       ['queue', '排进播放队列'],
       ['none', '不做任何反馈'],
@@ -1313,9 +1317,11 @@ export const createSettingsPanel = (
   addRow(
     '播放动作时点击',
     selTouchFeedback.el,
-    '已经有动作在演的时候再点一下：「立即播放」= 打断当前这条、立刻播新的一条（默认，最跟手，但上一条会被掐断）；' +
+    '已经有动作在演的时候再点一下：「仅问候/聊天时立即」= 正在演问候或闲聊时点击会立刻改播新的，' +
+      '正在演触摸动作时点击**不响应**（默认，= 旧版行为，最不打扰演出）；' +
+      '「立即播放新动作」= 不管在演什么都打断并立刻播新的（最跟手，但上一条会被掐断）；' +
       '「排进播放队列」= 等当前这条演完自动接上（动作完整，代价是响应延迟 = 当前动作的剩余时长）；' +
-      '「不做任何反馈」= 演的过程中点击无效。三档都不影响空闲时的点击。保存后重载生效。',
+      '「不做任何反馈」= 演的过程中点击一律无效。四档都不影响空闲时的点击。保存后重载生效。',
     pages.sequence,
     true
   );
@@ -1695,7 +1701,7 @@ export const createSettingsPanel = (
   /* 播放动作时点击怎么处理 / 问候取哪一条 —— 两个白名单校验后可写回 draft */
   selTouchFeedback.addEventListener('change', () => {
     const v = selTouchFeedback.value as SettingsView['touchFeedbackMode'];
-    if (v === 'immediate' || v === 'queue' || v === 'none') {
+    if (v === 'legacy' || v === 'immediate' || v === 'queue' || v === 'none') {
       draft.touchFeedbackMode = v;
     }
   });

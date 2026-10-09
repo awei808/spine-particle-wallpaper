@@ -16,17 +16,17 @@ Upstream is a **player**: drop your Spine files into `assets/` and it loops them
 
 This repository grew into a **framework** on top of that rendering core:
 
-| Capability | Upstream | Here |
-| --- | --- | --- |
-| Layered scenes (background / character / particles / foreground) | Yes | Yes, plus a `particle` layer and explicit z-ordering |
-| Touch interaction & action scheduling | — | ✅ Hit zones, mutual exclusion and interrupt rules |
-| Voice lines + subtitle bubbles | — | ✅ Anchored to the character, auto-wrapping, fade in/out |
-| BGM | — | ✅ Looping playback with volume control |
-| Pause / resume | — | ✅ **Unified audio master** (WE `setPaused` + page visibility) |
-| Pointer trail | — | ✅ Emitted along cursor movement |
-| Built-in settings panel | — | ✅ 5 tabs, edit at runtime and persist |
-| Archive panel / disclaimer | — | ✅ |
-| Debug probe | — | ✅ HUD plus CDP snapshot API |
+| Capability                                                       | Upstream | Here                                                           |
+| ---------------------------------------------------------------- | -------- | -------------------------------------------------------------- |
+| Layered scenes (background / character / particles / foreground) | Yes      | Yes, plus a `particle` layer and explicit z-ordering           |
+| Touch interaction & action scheduling                            | —        | ✅ Hit zones, mutual exclusion and interrupt rules             |
+| Voice lines + subtitle bubbles                                   | —        | ✅ Anchored to the character, auto-wrapping, fade in/out       |
+| BGM                                                              | —        | ✅ Looping playback with volume control                        |
+| Pause / resume                                                   | —        | ✅ **Unified audio master** (WE `setPaused` + page visibility) |
+| Pointer trail                                                    | —        | ✅ Emitted along cursor movement                               |
+| Built-in settings panel                                          | —        | ✅ 5 tabs, edit at runtime and persist                         |
+| Archive panel / disclaimer                                       | —        | ✅                                                             |
+| Debug probe                                                      | —        | ✅ HUD plus CDP snapshot API                                   |
 
 ## Features
 
@@ -53,11 +53,11 @@ What the character says, and when, is entirely driven by the `subtitle` block of
 }
 ```
 
-| List | When it fires | Which line is picked |
-| --- | --- | --- |
-| `greet` (greetings) | startup / back to desktop / window regains focus / WE resume / (optional) idle timeout | `greetMode`: `"time"` picks entry #1/#2/#3 by system clock (morning/noon/evening); `"random"` ignores the clock |
-| `chat` (idle chatter) | long inactivity (idle longer than `standbyIdleMs`) | random from `chat` + `touch` |
-| `touch` | any hit zone is clicked | random from the pool |
+| List                  | When it fires                                                                          | Which line is picked                                                                                            |
+| --------------------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `greet` (greetings)   | startup / back to desktop / window regains focus / WE resume / (optional) idle timeout | `greetMode`: `"time"` picks entry #1/#2/#3 by system clock (morning/noon/evening); `"random"` ignores the clock |
+| `chat` (idle chatter) | long inactivity (idle longer than `standbyIdleMs`)                                     | random from `chat` + `touch`                                                                                    |
+| `touch`               | any hit zone is clicked                                                                | random from the pool                                                                                            |
 
 Every entry is an `actionId` from `subtitle.dialogues` — **add a candidate by adding a number**
 (e.g. `"greet": [64001, 64002, 64003, 64004]`).
@@ -65,8 +65,9 @@ Every entry is an `actionId` from `subtitle.dialogues` — **add a candidate by 
 Two behaviour switches are also exposed on the built-in settings panel (Actions tab):
 
 - `touchFeedbackMode` — what a click does while an action is already playing:
-  **`immediate`** (default, play the new one now) / **`queue`** (after the current one finishes) /
-  **`none`** (no feedback at all).
+  **`legacy`** (default — only greets/chatter are interrupted; clicks during a touch action are
+  ignored, i.e. the pre-2026-10-08 behaviour) / **`immediate`** (always play the new one now) /
+  **`queue`** (after the current one finishes) / **`none`** (no feedback at all).
 - `greetMode` — how a greeting is chosen: **`time`** (default, by system clock) / **`random`**.
 
 > The legacy `greeting` (slot → actionId map) and `standby` (single actionId) fields are still read
