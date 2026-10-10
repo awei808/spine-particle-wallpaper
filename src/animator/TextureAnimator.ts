@@ -32,6 +32,10 @@ export class TextureAnimator {
   private tileDisplayDuration: number;
   private currentDisplayTime: number;
   private currentTile: number;
+  /** 承载平面（自转要改它的 `rotation.z`） */
+  private textureMesh: THREE.Mesh;
+  /** 自转角速度（度/秒，带符号；0 = 不自转） */
+  private spinDegPerSec: number;
 
   /**
    *
@@ -80,6 +84,10 @@ export class TextureAnimator {
     this.tilesVertical = meshConfig?.tilesVertical ?? 1;
     this.numberOfTiles = meshConfig?.numTiles ?? 1;
     this.tileDisplayDuration = meshConfig?.tileDisplayDuration ?? 0;
+    // ★ 自转（可选）。`PlaneGeometry` 以平面中心为原点 ⇒ `rotation.z`
+    //   就是绕贴图中心转，与 Unity UI 的 pivot=(0.5,0.5) 一致，无需额外偏移。
+    this.textureMesh = textureMesh;
+    this.spinDegPerSec = meshConfig?.spinDegPerSec ?? 0;
 
     texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
     texture.repeat.set(1 / this.tilesHorizontal, 1 / this.tilesVertical);
@@ -92,6 +100,23 @@ export class TextureAnimator {
   }
 
   public update = (delta: number) => {
+    /**
+     * ★ 自转（2026-10-10）：`spinDegPerSec` 非 0 时绕贴图中心（z 轴）匀速转。
+     *
+     * 必须写在下面 `tileDisplayDuration === 0` 的提前返回**之前** ——
+     * 本工程的贴图层全部 `tileDisplayDuration = 0`，写在后面会被直接跳过。
+     *
+     * `delta` 上游已钳在 0.1s（见 index.ts `render()` 的注释），故 WE 暂停恢复
+     * 时不会因"整段暂停时长"而突跳一大段（最坏 0.4°，肉眼不可见）。
+     * 取模 2π 只为避免长时间运行后 `rotation.z` 累积到丢精度。
+     */
+    if (this.spinDegPerSec !== 0) {
+      const TWO_PI = Math.PI * 2;
+      const step = ((this.spinDegPerSec * Math.PI) / 180) * delta;
+      this.textureMesh.rotation.z =
+        (this.textureMesh.rotation.z + step) % TWO_PI;
+    }
+
     const milliSec = 1000 * delta;
     // if display time is zero for each tile, then no animation
     if (this.tileDisplayDuration === 0) {

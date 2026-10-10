@@ -1276,6 +1276,17 @@ export type TextureMeshConfig = MeshConfig & {
   tilesVertical: number;
   numTiles: number;
   tileDisplayDuration: number;
+  /**
+   * ★ 自转角速度（度/秒，带符号；正 = 屏幕逆时针，与 Unity UI 的 +Z 同向）。
+   *
+   * 来源：Unity prefab 上的 `TweenRotation` 组件。S8 背景树里只有
+   * `Asuna_S8_Background/Bottom/Image_00_Anim`（贴图 `_05` 星轨）带自转：
+   *   `{method:0(Linear), style:1(Loop), duration:90.0, from.z:0, to.z:360}`
+   * ⇒ **持续 360°/90s = +4.0 °/s**。其余贴图层没有该组件。
+   *
+   * 缺省 `0` / 未给 ⇒ 完全维持旧行为（静态），不影响任何现存工程。
+   */
+  spinDegPerSec?: number;
 };
 
 export type VideoMeshConfig = MeshConfig & {
