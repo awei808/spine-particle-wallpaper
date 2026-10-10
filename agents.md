@@ -66,6 +66,13 @@ Notes:
 
 - `dist/` and `public/assets/*` are gitignored by design. `dist/bundle.js` is a build artifact.
 - `npm run format` runs Prettier over the tree; `ts-loader` + webpack handle TS compilation.
+- **Local dev assets must be a REAL project's `config.json` + `assets/`** (this working copy carries a
+  full 22-layer scene with its own `config.json`, voice/BGM and an `index.html`). Do **not** develop or
+  review framing against a hand-made one-background sample config: with `fitAspect: 'height'` a single
+  background layer runs out of artwork around aspect 1.65 ~ 1.68, so an ordinary maximised browser
+  window (~2.0) then reports black bars that are *technically correct* while looking like a regression.
+  Backgrounds differ per scene, so the numbers do not transfer between configs — always measure on the
+  assets you actually ship.
 
 ## Config-driven changes (NO rebuild needed)
 
