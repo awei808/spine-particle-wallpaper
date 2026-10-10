@@ -1536,4 +1536,69 @@ export type ParticleMeshConfig = MeshConfig & {
     degPerSec: number;
     rotateSelf?: boolean;
   } | null;
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * `TrailModule` —— 丝带轨迹（Unity 的 Trail / Ribbon 渲染模式）
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * 为什么需要它：**丝带粒子没有"四边形"可画**。`trail01` 的 `startSize = 0` 是
+   * 正常值 —— 丝带的宽度不来自 `startSize`，而来自 `TrailModule.widthOverTrail`；
+   * 所以只按 quad 渲染时会被 `hw <= 0.01` 静默跳过，**整条效果凭空消失**且不报错。
+   *
+   * 数据来源（`out/S8_particles.json` 的 `TrailModule`，逐字读，非推测）：
+   *   `{enabled:true, mode:0, ratio:1.0, lifetime:{TwoConstants,0.5,0.5},
+   *     minVertexDistance:0.2, textureMode:0(Stretch), ribbonCount:1,
+   *     worldSpace:false, dieWithParticles:true, sizeAffectsWidth:false,
+   *     sizeAffectsLifetime:false, inheritParticleColor:true,
+   *     widthOverTrail:{TwoConstants,15,10},
+   *     colorOverTrail:  4 个 alpha 键 [0, .038, .700, 1] → [0, 1, 1, 0]
+   *     colorOverLifetime: 2 个 alpha 键 [.791, 1] → [1, 0]}`
+   *
+   * ⚠️ **本工程接受的近似**（如实标注，不装作逐值一致）：
+   *   · 只折叠 alpha：本引擎的着色器把颜色统一走 `uStartColor`，逐顶点只带 `aAlpha`。
+   *     `colorOverTrail` / `colorOverLifetime` 的 **RGB** 键实测均为纯白（见上），
+   *     故只取 alpha 不丢信息；`inheritParticleColor=true` 也已由 `uStartColor` 覆盖。
+   *   · `minCurve` 不参与（沿用本引擎既有口径：只取 `maxCurve`）。
+   *   · `mode=0(Particles)` 是唯一的轨迹生成方式（值本身就是它的语义），不另设开关。
+   */
+  trail: {
+    /** = `TrailModule.enabled`；为 false 时完全走原来的 quad 分支 */
+    enabled: boolean;
+    /**
+     * `TrailModule.lifetime`（秒）：**单个轨迹点**能活多久。
+     * ⚠️ 与粒子自身的 `startLifetime`（8~10s）不是一回事 —— 它决定丝带有多长：
+     *   `丝带长度 ≈ 粒子速度 × trail.lifetime`。
+     */
+    lifetime: number;
+    /**
+     * `TrailModule.minVertexDistance`（prefab 单位）：粒子每走这么远才记一个轨迹点。
+     *
+     * ★ 它只负责**分辨率**，最终点数还会被 `maxPoints` 收敛（见该字段）。
+     */
+    minVertexDistance: number;
+    /**
+     * `TrailModule.widthOverTrail`（prefab 单位，`TwoConstants` ⇒ 每条轨迹随机取一个）。
+     * 语义与 `startSize` **同单位同缩放**：世界宽度 = 取值 × `localScale` × `unitScale`。
+     */
+    width: ParticleMinMax;
+    /** `TrailModule.textureMode`：实测 0 = Stretch（整张贴图沿丝带拉满） */
+    textureMode: number;
+    /**
+     * `colorOverTrail` 的 alpha 键 `[[t, a], ...]`，`t` = **沿丝带的位置**（0 = 头部，
+     * 即粒子当前所在处；1 = 尾部）。
+     */
+    colorOverTrailAlpha?: number[][];
+    /** `colorOverLifetime` 的 alpha 键，`t` = **轨迹点自身年龄 / lifetime** */
+    colorOverLifetimeAlpha?: number[][];
+    /**
+     * ★ **工程侧旋钮**（不是 Unity 字段）：每条轨迹的点数上限。
+     *
+     * 为什么必须有：`minVertexDistance = 0.2` 配 `300 prefab/s` 的速度 ⇒ 0.5s 寿命内
+     * 需要 **750 个点**，30 颗粒子就是 13.5 万个三角形，纯属浪费（而且 Unity 自己
+     * 也有内部上限）。这里改成**按上限反推步长**：`实际步长 = max(minVertexDistance,
+     * 速度 × lifetime / maxPoints)` —— 保住**丝带长度**（看起来仍是完整的一条），
+     * 只降低点的密度。缺省 64。
+     */
+    maxPoints?: number;
+  } | null;
 };

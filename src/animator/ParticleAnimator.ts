@@ -330,6 +330,27 @@ function lifeMul(mm: ParticleMinMax, t: number): number {
 }
 
 /**
+ * **双曲线**（`minMaxState = 2/3`）的求值：每颗粒子在 min / max 两条曲线之间取一个
+ * 固定比例（Unity 语义 = 出生时抽一次、终生不变）。
+ *
+ * ★ 只在 `keysB` 非空时启用这一支 —— **现存全部工程的 velocity 都是 `keysA=keysB=[]`**
+ *   （实测：S9 系 9 个工程 + 探针工程，2026-10-10）⇒ 对它们是**零影响**，
+ *   直接落回原来的 `a × keysA`。S8 的 `trail01` 是全仓库第一个带双曲线的粒子系统，
+ *   没有它 10 颗粒子的轨迹会**完全重合**（看起来只有一条丝带）。
+ */
+function lifeMulMix(mm: ParticleMinMax, t: number, mix: number): number {
+  if (!mm) {
+    return 0;
+  }
+  if (!(mm.keysB && mm.keysB.length > 0)) {
+    return lifeMul(mm, t);
+  }
+  const hi = mm.keysA && mm.keysA.length > 0 ? mm.a * keysAt(mm.keysA, t) : mm.a;
+  const lo = mm.b * keysAt(mm.keysB, t);
+  return lo + (hi - lo) * mix;
+}
+
+/**
  * alpha 渐变求值（ColorModule.gradient 的 alphaKeys: [[t, a], ...]）。
  * 注意 t 小于首个关键帧时取**首个关键帧的值**（Unity 的渐变外推语义），
  * star 的首个 alpha 键在 t=0.1029 —— 若当成"从 0 开始"会让星点开头多淡入一次。
@@ -386,6 +407,31 @@ type Particle = {
    *   而不必在测试里重抄一份公式 —— 那样就成了自证。
    */
   uvFrame: number;
+
+  /* ── 丝带轨迹（仅 `trail.enabled` 时使用，见 ParticleMeshConfig.trail）── */
+
+  /**
+   * 轨迹点，**新的在前**（index 0 = 最新）。
+   *
+   * ★ 头端**不**放在这里：渲染时把头端取成粒子**当前**位置（见 `buildGeometry`），
+   *   否则丝带会比粒子本身滞后一个 `tstep`，看起来"脱节"。
+   *   `t` = 记录时的 `systemTime`，用于按 `trail.lifetime` 淘汰。
+   */
+  trail: Array<{ x: number; y: number; t: number }>;
+  /** 实际记点间距（世界单位）—— 由 `speed×lifetime/maxPoints` 与 `minVertexDistance` 取大 */
+  tstep: number;
+  /** 该条丝带的世界**半**宽 */
+  thw: number;
+  /** 最近一次记点的位置（判距用） */
+  lx: number;
+  ly: number;
+
+  /**
+   * 双曲线（`minMaxState = 2/3`）的**逐粒子混合系数**，出生时抽一次、终生不变。
+   * `0` = 全取 minCurve、`1` = 全取 maxCurve。**只有 `keysB` 非空时才被用到**
+   * （见 `lifeMulMix`），否则恒等忽略。
+   */
+  vmix: number;
 };
 
 /* ─────────────────────────── 主类 ─────────────────────────── */
@@ -428,6 +474,21 @@ export class ParticleAnimator {
   /** 复用的噪声缓冲，避免每帧 new */
   private noiseVec = new THREE.Vector3();
 
+  /* ── 丝带轨迹（`trail.enabled` 时才用；字段语义见 ParticleMeshConfig.trail）── */
+  private trailOn: boolean;
+  /** `trail.lifetime`（秒）：单个轨迹点的存活时长，决定丝带长度 */
+  private trailLife: number;
+  /** `trail.minVertexDistance`（prefab 单位，步长下界） */
+  private trailMinDist: number;
+  /** 每条轨迹的点数上限（工程侧旋钮） */
+  private trailMaxPts: number;
+  /** `colorOverTrail` 的 alpha 键（沿丝带位置） */
+  private trailTrailA: number[][];
+  /** `colorOverLifetime` 的 alpha 键（轨迹点自身年龄） */
+  private trailLifeA: number[][];
+  /** `textureMode === 0`（Stretch）：整张贴图沿丝带拉满 */
+  private trailStretch: boolean;
+
   /**
    * @param meshConfig 配置（长度量是 prefab 单位，靠 unitScale 一次换算到世界单位）
    * @param texture    已加载的 `_Texture`。粒子贴图是**直通 alpha**（不是 Spine 图集
@@ -459,6 +520,31 @@ export class ParticleAnimator {
     const max = Math.max(1, Math.floor(meshConfig.maxNumParticles || 1));
 
     /**
+     * 丝带参数（`trail01` 这类 Trail/Ribbon 粒子）。
+     *
+     * ★ `verticesPerParticle`：默认 6（一个 quad = 两个三角形 = 6 个**独立**顶点，
+     *   本引擎不建索引缓冲）。开了丝带则再预留 `maxPoints × 6`（每段 6 个顶点）。
+     *   点数上限见 `ParticleMeshConfig.trail.maxPoints` 的注释（防顶点爆炸）。
+     */
+    this.trailOn = !!(meshConfig.trail && meshConfig.trail.enabled);
+    this.trailLife = this.trailOn
+      ? Math.max(0.01, meshConfig.trail!.lifetime)
+      : 0;
+    this.trailMinDist = this.trailOn
+      ? Math.max(1e-4, meshConfig.trail!.minVertexDistance)
+      : 0.2;
+    this.trailMaxPts = this.trailOn
+      ? Math.max(2, Math.floor(meshConfig.trail!.maxPoints ?? 64))
+      : 0;
+    this.trailTrailA = this.trailOn
+      ? meshConfig.trail!.colorOverTrailAlpha ?? []
+      : [];
+    this.trailLifeA = this.trailOn
+      ? meshConfig.trail!.colorOverLifetimeAlpha ?? []
+      : [];
+    this.trailStretch = !meshConfig.trail || meshConfig.trail.textureMode === 0;
+    const vpp = 6 + (this.trailOn ? this.trailMaxPts * 6 : 0);
+    /**
      * 一个 mesh 承载本系统的全部粒子（动态四边形）。这样 z 排序只需给这一个
      * mesh 一个 `position.z`，与分层背景 / 角色共用同一套
      * "transparent 物体按 远→近 排序"的机制 —— 不需要另开渲染通道。
@@ -467,16 +553,16 @@ export class ParticleAnimator {
      *   `_Texture` 走 `texUV`（含 CustomData / `_UV_t` 的平移）、`_mask` 走 `maskUV`
      *   （`in_TEXCOORD0`，不动）。合成"预乘成品图"的做法会丢掉这个区别。
      */
-    this.posAttr = new THREE.BufferAttribute(new Float32Array(max * 6 * 3), 3);
+    this.posAttr = new THREE.BufferAttribute(new Float32Array(max * vpp * 3), 3);
     this.uvTexAttr = new THREE.BufferAttribute(
-      new Float32Array(max * 6 * 2),
+      new Float32Array(max * vpp * 2),
       2
     );
     this.uvMaskAttr = new THREE.BufferAttribute(
-      new Float32Array(max * 6 * 2),
+      new Float32Array(max * vpp * 2),
       2
     );
-    this.alphaAttr = new THREE.BufferAttribute(new Float32Array(max * 6), 1);
+    this.alphaAttr = new THREE.BufferAttribute(new Float32Array(max * vpp), 1);
     this.geometry = new THREE.BufferGeometry();
     this.geometry.setAttribute('position', this.posAttr);
     this.geometry.setAttribute('uv', this.uvTexAttr);
@@ -651,6 +737,14 @@ export class ParticleAnimator {
       uvFrameOver: c.uv.frameOverTime ? spawnValue(c.uv.frameOverTime, r) : 0,
       /** 由 buildGeometry 每帧写回（见 Particle.uvFrame） */
       uvFrame: -1,
+      /* 丝带轨迹：下面按出生速度补齐（见 spawn 末尾） */
+      trail: [],
+      tstep: 0,
+      thw: 0,
+      lx: 0,
+      ly: 0,
+      /** 双曲线混合系数（见 Particle.vmix）；无 keysB 时不被使用 */
+      vmix: r.next(),
     };
 
     // ── 初始位置/速度：ShapeModule ──
@@ -741,6 +835,38 @@ export class ParticleAnimator {
     // ── RotationModule（rotationOverLifetime），弧度/秒 ──
     if (c.rotationEnabled) {
       p.spin = lifeMul(c.rotationCurve, 0);
+    }
+
+    /**
+     * ── 丝带轨迹初始化 ──
+     *
+     * 步长按**点数上限反推**：`max(最小步长, 速度×trail寿命 / maxPoints)` ——
+     * 保证一条轨迹记不满上限（`minVertexDistance=0.2` 配 300 prefab/s 本来要 750 个点，
+     * 见 config.type.ts 的 `trail.maxPoints`）。
+     *
+     * 速度取**出生瞬间**的合成速度：本套 trail01 的 `startSpeed = 0`，
+     * 速度**全部**来自 VelocityModule（所以在 `p.vx/vy` 之外还要加上 `vv*0` 那一项）。
+     */
+    if (this.trailOn) {
+      const tv = c.trail!;
+      const vvx0 =
+        c.velocity && c.velocity.enabled
+          ? lifeMulMix(c.velocity.x, 0, p.vmix) * s * u
+          : 0;
+      const vvy0 =
+        c.velocity && c.velocity.enabled
+          ? lifeMulMix(c.velocity.y, 0, p.vmix) * s * u
+          : 0;
+      const spd = Math.hypot(p.vx + vvx0, p.vy + vvy0);
+      p.tstep = Math.max(
+        this.trailMinDist * s * u,
+        (spd * this.trailLife) / this.trailMaxPts
+      );
+      /** 宽度与 `startSize` **同单位同缩放**（Unity：`sizeAffectsWidth=false` ⇒ 不被粒子尺寸乘） */
+      p.thw = (spawnValue(tv.width, r) * s * u) / 2;
+      p.lx = p.x;
+      p.ly = p.y;
+      p.trail = [{ x: p.x, y: p.y, t: this.systemTime }];
     }
 
     this.particles.push(p);
@@ -882,8 +1008,8 @@ export class ParticleAnimator {
       let vvx = 0;
       let vvy = 0;
       if (c.velocity && c.velocity.enabled) {
-        vvx = lifeMul(c.velocity.x, pr) * s * u;
-        vvy = lifeMul(c.velocity.y, pr) * s * u;
+        vvx = lifeMulMix(c.velocity.x, pr, p.vmix) * s * u;
+        vvy = lifeMulMix(c.velocity.y, pr, p.vmix) * s * u;
       }
 
       /**
@@ -933,6 +1059,32 @@ export class ParticleAnimator {
       // 4.5 自旋
       if (p.spin !== 0) {
         p.rot += p.spin * dt;
+      }
+
+      /**
+       * 4.6 丝带轨迹：在**位置积分之后**记点（记的是粒子真实走过的地方）。
+       *
+       * · 记点判据 = 位移 ≥ `tstep`（Unity 的 `minVertexDistance` 语义）；
+       * · 淘汰判据 = 点龄 > `trail.lifetime` —— 这才是"丝带有多长"的决定因素
+       *   （不是粒子的 `startLifetime`：粒子活 8~10s，丝带只有 0.5s）；
+       * · 头端**不**记在这里：渲染时取粒子当前坐标（见 `buildGeometry`）。
+       */
+      if (this.trailOn) {
+        const tp = p.trail;
+        const dx = p.x - p.lx;
+        const dy = p.y - p.ly;
+        if (dx * dx + dy * dy >= p.tstep * p.tstep) {
+          tp.unshift({ x: p.x, y: p.y, t: this.systemTime });
+          p.lx = p.x;
+          p.ly = p.y;
+        }
+        const cut = this.systemTime - this.trailLife;
+        while (tp.length > 0 && tp[tp.length - 1].t < cut) {
+          tp.pop();
+        }
+        while (tp.length > this.trailMaxPts) {
+          tp.pop();
+        }
       }
 
       alive.push(p);
@@ -1007,12 +1159,96 @@ export class ParticleAnimator {
       const sm = useSize ? lifeMul(c.sizeModule.curve, pr) : 1;
       const hw = (p.sizeX * sm) / 2;
       const hh = (p.sizeY * sm) / 2;
-      if (hw <= 0.01 || hh <= 0.01) {
+      /**
+       * ★ 丝带粒子的 `startSize = 0` 是**正常值**（宽度来自 `widthOverTrail`，不是粒子尺寸），
+       *   所以 quad 的尺寸守卫对它们必须**放行** —— 否则 `hw = 0` 会把整条效果静默跳过。
+       */
+      const useTrail = this.trailOn && p.trail.length >= 1;
+      if (!useTrail && (hw <= 0.01 || hh <= 0.01)) {
         continue;
       }
       const al = alphaAt(alKeys, pr);
       if (al <= 0.003) {
         continue;
+      }
+
+      /**
+       * ── 丝带（Ribbon）分支 ────────────────────────────────────────────────
+       *
+       * 折线 = `[粒子当前位置, ...轨迹点]`。头端取**实时坐标**而不是最后一个记录点，
+       * 否则丝带会比粒子滞后一个 `tstep`，看起来"脱节"。
+       *
+       * 每段两个三角形（6 个**独立**顶点 —— 本引擎不建索引缓冲，与 quad 同一套约定），
+       * 带宽方向取线段方向的垂线，半宽 = `p.thw`。
+       *
+       * alpha 三因子相乘（对应 Unity 的 `inheritParticleColor=true`）：
+       *   粒子自身 alpha × `colorOverTrail`(沿带位置) × `colorOverLifetime`(点龄)。
+       * UV：`textureMode=0 (Stretch)` ⇒ u 沿带 0→1、v 跨带 0/1。
+       */
+      if (useTrail) {
+        const tp = p.trail;
+        const m = tp.length;
+        let prevX = p.x;
+        let prevY = p.y;
+        let prevA =
+          al * alphaAt(this.trailTrailA, 0) * alphaAt(this.trailLifeA, 0);
+        for (let k = 0; k < m; k++) {
+          const q = tp[k];
+          let dx = q.x - prevX;
+          let dy = q.y - prevY;
+          const L = Math.hypot(dx, dy);
+          if (L < 1e-6) {
+            continue;
+          }
+          dx /= L;
+          dy /= L;
+          const nx = -dy * p.thw;
+          const ny = dx * p.thw;
+          const tPos = (k + 1) / m;
+          const tAge = Math.min(
+            1,
+            Math.max(0, (this.systemTime - q.t) / this.trailLife)
+          );
+          const curA =
+            al *
+            alphaAt(this.trailTrailA, tPos) *
+            alphaAt(this.trailLifeA, tAge);
+          const uA = this.trailStretch ? k / m : 0;
+          const uB = this.trailStretch ? (k + 1) / m : 1;
+          const ax = prevX + nx;
+          const ay = prevY + ny;
+          const bx = prevX - nx;
+          const by = prevY - ny;
+          const cx2 = q.x + nx;
+          const cy2 = q.y + ny;
+          const dx2 = q.x - nx;
+          const dy2 = q.y - ny;
+          // 顶点：[x, y, u, v, alpha]；两组三角形 a-b-d / a-d-c
+          const tri = [
+            [ax, ay, uA, 0, prevA],
+            [bx, by, uA, 1, prevA],
+            [dx2, dy2, uB, 1, curA],
+            [ax, ay, uA, 0, prevA],
+            [dx2, dy2, uB, 1, curA],
+            [cx2, cy2, uB, 0, curA],
+          ];
+          for (let t2 = 0; t2 < 6; t2++) {
+            const v = tri[t2];
+            pos[n * 3 + 0] = v[0];
+            pos[n * 3 + 1] = v[1];
+            pos[n * 3 + 2] = 0;
+            uvs[n * 2 + 0] = v[2];
+            uvs[n * 2 + 1] = v[3];
+            muvs[n * 2 + 0] = v[2];
+            muvs[n * 2 + 1] = v[3];
+            als[n] = v[4];
+            n++;
+          }
+          prevX = q.x;
+          prevY = q.y;
+          prevA = curA;
+        }
+        continue; // 丝带粒子不再画 quad
       }
 
       /**
@@ -1158,6 +1394,14 @@ export class ParticleAnimator {
         rotDeg: p.rot / DEG2RAD,
         /** 序列帧号（渲染真值；见 Particle.uvFrame）。`-1` = 未启用 */
         uvFrame: p.uvFrame,
+        /**
+         * 丝带轨迹点数（`trail01` 这类；未启用丝带时恒为 0）。
+         * 验收脚本用它判断"丝带是否真的在积累"（应为 2~`trail.maxPoints`，
+         * 且 `step()` 里受 `trail.lifetime` 截断）。
+         */
+        trailPts: p.trail.length,
+        /** 丝带半宽（世界单位）；未启用时为 0 */
+        trailHalfWidth: p.thw,
       })),
     };
   };
