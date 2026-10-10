@@ -30,7 +30,7 @@ This repository grew into a **framework** on top of that rendering core:
 
 ## Features
 
-- **Layered scenes** — `texture` / `spine` / `particle` / `video` layers ordered by `position.z`, with aspect-ratio fitting (`minAspect` / `maxAspect`) and DPI awareness (`dpr: "auto"`).
+- **Layered scenes** — `texture` / `spine` / `particle` / `video` layers ordered by `position.z`, with full-screen fitting (`fitAspect`: height- or width-locked) and DPI awareness (`dpr: "auto"`). Black-bar detection is **real coverage based** (per-side, projected to screen), not an aspect-ratio threshold.
 - **Touch interaction** — rectangular hit zones plus an action sequence; `touch` / `greet` / `standby` sources follow explicit mutual-exclusion and interrupt rules.
 - **Voice & subtitles** — the bubble follows a character anchor, voice plays through a dedicated player; both are wired into the audio master.
 - **Audio master** (`src/audioMaster.ts`) — BGM and voice no longer subscribe to pause signals on their own; they register with a single master that handles pause/resume for both. Voice resumes from where it was paused.

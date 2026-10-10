@@ -47,23 +47,23 @@ export const updateCursorFromClient = (clientX: number, clientY: number) => {
  * 还原口径：与补丁后 bundle 的 `initScene` 模块**逐语句等价**（含 `camY` 三元表达式的
  * 运算优先级、`Math.round` 已去除这两处易错点）。
  *
- * ★ 改这里的验收方式（2026-10-09 更新；原 `_work_全屏适配/07_单测_fit逻辑.js` 与
+ * ★ 改这里的验收方式（2026-10-10 更新；原 `_work_全屏适配/07_单测_fit逻辑.js` 与
  *   `14_验证_新下限与回归.py` 已随该目录归档、不在工作区）：必须**用真实渲染量**，不能只看代码。
- *   起静态服务 + 无头 Chrome，用 `Emulation.setDeviceMetricsOverride` 造出各种视口比例，然后读两样：
- *   ① canvas 的 `getBoundingClientRect()` —— 比例在范围内 = 等于视口；越界 = 按边界 letterbox、
- *      且**居中**（如 500×500 视口下 canvas = `500x458 @(0,21)`）；
- *   ② `#__fitErr` 红条是否存在。
- *   两者合起来才能区分「正确 letterbox」与「**静默露黑**」—— 后者的 canvas 等于视口，
- *   且画面左右/上下出现 renderer clear-color 的黑（`#__fitErr` 不存在，控制台也不报错）。
+ *   起静态服务 + 无头 Chrome，用 `Emulation.setDeviceMetricsOverride` 造出各种视口比例，然后读三样：
+ *   ① canvas 的 `getBoundingClientRect()` —— 现在**恒等于视口**（不再 letterbox）；
+ *   ② `#__fitErr` 红条是否存在（内容里带"露黑边：左 Npx / 右 Npx…"）；
+ *   ③ 截图像素：内容带**内部**是否出现 renderer clear-color 的黑（这一条才是"真露黑"的铁证，
+ *      因为黑边与"被裁"在截图外形上很难分辨）。
+ *   ①恒等 + ②存在 + ③内部有暗列 ⇒ 判据正确；①恒等 + ②不存在 + ③内部有暗列 ⇒ 检测漏了。
  */
 type FitResult = {
   /** 本次生效的渲染倍率（`configs.dpr` 解析后的实际值） */
   dpr: number;
-  /** 内容宽（CSS px，未取整） */
+  /** 画布宽（CSS px，未取整）—— 2026-10-10 起**恒等于视口宽**（不再钳制/letterbox） */
   w: number;
-  /** 内容高（CSS px，未取整） */
+  /** 画布高（CSS px，未取整）—— 同上，恒等于视口高 */
   h: number;
-  /** 夹到 [minAspect, maxAspect] 后的比例 */
+  /** 本帧视口比例（不再夹到任何区间） */
   aspect: number;
   /** 该视口下应保持的垂直 FOV（度） */
   fov: number;
@@ -74,7 +74,19 @@ type FitResult = {
   /** 视口真实尺寸 */
   rw: number;
   rh: number;
-  /** 是否越界 */
+  /**
+   * 四边**真实露黑**的 CSS px（0 = 该边铺满；`noCover` = 素材里一个覆盖层都没有）。
+   *
+   * ★ 这是逐层投影到屏幕归一化坐标后算出来的**实际缺口**，不是拿去比某个配置数字。
+   */
+  leak: {
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+    noCover: boolean;
+  };
+  /** 是否真的露黑（任一边超过 `LEAK_EPS`，或压根没有覆盖层） */
   bad: boolean;
 };
 
@@ -86,6 +98,15 @@ type FitResult = {
  */
 const DPR_MIN = 1;
 const DPR_MAX = 2;
+
+/**
+ * 判定"这一边真露黑了"的阈值（CSS px）。
+ *
+ * ★ 为什么不取 0：authored 得刚刚好的工程（fov 由铺满层宽度反推）算下来缺口常在
+ *   **亚像素级**（S9 那套是 0.015 px，等价于 0.05 世界单位）—— 取 0 会把"其实铺满了"
+ *   判成故障，等于换了个理由误报。0.5 px 既不会漏掉肉眼可见的黑边，也不会被浮点噪声触发。
+ */
+const LEAK_EPS = 0.5;
 
 /**
  * 把 config 的 `dpr` 解析成实际渲染倍率。
@@ -118,13 +139,12 @@ export const initScene = (configs: Configs) => {
     const fovDesign = configs.fov ?? 75;
 
     /**
-     * 扫一遍「带显式宽高的层」（`texture` / `video`，两者字段同构），取三样素材事实
-     * （**闸门的两侧就由它们给出**，见下面的 `artMinAspect` / `artMaxAspect`）：
+     * 扫一遍「带显式宽高的层」（`texture` / `video`，两者字段同构），取两样素材事实：
      *
-     * - **x 覆盖并集** `[covL, covR]`：所有这类层的 x 区间并集。「按高」基准下能不能横向铺满，
-     *   判据是**整个并集**能否盖住可见窗口 —— ★ 不是"最宽那一层"，见 `artMaxAspect`。
-     * - **z 最小的那层**（「最底层的铺满素材」）：它的**下边界 y** 是垂直锚点要钉住的位置，
-     *   它的**宽高比** `bw/bh` = 素材下界（垂直方向把背景用满的极限）。
+     * - **`cov` = 覆盖层清单**（每层的 x / y / 世界宽高 / z）：露黑检测要按**屏幕投影**逐边比，
+     *   所以这里不能只留"并集边界"，得把每层原样留下（各层的 `|z|` 不同 ⇒ 换算系数不同）。
+     * - **z 最小的那层**（「最底层的铺满素材」）：它的**下边界 y** 是垂直锚点要钉住的位置
+     *   （`base.bottom` / `base.z`）。
      * ⚠️ `spine` / `particle` **不参与**：它们没有显式宽高（spine 给 scale、particle 给贴图）；
      *   base 仍只从 `texture` 里挑（保持既有行为，不含 video）。
      */
@@ -132,10 +152,13 @@ export const initScene = (configs: Configs) => {
       const meshes = configs.meshes || [];
       let zMin = Infinity;
       let bottom = 0;
-      let bw = 0;
-      let bh = 0;
-      let covL = Infinity;
-      let covR = -Infinity;
+      const cov: {
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+        z: number;
+      }[] = [];
       for (let i = 0; i < meshes.length; i++) {
         const m = meshes[i] as TextureMeshConfig | VideoMeshConfig;
         if (!m || !m.position) {
@@ -145,21 +168,20 @@ export const initScene = (configs: Configs) => {
           continue;
         }
         const w = (m.width || 1) * (m.scale || 1);
-        const x = m.position.x;
-        if (x - w / 2 < covL) {
-          covL = x - w / 2;
-        }
-        if (x + w / 2 > covR) {
-          covR = x + w / 2;
-        }
+        const h = (m.height || 1) * (m.scale || 1);
+        cov.push({
+          x: m.position.x,
+          y: m.position.y,
+          w,
+          h,
+          z: m.position.z,
+        });
         if (m.type === 'texture' && m.position.z < zMin) {
           zMin = m.position.z;
-          bw = w;
-          bh = (m.height || 1) * (m.scale || 1);
-          bottom = m.position.y - bh / 2;
+          bottom = m.position.y - h / 2;
         }
       }
-      return { bottom, bw, bh, covL, covR, z: zMin };
+      return { bottom, cov, z: zMin };
     })();
 
     /**
@@ -185,71 +207,96 @@ export const initScene = (configs: Configs) => {
     const tanHalfDesign = Math.tan((fovDesign * Math.PI) / 360);
 
     /**
-     * ★★ 闸门 `[minAspect, maxAspect]` **按基准各自绑定到素材能给的那一侧**
-     *   （2026-10-09 定；此前是一个基准无关的共用区间）。
+     * ★★ 判据 = **真实覆盖检测**（2026-10-10 起，取代原闸门 `[minAspect, maxAspect]`）
      *
-     * 为什么必须分家：两种基准锁的是**不同的一个自由量**，于是"开始露黑"的边界各在一边 ——
+     * 旧做法：拿视口比例去比一对**配置里的数字**，越界就 letterbox + 红条。两个毛病：
      *
-     * | 基准 | 锁住 | 可见世界量 | 会露黑的一侧 | 素材给出的边界 |
-     * |---|---|---|---|---|
-     * | `'width'`  | 可见宽 ≡ `base.bw` | 可见高 = `base.bw / 视口比例` | 窗口**太高**（上下露黑） | 下界 `base.bw/base.bh` |
-     * | `'height'` | 可见高 ≡ `visibleH`  | 可见宽 = `visibleH × 视口比例` | 窗口**太宽**（左右露黑） | 上界 `2·min(相机→并集左, 相机→并集右) / visibleH` |
+     * 1. 那对数字与"会不会露黑"没有必然关系 —— 决定露黑的是**可见范围**与**图层覆盖**的
+     *    屏幕关系，它随 `fov`、`|base.z|`、`cameraX/camY`、以及**每层各自的 `z`** 一起变
+     *    （实测：同一个 `maxAspect: 2.4` 在 S9 上"偏紧"、在单层 dev config 上"偏松 0.035"）。
+     * 2. 数字与实际不符时是**静默露黑**：不报错、不留痕，画面边缘黑掉，几乎没有线索。
      *
-     * ⇒ 「按宽」的横向永不露黑（可见宽恒等于素材宽），所以它**没有素材上界**；
-     *   「按高」的纵向是常量，所以它**没有素材下界**。
+     * 现做法：把**本帧的可见范围**与**每层覆盖**都投影到屏幕归一化坐标，逐边相减 ——
+     * 哪一边真露黑、露多少 CSS px，就报哪一边。**完全不看长宽比**；
+     * `config.minAspect` / `config.maxAspect` 因此**不再生效**（字段保留只为兼容旧工程，
+     * 见 `config.type.ts`；带了这两个字段会打一条 console.warn）。
      *
-     * ## 取值规则（显式写的值也**不能突破素材**）
+     * ★ 同时**不再钳制、不再 letterbox**：画布恒等于视口。露黑就是露黑，如实呈现 + 明说，
+     *   而不是把画布缩到某个比例再留边（那只会把"为什么黑"藏起来）。
      *
-     * - `'width'`：`min = max(写的 ?? 素材下界, 素材下界)` —— 写松了会被收回，否则会**静默**在上下露黑；
-     *   `max = 写的 ?? 2.4`（素材无上界，沿用人为闸门兜住"极端宽"）。
-     * - `'height'`：`min = 写的 ?? 素材下界`（素材无下界，缺省沿用旧值，保持既有工程不变）；
-     *   `max = min(写的 ?? 2.4, 素材上界)` —— 写宽了会被收回，否则会**静默**在左右露黑。
+     * ## 为什么必须"投影到屏幕"而不是直接比世界坐标
      *
-     * ★ 效果：越界一律走"红条 + letterbox 居中"的显式路径，**不再有静默露黑**；
-     *   而所有显式写了 `minAspect`/`maxAspect` 的老工程（S9 系全部是
-     *   `1.0911 / 2.4` + `'width'`）**行为逐字不变**。
+     * 相机是透视的，不同 `z` 的层要用**自己那一层**的换算系数：同一个世界宽度 `w` 放在更深的
+     * `|z|` 上，屏幕覆盖反而**更小** ⇒ x 除以 `|z|·tan(fov/2)·aspect`、y 除以 `|z|·tan(fov/2)`。
      */
-    /** 「按高」基准下恒定的可见世界高（= 2·|base.z|·tan(fov_d/2)） */
-    const visibleH = 2 * Math.abs(base.z) * tanHalfDesign;
-    /** 相机水平位置 —— 可见窗口是以它为**中心**的，所以覆盖必须"两侧分别"够长 */
+    /** 相机水平位置 —— 可见范围以它为中心 */
     const camX = configs.cameraX ?? 0;
-    /** 素材下界：底层背景**垂直**铺满的极限（`'width'` 基准下才会被用满） */
-    const artMinAspect = base.bh > 0 ? base.bw / base.bh : 1.54;
-    /**
-     * 素材上界：**横向**铺满的极限（`'height'` 基准下才会被用满）
-     * = `min(相机→并集左边, 相机→并集右边) × 2 ÷ 可见世界高`。
-     *
-     * ★★ 为什么必须**两侧分别算、再取较紧的一侧**（2026-10-09 修正）：
-     *   可见窗口以 `cameraX` 为中心，而图层并集**通常不关于相机对称**
-     *   （S9 那套距相机 左 1959 / 右 2231）⇒ 「并集总跨度」和「最宽那一层」两种粗略算法都会**算松**
-     *   —— 露黑总是先从**较短的那一侧**开始，只有这一侧才能给出正确边界。
-     *
-     * 实测吻合（越界后露黑像素数，逐像素级）：
-     * | config | 该公式给的边界 | 实测 |
-     * |---|---|---|
-     * | 仓库 dev config（单层、相机居中）| **1.6450**（右侧紧：1767/2148.5×2）| @1.80 左 21 / 右 38 px、@2.30 左 146 / 右 163 px，**与预测逐像素相同** |
-     * | S9 `12_探针_去灰线`（12 层、相机 −33.96）| **2.2667**（左侧紧：1959/1728.9×2）| @2.35 左侧 19 px（预测 20.9）、右侧 0（预测 0）|
-     * ⚠️ 前提：并集最外侧那层在边缘处**不透明**（透明边会透出底色，而 config 里看不出来）。
-     */
-    const halfWToCover =
-      isFinite(base.covL) && isFinite(base.covR)
-        ? Math.min(camX - base.covL, base.covR - camX)
-        : Infinity;
-    const artMaxAspect =
-      visibleH > 0 && halfWToCover > 0
-        ? (2 * halfWToCover) / visibleH
-        : Infinity;
-    /** 没有素材边界的另一侧，沿用这道人为闸门（老缺省） */
-    const GATE_MAX_ASPECT = 2.4;
+    /** 设计视口比例（`'width'` 基准的水平锁定要用它） */
+    const aspectD = w0 / h0;
 
-    const minAspect =
-      fitAspect === 'width'
-        ? Math.max(configs.minAspect ?? artMinAspect, artMinAspect)
-        : configs.minAspect ?? artMinAspect;
-    const maxAspect =
-      fitAspect === 'height'
-        ? Math.min(configs.maxAspect ?? GATE_MAX_ASPECT, artMaxAspect)
-        : configs.maxAspect ?? GATE_MAX_ASPECT;
+    /**
+     * 逐边算露黑，返回 **CSS px**（0 = 该边铺满）。
+     *
+     * 屏幕归一化坐标（NDC）：右/上 = `+1`，左/下 = `−1`。某边露黑 ⇔ 覆盖并集没够到那条边：
+     * 左缺口 `= covL − (−1)`、右缺口 `= 1 − covR`、下缺口 `= covB − (−1)`、上缺口 `= 1 − covT`。
+     */
+    const detectLeak = (
+      vw: number,
+      vh: number,
+      tanHalfFov: number,
+      camY: number
+    ) => {
+      let covL = Infinity;
+      let covR = -Infinity;
+      let covB = Infinity;
+      let covT = -Infinity;
+      if (tanHalfFov > 0) {
+        for (let i = 0; i < base.cov.length; i++) {
+          const L = base.cov[i];
+          const d = Math.abs(L.z);
+          if (d <= 0) {
+            continue;
+          }
+          const kx = 1 / (d * tanHalfFov * (vw / vh));
+          const ky = 1 / (d * tanHalfFov);
+          const l = (L.x - L.w / 2 - camX) * kx;
+          const r = (L.x + L.w / 2 - camX) * kx;
+          const b = (L.y - L.h / 2 - camY) * ky;
+          const t = (L.y + L.h / 2 - camY) * ky;
+          if (l < covL) {
+            covL = l;
+          }
+          if (r > covR) {
+            covR = r;
+          }
+          if (b < covB) {
+            covB = b;
+          }
+          if (t > covT) {
+            covT = t;
+          }
+        }
+      }
+      /** 归一化缺口 → 像素：一个归一化单位 = 半屏 */
+      const toPx = (gap: number, side: number) =>
+        gap > 0 ? (gap * side) / 2 : 0;
+      return {
+        noCover: base.cov.length === 0,
+        // ★ 左边/下边的缺口是 `cov − (−1) = cov + 1`（写反成 `−1 − cov` 会把"覆盖超出屏幕"
+        //   误判成"没铺到" —— 2026-10-10 踩过，dev config @1.20 因此假报"左 129px"）
+        left: isFinite(covL) ? toPx(covL + 1, vw) : 0,
+        right: isFinite(covR) ? toPx(1 - covR, vw) : 0,
+        bottom: isFinite(covB) ? toPx(covB + 1, vh) : 0,
+        top: isFinite(covT) ? toPx(1 - covT, vh) : 0,
+      };
+    };
+
+    /** 旧闸门字段已废弃 —— 留一条日志，免得有人改了 config 却怎么都不生效 */
+    if (configs.minAspect !== undefined || configs.maxAspect !== undefined) {
+      console.warn(
+        '[fit] config 的 minAspect / maxAspect 自 2026-10-10 起不再生效（已改为按真实覆盖检测露黑），本次已忽略。'
+      );
+    }
 
     const calc = (): FitResult => {
       let vw = window.innerWidth || w0;
@@ -259,54 +306,50 @@ export const initScene = (configs: Configs) => {
       vh = vh > 1 ? vh : h0;
 
       const a = vw / vh;
-      const clamped = a < minAspect ? minAspect : a > maxAspect ? maxAspect : a;
-
-      let cw: number;
-      let ch: number;
-      if (a > maxAspect) {
-        ch = vh;
-        cw = vh * maxAspect;
-      } else if (a < minAspect) {
-        cw = vw;
-        ch = vw / minAspect;
-      } else {
-        cw = vw;
-        ch = vh;
-      }
 
       // 水平锁定（`'width'`）：tan(fov/2) = tan(fov_d/2) · aspect_d / aspect_w
       // 画幅高锁定（`'height'`）：tan(fov/2) 恒定 = tan(fov_d/2)
       const fov =
         fitAspect === 'height'
           ? fovDesign
-          : (2 * Math.atan((tanHalfDesign * (w0 / h0)) / (cw / ch)) * 180) /
-            Math.PI;
+          : (2 * Math.atan((tanHalfDesign * aspectD) / a) * 180) / Math.PI;
+      const tanHalfFov = Math.tan((fov * Math.PI) / 360);
 
       // 垂直锚点：把可见窗口的下边界钉在底层素材的下边界上（camY 恒 >= 0）
-      // ★ 两种基准下"可见半高"的算法不同：
-      //   `'width'`  —— 可见宽 ≡ base.bw ⇒ 半高 = base.bw/2/aspect
-      //   `'height'` —— 半高由 fov 与 base 平面直接给出 = |base.z|·tan(fovDesign/2)
-      const halfH =
-        fitAspect === 'height'
-          ? Math.abs(base.z) * tanHalfDesign
-          : base.bw / 2 / (cw / ch);
+      // ★ 半高必须用**本帧真实的 fov**。旧 `'width'` 分支写的是 `base.bw/2/aspect` ——
+      //   只有"fov 由铺满层宽度反推"的工程才恰好相等；不等的工程会锚错（差 |base.z|·Δtan）。
+      const halfH = Math.abs(base.z) * tanHalfFov;
       const camY = halfH + base.bottom > 0 ? halfH + base.bottom : 0;
+
+      const leak = detectLeak(vw, vh, tanHalfFov, camY);
 
       return {
         dpr: resolveDpr(configs.dpr),
-        w: cw,
-        h: ch,
-        aspect: clamped,
+        // 画布恒等于视口：不钳制、不 letterbox（见上面「真实覆盖检测」的注释）
+        w: vw,
+        h: vh,
+        aspect: a,
         fov,
         camY,
         a,
         rw: vw,
         rh: vh,
-        bad: a < minAspect - 1e-9 || a > maxAspect + 1e-9,
+        leak,
+        bad:
+          leak.noCover ||
+          leak.left > LEAK_EPS ||
+          leak.right > LEAK_EPS ||
+          leak.top > LEAK_EPS ||
+          leak.bottom > LEAK_EPS,
       };
     };
 
-    /** 越界时：控制台报错 + 页面左上红条；仍按边界渲染（letterbox 居中），便于排查 */
+    /**
+     * 真露黑时：控制台报错 + 页面左上红条。
+     *
+     * ★ 与旧版的区别：不再有"已按边界 letterbox 居中"那一句 —— 画布就是视口，
+     *   黑边留在原地，红条只负责讲清**哪几边、多少像素、为什么、怎么改**。
+     */
     const warn = (v: FitResult) => {
       let el = document.getElementById('__fitErr');
       if (!v.bad) {
@@ -332,61 +375,58 @@ export const initScene = (configs: Configs) => {
         ].join(';');
         document.body.appendChild(el);
       }
+      /** 只列真的露了的那几边（阈值同 `bad`） */
+      const side = (n: number, name: string) =>
+        n > LEAK_EPS ? [name + ' ' + Math.round(n) + 'px'] : [];
+      const sides = ([] as string[]).concat(
+        side(v.leak.left, '左'),
+        side(v.leak.right, '右'),
+        side(v.leak.top, '上'),
+        side(v.leak.bottom, '下')
+      );
       /**
-       * ★ 两侧的来源不同 ⇒ 给的出口也必须不同（否则等于教用户去改一个改不动的值）：
-       *   `'height'` 的上界来自素材（写宽了会被收回）；`'width'` 的下界来自素材（写松了会被收回）。
+       * 露在哪一边，是基准决定的：`'height'` 可见高恒定 ⇒ 窗口越宽越容易左右露；
+       * `'width'` 可见宽恒定 ⇒ 窗口越高越容易上下露。出口按这个给，别让用户瞎试。
        */
-      /** 并集数字只在真的有层时才有意义（没层时 `covL/covR` 是 ±Infinity） */
-      const covText = isFinite(halfWToCover)
-        ? '（贴图层并集距相机 左 ' +
-          Math.round(camX - base.covL) +
-          ' / 右 ' +
-          Math.round(base.covR - camX) +
-          '，取较紧的一侧 ÷ 可见世界高 ' +
-          Math.round(visibleH) +
-          '）'
-        : '';
-      const hint =
-        fitAspect === 'height'
-          ? ' 渲染（letterbox 居中留边）。\n' +
-            '上界 ' +
-            maxAspect.toFixed(4) +
-            ' 由素材给出' +
-            covText +
-            '：把窗口调窄即可；\n' +
-            '或调小 config.json 的 fov（可见世界高随之变小、上界变大），' +
-            '亦可改用「按画幅宽对齐」（fitAspect: "width"）。'
-          : ' 渲染（letterbox 居中留边）。\n' +
-            '下界 ' +
-            minAspect.toFixed(4) +
-            ' 由素材给出（底层背景的宽高比）：把窗口调矮即可，写更小的 minAspect 也压不下去；\n' +
-            '要更宽的比例可改 config.json 的 maxAspect（上界那一侧才是人为闸门）。';
+      const reason = v.leak.noCover
+        ? '素材里没有任何带尺寸的贴图层 / 视频层 —— 整屏都会是底色。'
+        : '图层覆盖不到本帧的可见范围（' +
+          (fitAspect === 'height'
+            ? '按高：可见高恒定，可见宽随视口比例变宽'
+            : '按宽：可见宽恒定，可见高随视口比例变高') +
+          '）。';
       el.textContent =
-        '[画幅不支持] 视口 ' +
+        '[露黑] 视口 ' +
         v.rw +
         'x' +
         v.rh +
         '  aspect=' +
         v.a.toFixed(4) +
-        '  超出允许范围 ' +
-        minAspect.toFixed(4) +
-        ' ~ ' +
-        maxAspect.toFixed(4) +
-        '\n已按边界 ' +
-        v.aspect.toFixed(4) +
-        hint;
+        '\n露黑边：' +
+        (sides.length ? sides.join(' / ') : '（未落到某一边，见控制台）') +
+        '\n原因：' +
+        reason +
+        '\n怎么改：① 调窗口比例（露在左右就把窗口调窄、露在上下就调矮）；' +
+        '② 调小 config.json 的 fov（可见范围整体变小）；' +
+        '③ 换对齐基准（按高 ⇄ 按宽，两者锁的方向相反）。' +
+        '\n根治：给素材补一层更宽/更高的背景，或把它摆到能盖住的位置。' +
+        '\n（判据是"真的露没露"，config 的 minAspect / maxAspect 已不再生效。）';
       console.error(
-        '[fit] aspect ' +
-          v.a.toFixed(4) +
-          ' out of [' +
-          minAspect.toFixed(4) +
-          ', ' +
-          maxAspect.toFixed(4) +
-          '] (viewport ' +
+        '[fit] 露黑 viewport ' +
           v.rw +
           'x' +
           v.rh +
-          ')'
+          ' aspect=' +
+          v.a.toFixed(4) +
+          ' leak(px) L' +
+          Math.round(v.leak.left) +
+          ' R' +
+          Math.round(v.leak.right) +
+          ' T' +
+          Math.round(v.leak.top) +
+          ' B' +
+          Math.round(v.leak.bottom) +
+          (v.leak.noCover ? ' [无覆盖层]' : '')
       );
     };
 

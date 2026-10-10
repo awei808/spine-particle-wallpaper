@@ -127,18 +127,16 @@ Other config knobs (meshes, layers, `minAspect` / `maxAspect`, `dpr: "auto"`, pa
    at design aspect is locked to the bottom-most (`z` smallest) texture layer; `fov` does NOT
    change it. To reframe, **move the mesh's `y`, not the FOV** — changing FOV shifts every
    layer's z-plane compensation at once.
-   **The `[minAspect, maxAspect]` gate is bound to `fitAspect` (2026-10-09).** The two baselines
-   lock different quantities, so each one's *leak* is on the opposite side and the artwork, not the
-   config, decides that side: `'width'` locks visible width to the base layer ⇒ **the lower bound is
-   the artwork** (`base.bw/base.bh`, a smaller `minAspect` is ignored); `'height'` locks visible
-   height to `2·|base.z|·tan(fov/2)` ⇒ **the upper bound is the artwork**
-   (`2 × min(cameraX→union-left, union-right→cameraX)` ÷ that visible height — the union of all
-   `texture`/`video` layer x-ranges, taking the **tighter side**, because the window is centred on
-   `cameraX` and the union is usually asymmetric; a larger `maxAspect` is ignored). Beyond those bounds the frame letterboxes
-   and shows the red `__fitErr` bar — that path is the *only* supported failure mode; never let a
-   baseline silently render clear-color black at the edges.
+   **There is NO aspect gate any more (2026-10-10).** `minAspect` / `maxAspect` are deprecated and
+   ignored; the canvas is **always the full viewport** (no clamping, no letterbox). Instead the fit
+   computes, per frame, the visible rect and every `texture`/`video` layer's coverage **projected to
+   screen NDC** (each layer divided by *its own* `|z|·tan(fov/2)·aspect` in x and `|z|·tan(fov/2)` in
+   y — perspective means a deep layer covers less screen than a near one of the same world size), then
+   subtracts per side. Any side short by more than `LEAK_EPS` (0.5 px) raises the red `__fitErr` bar,
+   which names the leaking sides in pixels. Never reintroduce an aspect-ratio proxy for this: a
+   mismatch between the proxy and reality is *silent* black at the edges.
 4. **Config and bundle must be updated in pairs.** A `config.json` change that affects framing
-   (e.g. `fitAspect`, `minAspect`) only takes effect with a matching bundle reload.
+   (e.g. `fitAspect`, `fov`, `cameraX`, `dpr`) only takes effect with a matching bundle reload.
 5. **Frame-driven fades freeze on WE pause.** WE web wallpaper stops `requestAnimationFrame`
    on pause, but `Date.now()` keeps advancing. Any opacity/audio fade that is frame-driven
    will freeze mid-transition when paused — drive audio fades with `setTimeout` instead.

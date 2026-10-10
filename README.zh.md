@@ -29,7 +29,7 @@ Unity 手游里的 Spine 角色 + 粒子特效 + 触摸动作，搬上桌面并�
 
 ## 功能一览
 
-- **多层场景**：`texture` / `spine` / `particle` / `video` 四种层，按 `position.z` 排布，宽高比自适应（`minAspect` / `maxAspect`），DPI 自适应（`dpr: "auto"`）。
+- **多层场景**：`texture` / `spine` / `particle` / `video` 四种层，按 `position.z` 排布，全屏适配（`fitAspect`：锁高或锁宽），DPI 自适应（`dpr: "auto"`）。露黑检测是**真实覆盖检测**（逐层投影到屏幕、逐边算缺口），不再是长宽比阈值。
 - **触摸交互**：矩形热区 + 动作序列；`touch` / `greet` / `standby` 三类来源有明确的互斥与打断规则。
 - **语音与字幕**：字幕气泡跟随角色锚点，语音走独立播放器；两者都接入音频总闸。
 - **音频总闸**（`src/audioMaster.ts`）：BGM 与语音不再各自订阅暂停信号，而是登记到同一个总闸统一处理暂停/恢复。语音从暂停处续播。
