@@ -216,8 +216,10 @@ const PHASE_TEXT: Record<TriggerPhase, string> = {
 const makeRow = (event: string, cond: string, e: DialogueEntry): Row => {
   const short = shortLabel(e.label);
   /**
-   * ★ 誓约态孪生与本体**共用 `actionId`**（2026-10-10）⇒ 光看 `#63012` 分不出是哪个态，
-   *   把事件族缀在角标后面（普通事件不缀，老 config 的角标逐字不变）。
+   * ★ 非普通事件在角标后**缀上事件族**（2026-10-10）——
+   *   缺省池里既有 `postMarry`（动画 `*_marry`）又有 `normal`，光看 `#63004` 分不出属于哪一族；
+   *   缀上后"表里显示什么"与"实际会播什么"一眼对得上。
+   *   ★ 普通事件**不缀** ⇒ 老 config（全是普通事件）的角标逐字不变。
    */
   const ph = resolveDialoguePhase(e);
   const phTail = ph === 'normal' ? '' : ' · ' + PHASE_TEXT[ph];

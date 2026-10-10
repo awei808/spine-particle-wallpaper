@@ -521,7 +521,8 @@ const main = async () => {
   /**
    * ★★ **事件族筛子（2026-10-10）** —— 见 `config.type.ts` 的 `TriggerPhase`。
    *
-   * · 触摸通道：用用户在面板「事件池」页选的 `subtitle.touchPhases`（缺省 `['normal']`）；
+   * · 触摸通道：用用户在面板「事件池」页选的 `subtitle.touchPhases`
+   *   （缺省 `['postMarry','normal']` = 游戏誓约后那套可触发事件）；
    * · 待机 / 回到壁纸：**固定只用普通事件** —— 誓约类内容只由「触摸 · 可触发的事件」控制，
    *   免得用户没动它、却在别的通道里冒出誓约态台词。
    *

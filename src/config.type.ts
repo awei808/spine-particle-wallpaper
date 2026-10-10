@@ -978,18 +978,27 @@ export type TriggerChannel = 'standby' | 'touch' | 'resume';
  *
  * ## ★★ 这是"复刻"之外的**分类维度**，务必知情
  *
- * 游戏里并没有"三个池"—— 它是**同一条动作按玩家是否已誓约换一套动画**。
- * 壁纸把它**摊平成两套条目**（普通版 + 誓约态版：**同 `actionId`、同文案、同语音，
- * 只有动画名不同**），这样用户才能直接选"要哪一套"。
- * 摊平在工程侧完成（`_work_星语心恋/17_注入S8语音字幕.py`），**不是游戏原样**。
+ * ## 三族的判据（2026-10-10 晚定稿）
  *
- * ⚠️ 孪生条目与本体**共用 `actionId`** ⇒ `dialogue.buildPool` / `mergeKindPools`
- *   必须做 phase 感知（去重键是 `actionId|phase`），否则会静默丢一条。
+ * 游戏原表 `CfgSoulSpineActionControlTable` 里 `MarryAction{1,2,3}` **替换**
+ * `TouchFeedback{1,2,3}` —— 婚后触摸位 1/2/3 换播别的动作，4/5/6 原样沿用
+ * （全库 26 个 control 结构一致：两表同键空间、`MarryAction` 是前缀子集）。
+ * ⇒ 判据是**「婚后这一位会不会换人」**，不是动画名：
+ *
+ * | 取值 | 判据 |
+ * |---|---|
+ * | `preMarry` | 婚后**被换掉**的那一位（婚前专属） |
+ * | `postMarry` | 婚后的**替换者**（= `MarryAction` 组） |
+ * | `normal` | 婚后**两态同一个动作**（换不换婚约都一样） |
+ *
+ * 分类在工程侧完成（`_work_星语心恋/17_注入S8语音字幕.py`），**不是游戏原样**。
+ * ⚠️ `dialogue.buildPool` / `mergeKindPools` 仍是 phase 感知的（去重键 `actionId|phase`）
+ *   —— 这是防御：万一某份 config 把同一条 `actionId` 分别标了两个族，不会静默丢一条。
  *
  * ⚠️ **缺 `phase` 字段时按动画名后缀兜底**（`dialogue.resolveDialoguePhase`）：
  *   动画名以 `_marry` 结尾 ⇒ `'postMarry'`，否则 `'normal'`。
- *   ⇒ 老 config（无 `phase`、无 `_marry` 动画）**全部落到 `'normal'`**，
- *     配合缺省勾选 `['normal']`，行为与改动前逐字相同。
+ *   ⇒ 老 config（无 `phase`、无 `_marry` 动画）**全部落到 `'normal'`**，而 `'postMarry'`
+ *     池为空 ⇒ 即使缺省含着 `'postMarry'`，行为仍与改动前逐字相同。
  */
 export type TriggerPhase = 'preMarry' | 'postMarry' | 'normal';
 
@@ -1264,7 +1273,8 @@ export type SubtitleConfig = {
    *   ① 先按本字段把候选条目**筛成勾中的族**（见 `TriggerPhase` 的三族定义）；
    *   ② 再在勾中的 `chat类 / greet类 / touch类` 里按 `mergeKindPools` 并池随机。
    *
-   * ★★ **缺省（本字段没配时）= `['normal']`** ⇒ 只用普通态条目，与改动前**逐字相同**。
+   * ★★ **缺省（本字段没配时）= `['postMarry','normal']`** ⇒ 合起来正好是
+   *   **游戏誓约（婚后）状态**下的那套可触发事件 ⇒ 条数与"游戏誓约后的可触发事件数"一致。
    *   ⚠️ 显式写空数组 `[]` = 显式全关 ⇒ 三族都不出条 ⇒ 触摸池为空，
    *      此时 `touch.ts` 会**退回"只随机挑动画名、不出字幕"**的兜底行为（不是报错）。
    *   ⚠️ 与 `standbyKinds` 同一容错口径：写了数组但一个合法值都没有（拼错）⇒ 当作"没配"退回缺省。

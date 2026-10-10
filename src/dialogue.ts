@@ -369,8 +369,24 @@ export const TRIGGER_PHASE_ORDER: readonly TriggerPhase[] = [
   'normal',
 ];
 
-/** 触摸通道**缺省**只用哪一族（字段缺席时）—— 普通态，= 改动前行为 */
-export const DEFAULT_TOUCH_PHASES: readonly TriggerPhase[] = ['normal'];
+/**
+ * 触摸通道**缺省**只用哪几族（字段缺席时）。
+ *
+ * ★ 缺省 = **誓约后 + 普通**（2026-10-10 晚按用户口径改，原为 `['normal']`）。
+ *
+ * 语义：一份"模板工程"（如誓约皮肤）把动作按「婚后这一位会不会换人」分成三族，
+ * 缺省选中的这两族合起来 = **游戏里誓约（婚后）状态下的那套可触发事件**：
+ *   · `normal`    = 婚后两态同一个动作（换不换婚约都一样）
+ *   · `postMarry` = 婚后的替换者（游戏 `MarryAction` 组）
+ * ⇒ 缺省池的**条数**与"游戏誓约后的可触发事件数"一致（触摸位 6）。
+ * 想要婚后/婚前两套内容都留着看的用户，可到面板「事件池」页加勾 `preMarry`。
+ *
+ * ⚠️ 只影响**触摸通道**；待机 / 回到壁纸固定只用 `normal`（见 `index.ts` 的 `AUTO_PHASES`）。
+ */
+export const DEFAULT_TOUCH_PHASES: readonly TriggerPhase[] = [
+  'postMarry',
+  'normal',
+];
 
 /** 是不是合法的事件族名（非法值静默丢弃，与 `isTriggerEventKind` 同一容错口径） */
 export const isTriggerPhase = (v: unknown): v is TriggerPhase =>
@@ -381,8 +397,8 @@ export const isTriggerPhase = (v: unknown): v is TriggerPhase =>
  *
  * ★ **显式 `phase` 优先**；没写时按**动画名后缀**兜底
  *   （以 `_marry` 结尾 ⇒ `'postMarry'`，否则 `'normal'`）。
- *   ⇒ 老 config（无 `phase`、动画全是普通态）**全部落到 `'normal'`**，
- *     配合缺省 `['normal']` 行为与改动前逐字相同。
+ *   ⇒ 老 config（无 `phase`、动画全是普通态）**全部落到 `'normal'`**，而 `'postMarry'`
+ *     池为空 ⇒ 即使缺省（见 `DEFAULT_TOUCH_PHASES`）含着 `'postMarry'`，行为仍与改动前逐字相同。
  */
 export const resolveDialoguePhase = (e: DialogueEntry): TriggerPhase => {
   if (isTriggerPhase(e?.phase)) {
@@ -415,7 +431,7 @@ export const normalizeTriggerPhases = (phases: unknown): TriggerPhase[] => {
  *
  * | 输入 | 结果 |
  * |---|---|
- * | 没配 / 非数组 | 缺省 `['normal']` |
+ * | 没配 / 非数组 | 缺省 `['postMarry','normal']`（= 游戏誓约后那套） |
  * | 合法数组（含**空数组**） | 归一后的列表；**空数组 = 显式全关**（绝不退回缺省） |
  * | 数组里一个合法值都没有（拼错） | 当作"没配"，退回缺省（config 无 schema 校验，宁可降级） |
  *

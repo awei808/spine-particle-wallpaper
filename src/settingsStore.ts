@@ -170,7 +170,7 @@ export type SettingsOverrides = {
    * `TriggerPhase` 的子集（`'preMarry'` 誓约前 / `'postMarry'` 誓约后 / `'normal'` 普通）。
    * 与 `touchKinds` 是**两层筛子**：先按族筛候选，再在勾中的 chat/greet/touch 类里并池随机。
    *
-   * **缺省（不写本字段）= `['normal']`** ⇒ 只用普通态条目 = 改动前行为。
+   * **缺省（不写本字段）= `['postMarry','normal']`** ⇒ = 游戏誓约（婚后）状态那套可触发事件。
    * ⚠️ 显式空数组 = 全关（三族都不出条）。改了要重载。
    */
   touchPhases?: TriggerPhase[];
@@ -298,7 +298,7 @@ export type SettingsView = {
   /**
    * 触摸可触发的**事件族**（多选，**意向列表**，固定顺序 `preMarry` → `postMarry` → `normal`）。
    *
-   * ⚠️ 同样是意向列表，不判可用性。缺省 `['normal']`。
+   * ⚠️ 同样是意向列表，不判可用性。缺省 `['postMarry','normal']`。
    */
   touchPhases: TriggerPhase[];
   /**
@@ -699,7 +699,7 @@ export const readView = (cfg: Configs): SettingsView => ({
   /** ★ 缺省 `['touch']`（= 点击只从 `touch` 池随机，与改动前一致） */
   touchKinds: resolveTriggerIntent('touch', cfg.subtitle?.touchKinds),
   /**
-   * ★ 缺省 `['normal']`（= 只用普通态条目，与改动前一致）。
+   * ★ 缺省 `['postMarry','normal']`（= 游戏誓约后那套可触发事件）。
    *   摊平口径复用 `dialogue.resolveTriggerPhases` —— 面板勾选态与运行时真正筛的族
    *   不可能各写一套判据。
    */

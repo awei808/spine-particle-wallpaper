@@ -1537,9 +1537,11 @@ export const createSettingsPanel = (
    *   ② 再在勾中的**类别**里并池随机（`mergeKindPools`）。
    * ⇒ 两者**叠加生效**，互不覆盖（同页相邻，不再跨页）。
    *
-   * ★ 三族取自游戏 `CfgSoulSpineActionControlTable[603]` 的两套动画状态
-   *   （普通态 / 誓约态）与 `MarryAction` 组，定义见 `config.type.ts` 的 `TriggerPhase`。
-   * ★ 「普通事件」= 普通态条目（= 改动前的行为，故定为缺省）。
+   * ★ 三族判据 = **「婚后这一位会不会换人」**（不是动画名）：
+   *   原表 `MarryAction{1,2,3}` 替换 `TouchFeedback{1,2,3}` ⇒ 婚后触摸位 1/2/3 换播别的动作、
+   *   位 4/5/6 原样沿用（全库 26 个 control 结构一致）。定义见 `config.type.ts` 的 `TriggerPhase`。
+   * ★ 缺省 `['postMarry','normal']` = **游戏誓约（婚后）状态那套** ⇒ 缺省触摸池的条数
+   *   与"游戏誓约后的可触发事件数"一致。
    */
   const phaseChips = createChips<TriggerPhase>(
     {
@@ -1558,7 +1560,7 @@ export const createSettingsPanel = (
   addRow(
     '└ 事件族（仅点击触摸）',
     phaseChips.el,
-    '在勾中的类别里再按事件族筛一层，两层叠加生效；默认只勾「普通事件」。',
+    '在勾中的类别里再按事件族筛一层，两层叠加生效；默认勾「誓约后事件」+「普通事件」。',
     pages.touch,
     true
   );
