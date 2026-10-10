@@ -51,12 +51,13 @@ import {
   FerrisWheelConfig,
   GreetMode,
   TriggerEventKind,
+  TriggerPhase,
   TouchFeedbackMode,
 } from './config.type';
 // 只为读"探针当前生效值"的缺省（见 readView）——probe 不反向依赖本模块，无循环
 import { PROBE_OPTS } from './probe';
 // 摊平"新多选 / 待机通道的旧两个布尔"的口径（纯函数，可单测）；dialogue 不反向依赖本模块，无循环
-import { resolveTriggerIntent } from './dialogue';
+import { resolveTriggerIntent, resolveTriggerPhases } from './dialogue';
 
 /** localStorage 键。带版本号，将来改结构时便于一次性弃用旧值 */
 export const SETTINGS_STORAGE_KEY = 'wb.swe.settings.v1';
@@ -164,6 +165,16 @@ export type SettingsOverrides = {
    */
   touchKinds?: TriggerEventKind[];
   /**
+   * **触摸可触发的事件族（多选）** —— 对应 `config.subtitle.touchPhases`（2026-10-10 新增）。
+   *
+   * `TriggerPhase` 的子集（`'preMarry'` 誓约前 / `'postMarry'` 誓约后 / `'normal'` 普通）。
+   * 与 `touchKinds` 是**两层筛子**：先按族筛候选，再在勾中的 chat/greet/touch 类里并池随机。
+   *
+   * **缺省（不写本字段）= `['normal']`** ⇒ 只用普通态条目 = 改动前行为。
+   * ⚠️ 显式空数组 = 全关（三族都不出条）。改了要重载。
+   */
+  touchPhases?: TriggerPhase[];
+  /**
    * **回到壁纸可触发的事件（多选）** —— 对应 `config.subtitle.resumeKinds`。
    *
    * `TriggerEventKind` 的子集；**缺省（不写本字段）= `['greet']`**
@@ -214,6 +225,12 @@ export type SettingsOverrides = {
   probeCrosshair?: boolean;
   /** 触摸热区调试框（config.touch.showZones） */
   probeZones?: boolean;
+  /**
+   * **触摸热区范围改为全屏**（对应 `config.touch.fullscreen`）。
+   *
+   * `true` ⇒ 忽略 `zones`，整屏一块热区。缺省 false（用 `zones`）。
+   */
+  touchFullscreen?: boolean;
   /** 右上角设置按钮是否显示（对应 WE 属性面板里的开关） */
   showSettings?: boolean;
   /**
@@ -279,6 +296,12 @@ export type SettingsView = {
    */
   touchKinds: TriggerEventKind[];
   /**
+   * 触摸可触发的**事件族**（多选，**意向列表**，固定顺序 `preMarry` → `postMarry` → `normal`）。
+   *
+   * ⚠️ 同样是意向列表，不判可用性。缺省 `['normal']`。
+   */
+  touchPhases: TriggerPhase[];
+  /**
    * 回到壁纸可触发的事件（**多选**）—— 载入 / 回到桌面 / 回到前台 / WE 恢复时可能播的类别。
    *
    * ⚠️ 同样是**意向列表**，不判可用性；缺省 `['greet']`（= 只播问候）。
@@ -293,6 +316,8 @@ export type SettingsView = {
   probeHud: boolean;
   probeCrosshair: boolean;
   probeZones: boolean;
+  /** 触摸热区是否改为**全屏**（对应 `config.touch.fullscreen`；缺省 false） */
+  touchFullscreen: boolean;
 };
 
 /** localStorage 不可用时的退路 */
@@ -402,6 +427,7 @@ export const applyOverrides = (cfg: Configs, o: SettingsOverrides): Configs => {
     o.subtitlePosition !== undefined ||
     o.standbyKinds !== undefined ||
     o.touchKinds !== undefined ||
+    o.touchPhases !== undefined ||
     o.resumeKinds !== undefined ||
     o.standbyGreetEnabled !== undefined ||
     o.standbyTouchEnabled !== undefined ||
@@ -448,6 +474,13 @@ export const applyOverrides = (cfg: Configs, o: SettingsOverrides): Configs => {
     }
     if (o.touchKinds !== undefined) {
       out.subtitle.touchKinds = o.touchKinds.slice();
+    }
+    /**
+     * ★ 事件族同样 **slice** —— 与面板 `draft.touchPhases` 同源时，不拷一份会让用户在
+     *   面板里点 chips **就地改到"生效值"**上（同 `standbyKinds` 的注释）。
+     */
+    if (o.touchPhases !== undefined) {
+      out.subtitle.touchPhases = o.touchPhases.slice();
     }
     if (o.resumeKinds !== undefined) {
       out.subtitle.resumeKinds = o.resumeKinds.slice();
@@ -548,6 +581,18 @@ export const applyOverrides = (cfg: Configs, o: SettingsOverrides): Configs => {
   if (o.probeZones !== undefined) {
     out.touch = { ...(cfg.touch ?? {}) };
     out.touch.showZones = o.probeZones;
+  }
+
+  /**
+   * 触摸热区改为全屏（面板「事件触发」页）。
+   *
+   * ★ base 取 **`out.touch`**（不是 `cfg.touch`）：同一个 patch 里若同时带 `probeZones`
+   *   与 `touchFullscreen`，后一个必须在**前者刚建好的那个对象**上继续改，否则会把
+   *   `showZones` 覆盖回去（同一个坑 `standbyIdleMs` / `subtitle.audio` 的注释里写过）。
+   */
+  if (o.touchFullscreen !== undefined) {
+    out.touch = { ...(out.touch ?? cfg.touch ?? {}) };
+    out.touch.fullscreen = o.touchFullscreen;
   }
 
   /**
@@ -653,6 +698,12 @@ export const readView = (cfg: Configs): SettingsView => ({
   ),
   /** ★ 缺省 `['touch']`（= 点击只从 `touch` 池随机，与改动前一致） */
   touchKinds: resolveTriggerIntent('touch', cfg.subtitle?.touchKinds),
+  /**
+   * ★ 缺省 `['normal']`（= 只用普通态条目，与改动前一致）。
+   *   摊平口径复用 `dialogue.resolveTriggerPhases` —— 面板勾选态与运行时真正筛的族
+   *   不可能各写一套判据。
+   */
+  touchPhases: resolveTriggerPhases(cfg.subtitle?.touchPhases),
   /** ★ 缺省 `['greet']`（= 四个自动时机仍只播问候） */
   resumeKinds: resolveTriggerIntent('resume', cfg.subtitle?.resumeKinds),
   /**
@@ -677,6 +728,8 @@ export const readView = (cfg: Configs): SettingsView => ({
   probeHud: cfg.probe?.hud !== false,
   probeCrosshair: cfg.probe?.crosshair !== false,
   probeZones: cfg.touch?.showZones === true,
+  /** ★ 缺省 `false`（= 用 `zones`，与改动前一致） */
+  touchFullscreen: cfg.touch?.fullscreen === true,
 });
 
 /* ── WE 属性桥 ───────────────────────────────────────────── */
@@ -922,6 +975,8 @@ export const sameView = (a: SettingsView, b: SettingsView): boolean => {
     a.probeHud !== b.probeHud ||
     a.probeCrosshair !== b.probeCrosshair ||
     a.probeZones !== b.probeZones ||
+    // ★ 触摸热区全屏开关也要比（2026-10-10）：漏比 ⇒"只勾了这一项"不重载
+    a.touchFullscreen !== b.touchFullscreen ||
     // ★ 待机延迟也要比：否则"只改了等待时长"会被判成"没变化"而不重载
     a.standbyIdleSec !== b.standbyIdleSec ||
     // ★ 触摸反馈策略也要比（2026-10-08）：漏比 ⇒"只改了这一档"不重载
@@ -955,8 +1010,14 @@ export const sameView = (a: SettingsView, b: SettingsView): boolean => {
    *
    * ⚠️ 三个通道**逐个都要比** —— 漏掉任何一个 ⇒"只改了那一个通道的勾选"不重载（静默失效）。
    *   共用一个 `sameKinds` 小工具，避免写三遍同样的循环时漏掉一个。
+   *
+   * ★ 参数类型放宽到 `readonly string[]`（2026-10-10）：**触摸的事件族**（`touchPhases`）
+   *   也是同一种形状的数组，同样的坑（漏比 ⇒ 只改事件族不重载）。
    */
-  const sameKinds = (x: TriggerEventKind[], y: TriggerEventKind[]): boolean => {
+  const sameKinds = (
+    x: readonly string[],
+    y: readonly string[]
+  ): boolean => {
     if (x.length !== y.length) {
       return false;
     }
@@ -970,6 +1031,7 @@ export const sameView = (a: SettingsView, b: SettingsView): boolean => {
   return (
     sameKinds(a.standbyKinds, b.standbyKinds) &&
     sameKinds(a.touchKinds, b.touchKinds) &&
+    sameKinds(a.touchPhases, b.touchPhases) &&
     sameKinds(a.resumeKinds, b.resumeKinds)
   );
 };

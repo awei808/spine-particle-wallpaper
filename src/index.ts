@@ -45,6 +45,7 @@ import {
   DialogueEntry,
   GreetMode,
   TriggerEventKind,
+  TriggerPhase,
   DEFAULT_CABIN_GROUPS,
 } from './config.type';
 import {
@@ -54,8 +55,10 @@ import {
   pickGreetingEntry,
   pickRandomFromPool,
   resolveChatIds,
+  resolveDialoguePhase,
   resolveGreetSource,
   resolveTriggerKinds,
+  resolveTriggerPhases,
   resolveTouchIds,
 } from './dialogue';
 import { createVoiceBubble, VoiceBubble } from './voiceBubble';
@@ -325,7 +328,25 @@ const main = async () => {
   const touchCfg = configs.touch;
   const touchEnabled = touchCfg?.enabled !== false;
   const touchShowZones = touchCfg?.showZones === true;
-  const touchZones: TouchZoneConfig[] = touchCfg?.zones ?? [];
+  /**
+   * ★ **热区范围改为全屏**（`config.touch.fullscreen`，2026-10-10；面板「事件触发」页）。
+   *
+   * `true` ⇒ **忽略 `zones`**，整个视口 `[0,1]×[0,1]` 就是一块热区（`id = 'fullscreen'`）
+   * ⇒ 点画面任何位置都算命中。`false` / 未给 ⇒ 用 `zones`（原行为，逐字不变）。
+   * `hitTestZones` 的判据是 `u0 <= u <= u1`（含端点）⇒ 全屏区在边缘处也命中。
+   */
+  const touchFullscreen = touchCfg?.fullscreen === true;
+  const FULLSCREEN_ZONE: TouchZoneConfig = {
+    id: 'fullscreen',
+    label: '全屏',
+    u0: 0,
+    v0: 0,
+    u1: 1,
+    v1: 1,
+  };
+  const touchZones: TouchZoneConfig[] = touchFullscreen
+    ? [FULLSCREEN_ZONE]
+    : touchCfg?.zones ?? [];
   if (touchEnabled && !touchZones.length) {
     console.warn(
       '[touch] config.json 缺少 touch.zones ⇒ 触摸交互已禁用（热区现在只认配置，代码里不再有兜底矩形）'
@@ -497,20 +518,63 @@ const main = async () => {
    *
    * 三个通道勾上 chat类 时都从这个池取条（并池见 `pickChannelEntry`）。
    */
+  /**
+   * ★★ **事件族筛子（2026-10-10）** —— 见 `config.type.ts` 的 `TriggerPhase`。
+   *
+   * · 触摸通道：用用户在面板「事件池」页选的 `subtitle.touchPhases`（缺省 `['normal']`）；
+   * · 待机 / 回到壁纸：**固定只用普通事件** —— 誓约类内容只由「触摸 · 可触发的事件」控制，
+   *   免得用户没动它、却在别的通道里冒出誓约态台词。
+   *
+   * ★ 触摸池与另外两个通道的池**分开建**（`TOUCH_KIND_POOLS` vs `KIND_POOLS`），
+   *   这是"两层筛子（先族后类）"里"族"那一层的落点。
+   */
+  const touchPhases = resolveTriggerPhases(subtitleCfg?.touchPhases);
+  const AUTO_PHASES: readonly TriggerPhase[] = ['normal'];
+  /** 待机 / 回到壁纸用的事件表（已按 `AUTO_PHASES` 筛过）—— 供 `pickChannelEntry` 的单勾 greet 分支用 */
+  const dialoguesAuto: DialogueEntry[] = dialogues.filter(
+    (d) => AUTO_PHASES.indexOf(resolveDialoguePhase(d)) >= 0
+  );
+
   const chatPool: DialogueEntry[] = buildPool(
     dialogues,
-    resolveChatIds(subtitleCfg?.chat, subtitleCfg?.standby)
+    resolveChatIds(subtitleCfg?.chat, subtitleCfg?.standby),
+    AUTO_PHASES
   );
   /** ★★「问候」池 —— `greet` 池（或旧时段表 `greeting`），只勾 greet类 时按 `greetMode` 取条 */
   const greetPool: DialogueEntry[] = buildPool(
     dialogues,
-    normalizeGreetIds(greetSource)
+    normalizeGreetIds(greetSource),
+    AUTO_PHASES
   );
   /** ★★「触摸」池 —— `subtitle.touch`，与**点击热区**同一份候选 */
   const touchBasePool: DialogueEntry[] = buildPool(
     dialogues,
-    resolveTouchIds(subtitleCfg?.touch)
+    resolveTouchIds(subtitleCfg?.touch),
+    AUTO_PHASES
   );
+
+  /**
+   * ★★ **触摸通道专用的三个池** —— 按「触摸可触发的事件族」`touchPhases` 再筛一次
+   * （2026-10-10）。与 `KIND_POOLS` 的唯一差别就是"事件的取值范围"，
+   * 类别（chat/greet/touch）语义完全一致。
+   */
+  const TOUCH_KIND_POOLS: Record<TriggerEventKind, DialogueEntry[]> = {
+    chat: buildPool(
+      dialogues,
+      resolveChatIds(subtitleCfg?.chat, subtitleCfg?.standby),
+      touchPhases
+    ),
+    greet: buildPool(
+      dialogues,
+      normalizeGreetIds(greetSource),
+      touchPhases
+    ),
+    touch: buildPool(
+      dialogues,
+      resolveTouchIds(subtitleCfg?.touch),
+      touchPhases
+    ),
+  };
 
   /**
    * 三个通道各自的「可触发的事件」候选池（`TriggerEventKind` → 条目池）。
@@ -557,9 +621,11 @@ const main = async () => {
     subtitleCfg?.touchKinds,
     undefined,
     undefined,
-    chatPool.length > 0,
-    greetPool.length > 0,
-    touchBasePool.length > 0
+    // ★ 用**触摸专用池**的长度判可用性：勾了「誓约前事件」这种只有 3 条、或某族为空的
+    //   情况下，类别可用性必须按"筛过之后还剩多少"算（否则会出现"勾了却永远抽不出"的假象）
+    TOUCH_KIND_POOLS.chat.length > 0,
+    TOUCH_KIND_POOLS.greet.length > 0,
+    TOUCH_KIND_POOLS.touch.length > 0
   );
   const resumeKinds = resolveTriggerKinds(
     'resume',
@@ -580,8 +646,11 @@ const main = async () => {
    *   ⚠️ 池内**顺序**不同（这里按 `chat→greet→touch` 归一，旧实现是追加到末尾）——
    *   均匀随机下概率分布完全相同，只有归档面板的列举次序会变。
    * 缺省 `['touch']` ⇒ 与 `greetInTouchPool:false` 等价。
+   *
+   * ★ 取的是 `TOUCH_KIND_POOLS`（已按「触摸可触发的事件族」筛过），不是 `KIND_POOLS`
+   *   —— 这就是"先按族筛、再按类并池"的两层顺序（2026-10-10）。
    */
-  const touchPool: DialogueEntry[] = mergeKindPools(touchKinds, KIND_POOLS);
+  const touchPool: DialogueEntry[] = mergeKindPools(touchKinds, TOUCH_KIND_POOLS);
 
   /**
    * 按某个通道**勾中的类别**取一条候选。
@@ -593,6 +662,10 @@ const main = async () => {
    *   否则「问候触发方式」（按系统时间 / 随机，`greetMode`）会静默失效。
    *   三个通道的缺省值各自不同，但都命中这条路径的那两个（`standby` / `resume` 的单勾）
    *   因此与改动前**逐字一致**。
+   *
+   * ★ 本函数**只服务待机 / 回到壁纸两个通道**（触摸通道已由 `touchPool` 预建好）。
+   *   两条路都传 `dialoguesAuto`（已按 `AUTO_PHASES` 筛过）—— 誓约态孪生不进这两个通道，
+   *   否则`findByActionId` 会把同一个 id 的孪生也带进来（2026-10-10）。
    */
   const pickChannelEntry = (
     kinds: readonly TriggerEventKind[]
@@ -602,7 +675,7 @@ const main = async () => {
     }
     if (kinds.length === 1 && kinds[0] === 'greet') {
       return pickGreetingEntry(
-        dialogues,
+        dialoguesAuto,
         greetSource,
         subtitleCfg?.greetingRanges ?? {},
         new Date(),
@@ -1051,7 +1124,7 @@ const main = async () => {
                     /**
                      * ★ 正在播动作时点击该怎么处理（`config.subtitle.touchFeedbackMode`，
                      *   缺省 `'immediate'` = 打断并立刻播新的）。三档语义见该类型的注释，
-                     *   用户在「设置 → 动作」页可随时改。
+                     *   用户在「设置 → 事件触发」页可随时改。
                      */
                     touchFeedbackMode: subtitleCfg?.touchFeedbackMode,
                     /** 触摸播完 ⇒ 把 track 0 交还序列，从下一条继续 */

@@ -60,8 +60,13 @@
  * ⇒ 面板/齿轮一律用**实色半透明背景**代替毛玻璃。气泡模糊不受影响。
  */
 
-import { TriggerEventKind } from './config.type';
-import { TRIGGER_KIND_ORDER, normalizeTriggerKinds } from './dialogue';
+import { TriggerEventKind, TriggerPhase } from './config.type';
+import {
+  TRIGGER_KIND_ORDER,
+  TRIGGER_PHASE_ORDER,
+  normalizeTriggerKinds,
+  normalizeTriggerPhases,
+} from './dialogue';
 import { SettingsOverrides, SettingsView } from './settingsStore';
 import { UI_SCALE_VAR, fpx, getUiScale, initUiScale, uiPx } from './uiScale';
 
@@ -481,7 +486,10 @@ export const createSettingsPanel = (
     //   （`id` 仍是 `bgm`：改 id 会让验证脚本/存档里的锚点全部失效，没有收益）
     { id: 'bgm', label: '音乐' },
     { id: 'subtitle', label: '字幕气泡' },
-    { id: 'sequence', label: '动作' },
+    // ★ 2026-10-10 用户口径重组：原「动作」→ **事件触发**（管"什么时候/在哪里触发"）、
+    //   原「触摸」→ **事件池**（管"能抽到哪些内容"）。位置不变、`id` 不变。
+    { id: 'sequence', label: '事件触发' },
+    { id: 'touch', label: '事件池' },
     { id: 'view', label: '画面调整' },
     { id: 'debug', label: '调试' },
   ];
@@ -1116,7 +1124,7 @@ export const createSettingsPanel = (
   const slAnchorV = createSlider('wb-set-anchor-v');
   addRow('垂直位置', slAnchorV.el, '0~100%（上→下）', anchorWrap);
 
-  /* ── tab 3：动作 ────────────────────────── */
+  /* ── tab 3：事件触发（原「动作」，2026-10-10 改名）── */
   rowTarget = pages.sequence;
   const cbSeq = createToggle(
     'wb-set-seq',
@@ -1289,19 +1297,29 @@ export const createSettingsPanel = (
   };
 
   /**
-   * 造一组「可触发的事件」chips。三个通道共用本函数 ⇒ **选项、顺序、配色、交互天然一致**
-   * （这是"选项与长时间待机那项一致"这句话的落点，不是复制三遍代码）。
+   * 造一组「多选 chips」。三个通道 + 触摸事件族共用本函数
+   * ⇒ **选项、顺序、配色、交互天然一致**（不是复制四遍代码）。
    *
-   * @param ids 每个类别的 **DOM 锚点**（**写全字面量**：验证脚本按 id 找元素；拼出来的
+   * ★ 2026-10-10 由 `createKindChips` **泛化**而来：把"顺序 / 标签 / 归一函数"提成参数，
+   *   于是「类别」（chat类/greet类/touch类）与「事件族」（誓约前/誓约后/普通）
+   *   用的是同一套控件实现。
+   *
+   * @param ids 每个选项的 **DOM 锚点**（**写全字面量**：验证脚本按 id 找元素；拼出来的
    *   `'wb-set-standby-' + kind` 会被 terser 折成运行期拼接、产物里查不到字面量 ⇒ 锚点形同虚设）
-   * @param get 读当前勾选（一般是 `draft.xxxKinds`）
-   * @param set 把**归一后**的结果写回（归一用 `dialogue.normalizeTriggerKinds`，
+   * @param get 读当前勾选（一般是 `draft.xxxKinds` / `draft.touchPhases`）
+   * @param set 把**归一后**的结果写回（归一用 `dialogue.normalize*`，
    *   面板自己不排序也不去重）
+   * @param order 选项的固定显示顺序
+   * @param labels 选项的显示名
+   * @param normalize 归一函数（去重 + 按 `order` 排序 + 丢非法值）
    */
-  const createKindChips = (
-    ids: Record<TriggerEventKind, string>,
-    get: () => TriggerEventKind[],
-    set: (next: TriggerEventKind[]) => void
+  const createChips = <T extends string>(
+    ids: Record<string, string>,
+    get: () => T[],
+    set: (next: T[]) => void,
+    order: readonly T[],
+    labels: Record<T, string>,
+    normalize: (v: unknown) => T[]
   ): { el: HTMLElement; paint: () => void } => {
     const box = createEl(
       'div',
@@ -1309,7 +1327,7 @@ export const createSettingsPanel = (
     );
     const paint = () => {
       box.innerHTML = '';
-      TRIGGER_KIND_ORDER.forEach((kind) => {
+      order.forEach((kind) => {
         const on = get().indexOf(kind) >= 0;
         const chip = createEl(
           'button',
@@ -1339,7 +1357,7 @@ export const createSettingsPanel = (
         chip.setAttribute('data-wb-opt', kind);
         chip.setAttribute('role', 'checkbox');
         chip.setAttribute('aria-checked', on ? 'true' : 'false');
-        chip.textContent = KIND_LABEL[kind];
+        chip.textContent = labels[kind];
         chip.addEventListener('click', () => {
           const next = get().slice();
           const at = next.indexOf(kind);
@@ -1348,7 +1366,7 @@ export const createSettingsPanel = (
           } else {
             next.push(kind);
           }
-          set(normalizeTriggerKinds(next));
+          set(normalize(next));
           paint();
         });
       });
@@ -1357,61 +1375,45 @@ export const createSettingsPanel = (
     return { el: box, paint };
   };
 
-  const standbyChips = createKindChips(
-    {
-      chat: 'wb-set-standby-chat',
-      greet: 'wb-set-standby-greet',
-      touch: 'wb-set-standby-touch',
-    },
-    () => draft.standbyKinds,
-    (v) => {
-      draft.standbyKinds = v;
-    }
-  );
-  addRow(
-    '长时间待机可触发的事件',
-    standbyChips.el,
-    '静置超过上面的时长后，从勾中的类别里随机抽一条；勾多类就合成一个池一起抽。全不勾 = 待机不自动播。',
-    pages.sequence,
-    true
-  );
+  /** 「可触发的事件（类别）」—— 三个通道共用，选项固定 chat类 / greet类 / touch类 */
+  const createKindChips = (
+    ids: Record<TriggerEventKind, string>,
+    get: () => TriggerEventKind[],
+    set: (next: TriggerEventKind[]) => void
+  ) =>
+    createChips<TriggerEventKind>(
+      ids,
+      get,
+      set,
+      TRIGGER_KIND_ORDER,
+      KIND_LABEL,
+      normalizeTriggerKinds
+    );
 
-  const touchChips = createKindChips(
-    {
-      chat: 'wb-set-touch-chat',
-      greet: 'wb-set-touch-greet',
-      touch: 'wb-set-touch-touch',
-    },
-    () => draft.touchKinds,
-    (v) => {
-      draft.touchKinds = v;
-    }
-  );
-  addRow(
-    '触摸可触发的事件',
-    touchChips.el,
-    '点中角色时，从勾中的类别里随机抽一条；勾多类就合成一个池一起抽。默认只勾「touch类」。',
-    pages.sequence,
-    true
-  );
+  /**
+   * 「可触发的事件（事件族）」—— 触摸页专用（2026-10-10）。
+   * 选项名按用户口径：**誓约前事件 / 誓约后事件 / 普通事件**。
+   */
+  const PHASE_LABEL: Record<TriggerPhase, string> = {
+    preMarry: '誓约前事件',
+    postMarry: '誓约后事件',
+    normal: '普通事件',
+  };
 
-  const resumeChips = createKindChips(
-    {
-      chat: 'wb-set-resume-chat',
-      greet: 'wb-set-resume-greet',
-      touch: 'wb-set-resume-touch',
-    },
-    () => draft.resumeKinds,
-    (v) => {
-      draft.resumeKinds = v;
-    }
-  );
-  addRow(
-    '回到壁纸可触发的事件',
-    resumeChips.el,
-    '壁纸载入、回到桌面、切回窗口、离开超过 15 秒再回来时，从勾中的类别里随机抽一条。默认只勾「greet类」。',
-    pages.sequence,
-    true
+  /**
+   * ★★ **触摸热区范围改为全屏**（2026-10-10；2026-10-10 晚随页序重组移到本页）。
+   *
+   * 打开 ⇒ `config.touch.fullscreen = true` ⇒ `index.ts` **忽略 `touch.zones`**，
+   * 整个视口 `[0,1]×[0,1]` 就是一块热区（`id = 'fullscreen'`）⇒ 点画面任何位置都算命中。
+   *
+   * ★ 为什么属于**本页（事件触发）**：它决定"点到哪里才算触发"，是**触发条件**；
+   *   而"触发后能抽到什么"在「事件池」页 —— 这正是一行注释就能划清的分工。
+   * ★ 生效方式 = **保存后重载**（热区表是 `createTouchController` 开机一次性构造的）。
+   */
+  const cbTouchFullscreen = createToggle(
+    'wb-set-touch-fullscreen',
+    '触摸热区范围改为全屏',
+    '打开后整块画面都算热区，点哪里都能触发；关闭时只认热区列表里的矩形'
   );
 
   /**
@@ -1467,7 +1469,120 @@ export const createSettingsPanel = (
     true
   );
 
-  /* ── tab 4：画面调整 ───────────────────────── */
+  /* ── tab 4：事件池（原「触摸」，2026-10-10 改名并接管三个通道的池）── */
+  /**
+   * ★★ **两页的分工**（2026-10-10 用户口径重组；此前是「动作」+「触摸」）：
+   *
+   * | 页 | `id` | 管什么 | 典型设置项 |
+   * |---|---|---|---|
+   * | **事件触发** | `sequence` | "**什么时候 / 在哪里**触发" —— 触发条件与规则 | 常驻节奏、待机时长、热区范围、播放中点击的处理、问候取条方式 |
+   * | **事件池** | `touch` | "触发后**能抽到哪些内容**" —— 每个入口的取值范围 | 三个通道的类别多选 + 点击触摸的事件族 |
+   *
+   * ★ **为什么这样分（重叠的根源）**：重组前「触摸可触发的事件」在「动作」页，
+   *   而它的**第二层筛子**（事件族）在「触摸」页 ⇒ **同一件事被劈成两页**。
+   *   现在"入口 → 取值范围"全在同一页，两层筛子（先族、后类）也上下紧邻。
+   * ★ 页面顺序与 `id` 都**不变**（仍是 `touch`），只改 `label` —— 锚点与验证脚本不受影响。
+   */
+  rowTarget = pages.touch;
+  createEl(
+    'div',
+    'font-size:' + fpx(11) + ';opacity:.55;margin-bottom:' + uiPx(6),
+    pages.touch
+  ).textContent =
+    '这里设定每个入口「能抽到哪些内容」；与「事件触发」页的设定叠加生效。';
+
+  const standbyChips = createKindChips(
+    {
+      chat: 'wb-set-standby-chat',
+      greet: 'wb-set-standby-greet',
+      touch: 'wb-set-standby-touch',
+    },
+    () => draft.standbyKinds,
+    (v) => {
+      draft.standbyKinds = v;
+    }
+  );
+  addRow(
+    '长时间待机可触发的事件',
+    standbyChips.el,
+    '静置超过「事件触发」页设定的时长后，从勾中的类别里随机抽一条；勾多类就合成一个池一起抽。全不勾 = 待机不自动播。',
+    pages.touch,
+    true
+  );
+
+  const touchChips = createKindChips(
+    {
+      chat: 'wb-set-touch-chat',
+      greet: 'wb-set-touch-greet',
+      touch: 'wb-set-touch-touch',
+    },
+    () => draft.touchKinds,
+    (v) => {
+      draft.touchKinds = v;
+    }
+  );
+  addRow(
+    '触摸可触发的事件',
+    touchChips.el,
+    '点中角色时，从勾中的类别里随机抽一条；勾多类就合成一个池一起抽。默认只勾「touch类」。',
+    pages.touch,
+    true
+  );
+
+  /**
+   * ★★ **事件族 —— 点击触摸的第二层筛子**（2026-10-10）。
+   *
+   * 紧排在「触摸可触发的事件」下面，是因为它**只作用于点击触摸这一个入口**：
+   *   ① 先按本项勾中的**事件族**筛候选；
+   *   ② 再在勾中的**类别**里并池随机（`mergeKindPools`）。
+   * ⇒ 两者**叠加生效**，互不覆盖（同页相邻，不再跨页）。
+   *
+   * ★ 三族取自游戏 `CfgSoulSpineActionControlTable[603]` 的两套动画状态
+   *   （普通态 / 誓约态）与 `MarryAction` 组，定义见 `config.type.ts` 的 `TriggerPhase`。
+   * ★ 「普通事件」= 普通态条目（= 改动前的行为，故定为缺省）。
+   */
+  const phaseChips = createChips<TriggerPhase>(
+    {
+      preMarry: 'wb-set-phase-premarry',
+      postMarry: 'wb-set-phase-postmarry',
+      normal: 'wb-set-phase-normal',
+    },
+    () => draft.touchPhases,
+    (v) => {
+      draft.touchPhases = v;
+    },
+    TRIGGER_PHASE_ORDER,
+    PHASE_LABEL,
+    normalizeTriggerPhases
+  );
+  addRow(
+    '└ 事件族（仅点击触摸）',
+    phaseChips.el,
+    '在勾中的类别里再按事件族筛一层，两层叠加生效；默认只勾「普通事件」。',
+    pages.touch,
+    true
+  );
+
+  const resumeChips = createKindChips(
+    {
+      chat: 'wb-set-resume-chat',
+      greet: 'wb-set-resume-greet',
+      touch: 'wb-set-resume-touch',
+    },
+    () => draft.resumeKinds,
+    (v) => {
+      draft.resumeKinds = v;
+    }
+  );
+  addRow(
+    '回到壁纸可触发的事件',
+    resumeChips.el,
+    '壁纸载入、回到桌面、切回窗口、离开超过 15 秒再回来时，从勾中的类别里随机抽一条。默认只勾「greet类」。',
+    pages.touch,
+    true
+  );
+
+  /* ── tab 5：画面调整 ───────────────────────── */
   rowTarget = pages.view;
 
   /**
@@ -1543,7 +1658,7 @@ export const createSettingsPanel = (
     '指针在桌面移动时沿轨迹留下等距发光粒子；粒子随寿命收缩到消失'
   );
 
-  /* ── tab 5：调试（探针） ───────────────────── */
+  /* ── tab 6：调试（探针） ───────────────────── */
   rowTarget = pages.debug;
   const dbgTip = createEl(
     'div',
@@ -1700,6 +1815,9 @@ export const createSettingsPanel = (
     standbyChips.paint();
     touchChips.paint();
     resumeChips.paint();
+    // ★ 触摸页的事件族 chips 同理（2026-10-10）
+    phaseChips.paint();
+    cbTouchFullscreen.checked = draft.touchFullscreen;
     selTouchFeedback.value = draft.touchFeedbackMode;
     selGreetMode.value = draft.greetMode;
     seqBody.style.opacity = draft.idleSequenceEnabled ? '1' : '0.45';
@@ -1781,6 +1899,11 @@ export const createSettingsPanel = (
     draft.pointerTrailEnabled = cbTrail.checked;
   });
 
+  /* 触摸热区是否改为全屏（「事件触发」页）—— 保存后重载生效（热区表开机一次性构造） */
+  cbTouchFullscreen.addEventListener('change', () => {
+    draft.touchFullscreen = cbTouchFullscreen.checked;
+  });
+
   const onGapChange = () => {
     const n = Number(gapSlider.value);
     draft.idleSequenceGapMs =
@@ -1858,6 +1981,7 @@ export const createSettingsPanel = (
       standbyIdleSec: draft.standbyIdleSec,
       standbyKinds: draft.standbyKinds.slice(),
       touchKinds: draft.touchKinds.slice(),
+      touchPhases: draft.touchPhases.slice(),
       resumeKinds: draft.resumeKinds.slice(),
       touchFeedbackMode: draft.touchFeedbackMode,
       greetMode: draft.greetMode,
@@ -1865,6 +1989,7 @@ export const createSettingsPanel = (
       probeHud: draft.probeHud,
       probeCrosshair: draft.probeCrosshair,
       probeZones: draft.probeZones,
+      touchFullscreen: draft.touchFullscreen,
       panelOpen: open,
     });
   });
@@ -1881,6 +2006,7 @@ export const createSettingsPanel = (
     idleSequenceItems: view.idleSequenceItems.slice(),
     standbyKinds: view.standbyKinds.slice(),
     touchKinds: view.touchKinds.slice(),
+    touchPhases: view.touchPhases.slice(),
     resumeKinds: view.resumeKinds.slice(),
   };
   syncFromDraft();
@@ -1902,6 +2028,7 @@ export const createSettingsPanel = (
         idleSequenceItems: next.idleSequenceItems.slice(),
         standbyKinds: next.standbyKinds.slice(),
         touchKinds: next.touchKinds.slice(),
+        touchPhases: next.touchPhases.slice(),
         resumeKinds: next.resumeKinds.slice(),
       };
       syncFromDraft();

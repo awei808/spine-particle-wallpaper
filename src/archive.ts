@@ -70,6 +70,7 @@ import {
   DialogueSlotKey,
   TriggerChannel,
   TriggerEventKind,
+  TriggerPhase,
 } from './config.type';
 import {
   DEFAULT_TIME_RANGES,
@@ -80,9 +81,11 @@ import {
   mergeKindPools,
   normalizeGreetIds,
   resolveChatIds,
+  resolveDialoguePhase,
   resolveGreetSource,
   resolveTouchIds,
   resolveTriggerKinds,
+  resolveTriggerPhases,
 } from './dialogue';
 import { UI_SCALE_VAR, fpx, getUiScale, initUiScale, uiPx } from './uiScale';
 
@@ -203,13 +206,26 @@ const voiceBase = (voice?: string): string => {
   return parts[parts.length - 1] || voice;
 };
 
+/** 事件族名（人话）—— 表格与细则共用 */
+const PHASE_TEXT: Record<TriggerPhase, string> = {
+  preMarry: '誓约前事件',
+  postMarry: '誓约后事件',
+  normal: '普通事件',
+};
+
 const makeRow = (event: string, cond: string, e: DialogueEntry): Row => {
   const short = shortLabel(e.label);
+  /**
+   * ★ 誓约态孪生与本体**共用 `actionId`**（2026-10-10）⇒ 光看 `#63012` 分不出是哪个态，
+   *   把事件族缀在角标后面（普通事件不缀，老 config 的角标逐字不变）。
+   */
+  const ph = resolveDialoguePhase(e);
+  const phTail = ph === 'normal' ? '' : ' · ' + PHASE_TEXT[ph];
   return {
     event,
     cond,
     action: e.animation,
-    tag: '#' + e.actionId + (short ? ' ' + short : ''),
+    tag: '#' + e.actionId + (short ? ' ' + short : '') + phTail,
     text: e.text,
     voice: voiceBase(e.voice),
   };
@@ -227,8 +243,18 @@ type ArchiveState = {
   chatIds: number[];
   greetIds: number[];
   touchIds: number[];
-  /** 三个类别各自的条目池（`buildPool` 的产物） */
+  /** 三个类别各自的条目池（`buildPool` 的产物；**只含普通事件**，= `index.ts` 的 `KIND_POOLS`） */
   pools: Record<TriggerEventKind, DialogueEntry[]>;
+  /**
+   * **触摸通道专用**的三个池（再按 `touchPhases` 筛过一次）= `index.ts` 的 `TOUCH_KIND_POOLS`。
+   *
+   * ★★ 为什么必须分开：触摸通道现在有**两层筛子**（先事件族、后类别），
+   *   而待机 / 回到壁纸固定只用普通事件 ⇒ 两个池集不同，不能共用一份
+   *   （否则"表里说会播"与"实际会不会播"会不一致，正是本文件要避免的事）。
+   */
+  touchPools: Record<TriggerEventKind, DialogueEntry[]>;
+  /** 触摸通道勾中的事件族（摊平后） */
+  touchPhases: TriggerPhase[];
   /** 三个通道**真正会播**哪些类别（口径 + 可用性，= 运行时同一判据） */
   channels: Record<TriggerChannel, TriggerEventKind[]>;
   greetMode: 'time' | 'random';
@@ -243,18 +269,29 @@ const resolveState = (cfg: Configs): ArchiveState => {
   const chatIds = resolveChatIds(sub?.chat, sub?.standby);
   const greetIds = normalizeGreetIds(greetSource);
   const touchIds = resolveTouchIds(sub?.touch);
+  /** ★ 待机 / 回到壁纸固定只用普通事件（与 `index.ts` 的 `AUTO_PHASES` 同值） */
+  const AUTO_PHASES: readonly TriggerPhase[] = ['normal'];
+  const touchPhases = resolveTriggerPhases(sub?.touchPhases);
   const pools: Record<TriggerEventKind, DialogueEntry[]> = {
-    chat: buildPool(dialogues, chatIds),
-    greet: buildPool(dialogues, greetIds),
-    touch: buildPool(dialogues, touchIds),
+    chat: buildPool(dialogues, chatIds, AUTO_PHASES),
+    greet: buildPool(dialogues, greetIds, AUTO_PHASES),
+    touch: buildPool(dialogues, touchIds, AUTO_PHASES),
+  };
+  const touchPools: Record<TriggerEventKind, DialogueEntry[]> = {
+    chat: buildPool(dialogues, chatIds, touchPhases),
+    greet: buildPool(dialogues, greetIds, touchPhases),
+    touch: buildPool(dialogues, touchIds, touchPhases),
   };
   const has = (k: TriggerEventKind): boolean => pools[k].length > 0;
+  const tHas = (k: TriggerEventKind): boolean => touchPools[k].length > 0;
   return {
     dialogues,
     chatIds,
     greetIds,
     touchIds,
     pools,
+    touchPools,
+    touchPhases,
     channels: {
       // ★ 与 `index.ts` 完全同一组入参 —— 表里显示的"会播哪几类"不可能与实际行为不同
       standby: resolveTriggerKinds(
@@ -266,14 +303,15 @@ const resolveState = (cfg: Configs): ArchiveState => {
         has('greet'),
         has('touch')
       ),
+      // ★ 触摸通道的可用性必须按**筛过族之后**的池算（否则会说"会播"却永远抽不出）
       touch: resolveTriggerKinds(
         'touch',
         sub?.touchKinds,
         undefined,
         undefined,
-        has('chat'),
-        has('greet'),
-        has('touch')
+        tHas('chat'),
+        tHas('greet'),
+        tHas('touch')
       ),
       resume: resolveTriggerKinds(
         'resume',
@@ -433,15 +471,20 @@ const buildRows = (cfg: Configs, st: ArchiveState): Row[] => {
   /* ② 待机（自动）—— 静置到点 */
   pushChannel('standby', '待机');
 
-  /* ③ 点击触摸 —— 池 = 「触摸可触发的事件」勾中的类别并池 */
+  /* ③ 点击触摸 —— 池 = 「触摸可触发的事件」勾中的类别并池，且**先按「可触发的事件族」筛过** */
   const touchKinds = st.channels.touch;
-  const touchPool = mergeKindPools(touchKinds, st.pools);
+  const touchPool = mergeKindPools(touchKinds, st.touchPools);
+  const phaseText = st.touchPhases.length
+    ? st.touchPhases.map((p) => PHASE_TEXT[p]).join(' / ')
+    : '（未勾任何事件族 ⇒ 抽不出条目）';
   touchPool.forEach((e, i) => {
-    const kind = kindOfEntry(e, touchKinds, st.pools);
+    const kind = kindOfEntry(e, touchKinds, st.touchPools);
     rows.push(
       makeRow(
         '点击触摸 #' + (i + 1),
-        '点击角色热区 · 池 #' +
+        '点击角色热区 · 事件族 ' +
+          phaseText +
+          ' · 池 #' +
           (i + 1) +
           '/' +
           touchPool.length +
@@ -597,7 +640,7 @@ const buildNotes = (cfg: Configs, st: ArchiveState): string[] => {
   notes.push(
     '「播放动作时点击」当前是：' +
       feedbackText +
-      '（在「设置 → 动作」页改）。四档都不影响空闲时的点击 —— 空闲时点击一定立即播。' +
+      '（在「设置 → 事件触发」页改）。四档都不影响空闲时的点击 —— 空闲时点击一定立即播。' +
       '另外两个通道都是自动触发，一律不打断正在演的动作。'
   );
 

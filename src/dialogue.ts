@@ -40,9 +40,12 @@
  *    ⇒ **新旧两路共用同一套选取代码**，不会出现两套口径。
  *
  * ★★ **多选 = 并池**（2026-10-09 用户拍板）：一个通道勾了多类 ⇒ 把各池**并成一个大池**
- *    （`mergeKindPools`，按 actionId 去重保序）再随机 ⇒ 池内每条等概率、
+ *    （`mergeKindPools`，按 `actionId|phase` 去重保序）再随机 ⇒ 池内每条等概率、
  *    类别之间按条目数加权。⚠️ 唯一例外：**只勾 `greet` 一类**时走 `pickGreetingEntry`，
  *    以保住「问候触发方式」（`greetMode` 按时段 / 随机）。
+ *
+ * ★★ **两层筛子（2026-10-10）**：触摸通道先按**事件族**（`subtitle.touchPhases`，
+ *    见 `config.type.ts` 的 `TriggerPhase`）筛一遍，再按**类别**（`touchKinds`）并池随机。
  *
  * ## ⚠️ "随机"这件事的成色
  *
@@ -60,6 +63,7 @@ import {
   GreetMode,
   TriggerChannel,
   TriggerEventKind,
+  TriggerPhase,
 } from './config.type';
 
 /** 时段遍历顺序：按早 → 中 → 晚找第一个命中的 */
@@ -143,16 +147,35 @@ export const findByActionId = (
  */
 export const buildPool = (
   entries: DialogueEntry[],
-  ids: number[]
+  ids: number[],
+  /**
+   * 允许的**事件族**（2026-10-10 新增，可选）。
+   *
+   * · **不给**（缺省）⇒ 不看 `phase`，行为与改动前逐字相同。
+   * · **给了** ⇒ 只收 `phase` 落在其中的条目。
+   *
+   * ★★ 为什么是"**收全命中**"而不是像旧实现那样 `findByActionId` 取首个：
+   *   誓约态孪生条目与本体**共用 `actionId`**（游戏里本就是"同一条动作、两套动画"）。
+   *   取首个的话，勾了 `['normal','postMarry']` 时孪生**永远轮不到**（静默偏向普通态）。
+   *   收全之后由 `mergeKindPools` 按 `actionId|phase` 去重，两条都留在池里。
+   *   ⚠️ 对既有 config（一个 id 只对应一条）**结果完全相同**。
+   */
+  phases?: readonly TriggerPhase[]
 ): DialogueEntry[] => {
   if (!entries?.length || !ids?.length) {
     return [];
   }
   const pool: DialogueEntry[] = [];
   for (let i = 0; i < ids.length; i++) {
-    const found = findByActionId(entries, ids[i]);
-    if (found) {
-      pool.push(found);
+    for (let j = 0; j < entries.length; j++) {
+      const e = entries[j];
+      if (!e || e.actionId !== ids[i]) {
+        continue;
+      }
+      if (phases && phases.indexOf(resolveDialoguePhase(e)) < 0) {
+        continue;
+      }
+      pool.push(e);
     }
   }
   return pool;
@@ -287,7 +310,7 @@ export const TRIGGER_KIND_ORDER: readonly TriggerEventKind[] = [
   'touch',
 ];
 
-/** 三个触发通道的固定顺序（面板「动作」页的显示顺序同此） */
+/** 三个触发通道的固定顺序（面板「事件池」页的显示顺序同此） */
 export const TRIGGER_CHANNEL_ORDER: readonly TriggerChannel[] = [
   'standby',
   'touch',
@@ -322,6 +345,93 @@ export const isTriggerEventKind = (v: unknown): v is TriggerEventKind =>
 /** 是不是合法的通道名 */
 export const isTriggerChannel = (v: unknown): v is TriggerChannel =>
   v === 'standby' || v === 'touch' || v === 'resume';
+
+/* ══════════════════════════════════════════════════════════════════════
+ * 事件族（`TriggerPhase`）—— 2026-10-10
+ *
+ * 三族定义见 `config.type.ts` 的 `TriggerPhase`；本节只放"纯函数口径"：
+ * 归一化、缺省、以及"条目属于哪一族"的判据。
+ * ⚠️ 目前**只有触摸通道**按族筛选（`subtitle.touchPhases`）；
+ *    待机 / 回到壁纸固定只用 `'normal'`。
+ * ══════════════════════════════════════════════════════════════════════ */
+
+export type { TriggerPhase };
+
+/**
+ * 事件族的**固定顺序**（= 面板里 chips 的显示顺序，也是归一化排序依据）。
+ *
+ * ★ 与 `TRIGGER_KIND_ORDER` 同一条口径：用户在 config / 面板里敲的顺序无关紧要，
+ *   归一化后永远是这一种形状 ⇒ 断言可写死，也不会出现"同一组勾选、两种顺序"。
+ */
+export const TRIGGER_PHASE_ORDER: readonly TriggerPhase[] = [
+  'preMarry',
+  'postMarry',
+  'normal',
+];
+
+/** 触摸通道**缺省**只用哪一族（字段缺席时）—— 普通态，= 改动前行为 */
+export const DEFAULT_TOUCH_PHASES: readonly TriggerPhase[] = ['normal'];
+
+/** 是不是合法的事件族名（非法值静默丢弃，与 `isTriggerEventKind` 同一容错口径） */
+export const isTriggerPhase = (v: unknown): v is TriggerPhase =>
+  v === 'preMarry' || v === 'postMarry' || v === 'normal';
+
+/**
+ * 判某条念白属于哪一族。
+ *
+ * ★ **显式 `phase` 优先**；没写时按**动画名后缀**兜底
+ *   （以 `_marry` 结尾 ⇒ `'postMarry'`，否则 `'normal'`）。
+ *   ⇒ 老 config（无 `phase`、动画全是普通态）**全部落到 `'normal'`**，
+ *     配合缺省 `['normal']` 行为与改动前逐字相同。
+ */
+export const resolveDialoguePhase = (e: DialogueEntry): TriggerPhase => {
+  if (isTriggerPhase(e?.phase)) {
+    return e.phase;
+  }
+  return typeof e?.animation === 'string' && e.animation.endsWith('_marry')
+    ? 'postMarry'
+    : 'normal';
+};
+
+/**
+ * 把任意值归一成**合法的事件族列表**：丢弃非法值、去重、按 `TRIGGER_PHASE_ORDER` 排序。
+ * ⚠️ 非数组 ⇒ 空数组（调用方据此区分"没配"与"配了个空的"）。
+ */
+export const normalizeTriggerPhases = (phases: unknown): TriggerPhase[] => {
+  if (!Array.isArray(phases)) {
+    return [];
+  }
+  const want: TriggerPhase[] = [];
+  phases.forEach((p: unknown) => {
+    if (isTriggerPhase(p) && want.indexOf(p) < 0) {
+      want.push(p);
+    }
+  });
+  return TRIGGER_PHASE_ORDER.filter((p) => want.indexOf(p) >= 0);
+};
+
+/**
+ * 摊平「触摸可触发的事件族」—— 只归一，不判可用性。
+ *
+ * | 输入 | 结果 |
+ * |---|---|
+ * | 没配 / 非数组 | 缺省 `['normal']` |
+ * | 合法数组（含**空数组**） | 归一后的列表；**空数组 = 显式全关**（绝不退回缺省） |
+ * | 数组里一个合法值都没有（拼错） | 当作"没配"，退回缺省（config 无 schema 校验，宁可降级） |
+ *
+ * ★ 与 `resolveTriggerIntent` 对 `*Kinds` 的口径**完全一致**（同一个理由：拼错一个词
+ *   不该静默把整条通道关掉；但空数组是合法的显式表达）。
+ * ⚠️ 返回值**每次新拷贝**一份 —— 外部就地改它会污染缺省表。
+ */
+export const resolveTriggerPhases = (phases: unknown): TriggerPhase[] => {
+  if (Array.isArray(phases)) {
+    const want = normalizeTriggerPhases(phases);
+    if (want.length || phases.length === 0) {
+      return want;
+    }
+  }
+  return DEFAULT_TOUCH_PHASES.slice();
+};
 
 /**
  * 把任意值归一成**合法的类别列表**：丢弃非法值、去重、按 `TRIGGER_KIND_ORDER` 排序。
@@ -430,17 +540,28 @@ export const mergeKindPools = (
   pools: Readonly<Record<TriggerEventKind, DialogueEntry[]>>
 ): DialogueEntry[] => {
   const out: DialogueEntry[] = [];
-  const seen: number[] = [];
-  /** 逐类拼接；按 actionId 去重（同一个 id 出现在两个池里时不重复收） */
+  /**
+   * 去重键 = **`actionId|phase`**（2026-10-10 改；此前只有 `actionId`）。
+   *
+   * ★★ 誓约态孪生与本体**共用 `actionId`** ⇒ 只按 id 去重会把孪生**静默丢掉**。
+   *   ⚠️ 对既有 config（一个 id 只对应 `'normal'` 一条）**结果完全相同**
+   *   —— 同一个 id 的 key 仍只有一个。
+   */
+  const seen: string[] = [];
+  /** 逐类拼接；按 `actionId|phase` 去重（既防跨类重复，也保住誓约态孪生） */
   TRIGGER_KIND_ORDER.forEach((kind) => {
     if (kinds.indexOf(kind) < 0) {
       return;
     }
     (pools[kind] ?? []).forEach((e) => {
-      if (!e || seen.indexOf(e.actionId) >= 0) {
+      if (!e) {
         return;
       }
-      seen.push(e.actionId);
+      const key = e.actionId + '|' + resolveDialoguePhase(e);
+      if (seen.indexOf(key) >= 0) {
+        return;
+      }
+      seen.push(key);
       out.push(e);
     });
   });

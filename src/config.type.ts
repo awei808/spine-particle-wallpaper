@@ -271,6 +271,18 @@ export type TouchConfig = {
   enabled?: boolean;
   /** 是否显示热区框（缺省 **false**，仅调试用） */
   showZones?: boolean;
+  /**
+   * **把热区范围改为全屏**（缺省 **false**）。
+   *
+   * true ⇒ **忽略 `zones`**，整个视口 `[0,1]×[0,1]` 就是一块热区（`id = 'fullscreen'`）
+   * ⇒ 点画面**任何位置**都算命中。false / 未给 ⇒ 用 `zones`（原行为）。
+   *
+   * ★ 用途：有些用户就是想要"点哪都有反应"，或者角色被背景挡住、窄热区难中点。
+   * ⚠️ 与 `showZones` 同时打开时，调试框会铺满整屏（正常，不是 bug）。
+   * ★ 用户在**设置面板 →「事件触发」页 →「触摸热区范围改为全屏」**改；**保存后重载生效**
+   *   （热区表是 `createTouchController` 开机一次性构造的）。
+   */
+  fullscreen?: boolean;
   /** 热区列表；命中判定按数组顺序**先命中先返回** */
   zones?: TouchZoneConfig[];
 };
@@ -418,6 +430,17 @@ export type DialogueEntry = {
    * 64008/64009→`touch3`。这是骨架资源本身的事实，不是缺数据。
    */
   animation: string;
+  /**
+   * **事件族**（`'preMarry'` / `'postMarry'` / `'normal'`）。缺省按动画名后缀兜底：
+   * 以 `_marry` 结尾 ⇒ `'postMarry'`，否则 `'normal'`（见 `dialogue.resolveDialoguePhase`）。
+   *
+   * ★ 只有**触摸通道**会按它筛选（用户在面板「事件池」页选哪些族可触发）；
+   *   待机 / 回到壁纸两个通道固定只用 `'normal'` 的条目。
+   *
+   * ⚠️ 誓约态孪生条目与本体**共用 `actionId`**（游戏里本就是"同一条动作、两套动画"），
+   *   靠本字段区分；`buildPool` / `mergeKindPools` 已做 phase 感知，不会误去重。
+   */
+  phase?: TriggerPhase;
   /** 念白正文（字幕文本） */
   text: string;
   /**
@@ -825,7 +848,7 @@ export type DialogueTimeRange = { start: number; end: number };
  * 升级到本版**不会改变任何既有观感**。
  *
  * ⚠️ 换句话说：`touchFeedbackMode` 这个字段是**纯新增能力**，缺省档刻意选了"最不打扰演出"那一档；
- * 想要"点了永远有反应"的用户自己去「设置 → 动作」页切到 `'immediate'`。
+ * 想要"点了永远有反应"的用户自己去「设置 → 事件触发」页切到 `'immediate'`。
  *
  * ## 各档取舍
  *
@@ -840,7 +863,7 @@ export type DialogueTimeRange = { start: number; end: number };
  * 砍掉（实测起始跳变 158.8 单位、7 个部件瞬时消失）⇒ 那种情况下它退化为"排到最前面接手"。
  * `'legacy'` 无此问题：它对"正在播 touch"这一格本来就是不响应。
  *
- * ★ 用户在**右上角设置面板 →「动作」页**可随时改（覆盖层字段 `touchFeedbackMode`），
+ * ★ 用户在**右上角设置面板 →「事件触发」页**可随时改（覆盖层字段 `touchFeedbackMode`），
  *   保存后**重载生效**。
  */
 export type TouchFeedbackMode = 'legacy' | 'immediate' | 'queue' | 'none';
@@ -877,7 +900,7 @@ export type GreetMode = 'time' | 'random';
 
 /**
  * 可被某个**触发通道**自动播放的事件类别（2026-10-09 由单通道的 `StandbyEventKind`
- * 泛化而来 —— 面板「动作」页现在有**三项同构**的多选，共用这一套取值域）。
+ * 泛化而来 —— 面板「事件池」页现在有**三项同构**的多选，共用这一套取值域）。
  *
  * ★★ 唯一判据在 `dialogue.ts` 的 `resolveTriggerIntent` / `resolveTriggerKinds`
  *   （纯函数、可单测）；本类型只是它们的取值域。
@@ -904,7 +927,7 @@ export type GreetMode = 'time' | 'random';
  * ⚠️ 可触发 ≠ 一定会播：该类别的池为空时会被整类剔除（`resolveTriggerKinds`），
  *   真正要播时还要过 `touch.ts` 的动作闸门（自动事件不打断正在演的动作）。
  *
- * ★ 用户在**右上角设置面板 →「动作」页**改，落盘即进覆盖层 ⇒ 与 `config.json` 里写的值
+ * ★ 用户在**右上角设置面板 →「事件池」页**改，落盘即进覆盖层 ⇒ 与 `config.json` 里写的值
  *   **同名同语义**，只是优先级更高；**重载生效**。
  */
 export type TriggerEventKind = 'chat' | 'greet' | 'touch';
@@ -936,6 +959,39 @@ export type TriggerEventKind = 'chat' | 'greet' | 'touch';
  *   （例如 `'resume'` 通道给出的 `ActionSource` 是 `'greet'`，因为它是自动问候那一路）。
  */
 export type TriggerChannel = 'standby' | 'touch' | 'resume';
+
+/**
+ * **事件族** —— 一条念白属于哪个「誓约阶段」（2026-10-10 新增）。
+ *
+ * ## 为什么需要它
+ *
+ * 本皮肤是**誓约（婚纱）皮肤**：游戏原表 `CfgSoulSpineActionControlTable[603]` 里
+ * **每个动作同时挂着两个动画状态** —— `SoulActionState`（普通态）与
+ * `MarryActionState`（誓约态）；此外还有一组 `MarryAction{1:63004, 2:63005, 3:63010}`
+ * （誓约专属动作）。⇒ 壁纸侧把念白按这三种"族"分开，让用户决定**点击时允许触发哪些族**。
+ *
+ * | 取值 | 面板选项 | 判定 | 本工程（S8）当前内容 |
+ * |---|---|---|---|
+ * | `'preMarry'` | 誓约前事件 | 条目显式写 `phase`（= 游戏的 `MarryAction` 组） | 3 条（63004/63005/63010） |
+ * | `'postMarry'` | 誓约后事件 | 条目显式写 `phase`；动画名以 `_marry` 结尾 | 10 条（普通动作的誓约态孪生） |
+ * | `'normal'` | 普通事件 | 其余（含**缺 `phase` 字段**的旧 config） | 10 条（普通态动画） |
+ *
+ * ## ★★ 这是"复刻"之外的**分类维度**，务必知情
+ *
+ * 游戏里并没有"三个池"—— 它是**同一条动作按玩家是否已誓约换一套动画**。
+ * 壁纸把它**摊平成两套条目**（普通版 + 誓约态版：**同 `actionId`、同文案、同语音，
+ * 只有动画名不同**），这样用户才能直接选"要哪一套"。
+ * 摊平在工程侧完成（`_work_星语心恋/17_注入S8语音字幕.py`），**不是游戏原样**。
+ *
+ * ⚠️ 孪生条目与本体**共用 `actionId`** ⇒ `dialogue.buildPool` / `mergeKindPools`
+ *   必须做 phase 感知（去重键是 `actionId|phase`），否则会静默丢一条。
+ *
+ * ⚠️ **缺 `phase` 字段时按动画名后缀兜底**（`dialogue.resolveDialoguePhase`）：
+ *   动画名以 `_marry` 结尾 ⇒ `'postMarry'`，否则 `'normal'`。
+ *   ⇒ 老 config（无 `phase`、无 `_marry` 动画）**全部落到 `'normal'`**，
+ *     配合缺省勾选 `['normal']`，行为与改动前逐字相同。
+ */
+export type TriggerPhase = 'preMarry' | 'postMarry' | 'normal';
 
 /**
  * 念白字幕气泡配置。
@@ -1169,7 +1225,7 @@ export type SubtitleConfig = {
    * 到点后播哪几类事件由 **`standbyKinds`** 决定（见该字段）；**三类共用一个阈值**
    * （面板上是同一个滑块「待机触发事件时长」）。
    *
-   * ★ 用户可在壁纸右上角「设置 → 动作 → 待机触发事件时长」里改（以秒为单位，5~300 秒），
+   * ★ 用户可在壁纸右上角「设置 → 事件触发 → 待机触发事件时长」里改（以秒为单位，5~300 秒），
    * 落盘后经 `settingsStore.applyOverrides` 覆盖本字段并**重载生效**。
    */
   standbyIdleMs?: number;
@@ -1196,10 +1252,27 @@ export type SubtitleConfig = {
    *   （按条目数加权），这正是旧 `greetInTouchPool:true` 的行为。
    *   勾 **chat类** 是新增能力：点击也能随机到闲聊那几条。
    *
-   * ★ 面板：「设置 → 动作 → 触摸可触发的事件」；**保存后重载生效**
+   * ★ 面板：「设置 → 事件池 → 触摸可触发的事件」；**保存后重载生效**
    *   （触摸池是 `createTouchController` 开机一次性构造的）。
    */
   touchKinds?: TriggerEventKind[];
+  /**
+   * **触摸可触发的事件族（多选）**——`TriggerPhase` 的子集，**只作用于 `'touch'` 通道**
+   * （2026-10-10 新增，面板「事件池」页）。
+   *
+   * 与 `touchKinds` 是**两层筛子**，先族后类：
+   *   ① 先按本字段把候选条目**筛成勾中的族**（见 `TriggerPhase` 的三族定义）；
+   *   ② 再在勾中的 `chat类 / greet类 / touch类` 里按 `mergeKindPools` 并池随机。
+   *
+   * ★★ **缺省（本字段没配时）= `['normal']`** ⇒ 只用普通态条目，与改动前**逐字相同**。
+   *   ⚠️ 显式写空数组 `[]` = 显式全关 ⇒ 三族都不出条 ⇒ 触摸池为空，
+   *      此时 `touch.ts` 会**退回"只随机挑动画名、不出字幕"**的兜底行为（不是报错）。
+   *   ⚠️ 与 `standbyKinds` 同一容错口径：写了数组但一个合法值都没有（拼错）⇒ 当作"没配"退回缺省。
+   *
+   * ★ 待机 / 回到壁纸两个通道**不受本字段影响** —— 它们固定只用 `'normal'` 的条目。
+   * ★ 面板：「设置 → 事件池 → └ 事件族（仅点击触摸）」；**保存后重载生效**（触摸池是开机一次性构造的）。
+   */
+  touchPhases?: TriggerPhase[];
   /**
    * **回到壁纸可触发的事件（多选）**——`TriggerEventKind` 的子集，通道 `'resume'`。
    *
