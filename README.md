@@ -24,7 +24,7 @@ This repository grew into a **framework** on top of that rendering core:
 | BGM                                                              | —        | ✅ Looping playback with volume control                        |
 | Pause / resume                                                   | —        | ✅ **Unified audio master** (WE `setPaused` + page visibility) |
 | Pointer trail                                                    | —        | ✅ Emitted along cursor movement                               |
-| Built-in settings panel                                          | —        | ✅ 5 tabs, edit at runtime and persist                         |
+| Built-in settings panel                                          | —        | ✅ 7 tabs (the last one, "wallpaper-specific", is config-gated), edit at runtime and persist |
 | Archive panel / disclaimer                                       | —        | ✅                                                             |
 | Debug probe                                                      | —        | ✅ HUD plus CDP snapshot API                                   |
 

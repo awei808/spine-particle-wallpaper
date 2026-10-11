@@ -115,11 +115,15 @@ export type SettingsOverrides = {
    */
   fitAspect?: 'width' | 'height';
   /**
-   * 摩天轮轿厢姿态角（对应 `config.ferrisWheel.cabinMode`）。
+   * 摩天轮轿厢姿态角（对应 `config.ferrisWheel.cabinMode`；面板「壁纸独立设置」页）。
    *
    * `gravity` = 沿用解包 `startRotation`（−15°，随画面重力）；
    * `game` = 强制 0°（画布对齐，与游戏实录一致）。取证见 `config.type.ts` 的
    * `FerrisWheelConfig` 注释。切换**需重载**（spawn 时读值）。
+   *
+   * ★ 2026-10-11 起它在面板上的位置从「画面调整」页挪到「壁纸独立设置」页
+   *   （只对声明了该项的壁纸出现）—— **覆盖层字段名、落盘格式、读写链路全都没变**，
+   *   用户在旧版设过的值照样生效（面板那一页是否出现由 `config.wallpaperSettings` 决定）。
    */
   cabinMode?: FerrisWheelConfig['cabinMode'];
   /**
@@ -129,7 +133,7 @@ export type SettingsOverrides = {
    * `/5`、`/5/6`，见 `pointerTrail.ts` 与 09 文档 `19_指针拖尾_壁纸实现.md`）。
    *
    * 改了**需重载**：发射器是开机一次性构造的（纹理、几何缓冲），
-   * 与 `cabinMode` 同属「画面调整」页的"构造期配置"。
+   * 与 `cabinMode` 一样同属"构造期配置"。
    */
   pointerTrailEnabled?: boolean;
   idleSequenceEnabled?: boolean;
@@ -513,7 +517,7 @@ export const applyOverrides = (cfg: Configs, o: SettingsOverrides): Configs => {
     out.fitAspect = o.fitAspect;
   }
 
-  /** 摩天轮轿厢姿态角（「画面调整」页） */
+  /** 摩天轮轿厢姿态角（「壁纸独立设置」页；2026-10-11 从「画面调整」页挪来） */
   if (o.cabinMode !== undefined) {
     out.ferrisWheel = { ...(cfg.ferrisWheel ?? {}) };
     out.ferrisWheel.cabinMode = o.cabinMode;
@@ -651,17 +655,20 @@ export const readView = (cfg: Configs): SettingsView => ({
       ? cfg.subtitle.audio.volume
       : 1,
   /**
-   * ★ 缺省 `gravity`（= 沿用解包 `startRotation` 的 −15°），**不是** `game`。
-   *   理由：本壁纸此前的观感就是解包值，改默认等于"升级后画面悄悄变了"；
-   *   想要游戏那份水平姿态的用户自己去「画面调整」页切即可。
-   */
-  /**
    * ★ 缺省 **`'height'`**（用户 2026-10-08 拍板：与游戏内取景一致）。
    *   判据写成"只认 `'width'`"而不是"只认 `'height'`" ⇒ 缺字段/写了别的无效值时
    *   都回落到缺省的高对齐，与 `initScene` 的解析口径**完全一致**（两处必须同向，
    *   否则会出现"面板显示按高、实际按宽渲染"的假象）。
    */
   fitAspect: cfg.fitAspect === 'width' ? 'width' : 'height',
+  /**
+   * ★ 缺省 `gravity`（= 沿用解包 `startRotation` 的 −15°），**不是** `game`。
+   *   理由：本壁纸此前的观感就是解包值，改默认等于"升级后画面悄悄变了"；
+   *   想要游戏那份水平姿态的用户自己去「壁纸独立设置」页切即可。
+   *
+   * ⚠️ 读法与所在页无关：无论面板上这一项有没有出现（取决于本壁纸的
+   *   `config.wallpaperSettings` 声明），值都从这里读 ⇒ 覆盖层与行为不受页序影响。
+   */
   cabinMode: cfg.ferrisWheel?.cabinMode ?? 'gravity',
   /**
    * ★ 缺省 `false`：与 `pointerTrail.ts` 的口径一致（`enabled` 必须显式为 true 才建发射器），
@@ -964,7 +971,7 @@ export const sameView = (a: SettingsView, b: SettingsView): boolean => {
     a.voiceEnabled !== b.voiceEnabled ||
     // ★ 对齐基准也要比：否则"只改了画面调整页的对齐方式"会被判成"没变化"而不重载
     a.fitAspect !== b.fitAspect ||
-    // ★ 轿厢姿态也要比：否则"只改了画面调整页"会被判成"没变化"而不重载
+    // ★ 轿厢姿态也要比：否则"只改了壁纸独立设置页"会被判成"没变化"而不重载
     a.cabinMode !== b.cabinMode ||
     // ★ 指针拖尾开关同理：它只改 pointerTrail.enabled，漏比就会"只改这项不重载"
     a.pointerTrailEnabled !== b.pointerTrailEnabled ||

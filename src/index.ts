@@ -891,7 +891,7 @@ const main = async () => {
   };
 
   /**
-   * 摩天轮轿厢姿态角（「画面调整」页的设置）。
+   * 摩天轮轿厢姿态角（面板「壁纸独立设置」页的设置；2026-10-11 从「画面调整」页挪走）。
    *
    * ★ 在这里**一次算好**再传给各粒子系统：`startRotation` 是粒子**出生时**读的，
    *   切模式必须重载页面才生效（与气泡 DOM / 语音播放器同为开机一次性构造）。
@@ -1415,6 +1415,15 @@ const main = async () => {
       settingsUI = createSettingsPanel({
         animations: Object.keys(animationDurations),
         view: readView(configs),
+        /**
+         * ★ 本壁纸的「壁纸独立设置」声明（`config.wallpaperSettings`，详见 `config.type.ts`）。
+         *
+         * 面板据此决定**要不要建**最后那一页（连标签按钮一起）：没声明 / `items` 为空
+         * ⇒ 不建 ⇒ 没有独立设置的壁纸（如星语心恋）不会多出一个永远空着的页。
+         * ⚠️ 传的是**原始 config 的值** —— 它只描述"展示什么"，各设置项的值另有字段
+         *   （如 `cabinMode` → `config.ferrisWheel.cabinMode`），不从这里读。
+         */
+        wallpaperSettings: configs.wallpaperSettings,
         // ★ WE 的 `showSettings` 优先于 localStorage：它才是"用户刚才在属性面板里勾的"
         visible: weShowSettings ?? storedSettings.showSettings !== false,
         open: storedSettings.panelOpen === true,

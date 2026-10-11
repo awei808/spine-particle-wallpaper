@@ -62,6 +62,10 @@
 
 import { TriggerEventKind, TriggerPhase } from './config.type';
 import {
+  WallpaperSettingItem,
+  WallpaperSettingsConfig,
+} from './config.type';
+import {
   TRIGGER_KIND_ORDER,
   TRIGGER_PHASE_ORDER,
   normalizeTriggerKinds,
@@ -75,6 +79,12 @@ export type SettingsPanelOptions = {
   animations: string[];
   /** 当前生效值 */
   view: SettingsView;
+  /**
+   * 本壁纸的「壁纸独立设置」声明（对应 `config.wallpaperSettings`，见 `config.type.ts`）。
+   *
+   * ★ 缺省 / `items` 为空 ⇒ 面板**不建**这一页（连标签按钮一起省掉）。
+   */
+  wallpaperSettings?: WallpaperSettingsConfig;
   /** 齿轮按钮是否显示（对应 WE 属性 `showSettings`） */
   visible: boolean;
   /** 面板是否初始展开 */
@@ -94,6 +104,54 @@ export type SettingsPanel = {
   /** 外部把 Séance 值改了之后刷新 UI（WE 属性下发时用） */
   refresh: (view: SettingsView) => void;
   dispose: () => void;
+};
+
+/* ── 「壁纸独立设置」页的输入规格 ───────────────────────────
+ *
+ * ★★ 这一页是全工程**唯一一个会按 config 出现/消失**的页：
+ *   引擎是通用的（同一份 bundle 服务多张壁纸），而页里的项（摩天轮轿厢角度…）
+ *   只对**声明了**的那张壁纸有意义 ⇒ 没声明的壁纸**看不到这一页**，
+ *   而不是看到一个永远无效的控件（用户 2026-10-11 拍板的口径）。
+ */
+
+/** 「壁纸独立设置」页的输入规格（由 `resolveWallpaperPanelSpec` 从 config 解析而来） */
+export type WallpaperPanelSpec = {
+  /** 分组标题 = 本壁纸的名字（如「盛夏游乐场」） */
+  label: string;
+  /** 本壁纸声明的独立设置项（已过滤成面板认得的那些，见 `KNOWN_WALLPAPER_ITEMS`） */
+  items: readonly WallpaperSettingItem[];
+};
+
+/** 面板**认得并能渲染**的「壁纸独立设置」项（新增一项要同时补页面里的渲染分支） */
+export const KNOWN_WALLPAPER_ITEMS: readonly WallpaperSettingItem[] = [
+  'cabinMode',
+];
+
+/**
+ * 把 `config.wallpaperSettings` 解析成面板输入。
+ *
+ * - **未知项 id / 重复项 ⇒ 静默丢弃** —— 与 `dialogue.buildPool` 里"写错的 actionId
+ *   只少一条候选、不会让整类失效"同一容错口径：config 里写错一个词，不该让整页消失；
+ * - **过滤完一项不剩**（没声明 / `items: []` / 全是写错的 id）⇒ 返回 `null`
+ *   ⇒ `createSettingsPanel` **不建这一页、也不建它的标签按钮**（见 TABS 的过滤）。
+ *
+ * ⚠️ 本函数**不碰任何设置值**：各项的值仍由 `view` 承载
+ *   （`cabinMode` → `config.ferrisWheel.cabinMode`），这里只回答"展示哪些"。
+ */
+export const resolveWallpaperPanelSpec = (
+  raw?: WallpaperSettingsConfig
+): WallpaperPanelSpec | null => {
+  const items: WallpaperSettingItem[] = [];
+  (raw?.items ?? []).forEach((it) => {
+    if (KNOWN_WALLPAPER_ITEMS.indexOf(it) >= 0 && items.indexOf(it) < 0) {
+      items.push(it);
+    }
+  });
+  if (!items.length) {
+    return null;
+  }
+  const label = (raw?.label ?? '').trim();
+  return { label: label || '本壁纸', items };
 };
 
 /*
@@ -481,6 +539,15 @@ export const createSettingsPanel = (
   );
   tabBody.id = 'wb-tab-body';
 
+  /**
+   * ★★ 「壁纸独立设置」页的输入（`config.wallpaperSettings` 解析而来）。
+   *
+   * `null` = 本壁纸没声明任何独立设置 ⇒ 下面 `TABS` 的过滤会把这一页
+   * （标签按钮 + 页容器）整个去掉 —— 引擎是通用的，不能因为面板多了个 tab
+   * 就让每一张壁纸都多出一个永远空着的页。
+   */
+  const wallpaperSpec = resolveWallpaperPanelSpec(options.wallpaperSettings);
+
   const TABS: ReadonlyArray<{ id: string; label: string }> = [
     // ★ 标签 2026-09-30 由「背景音乐」改为「音乐」—— 本页现在同时管 BGM 与角色语音两条音量
     //   （`id` 仍是 `bgm`：改 id 会让验证脚本/存档里的锚点全部失效，没有收益）
@@ -492,7 +559,19 @@ export const createSettingsPanel = (
     { id: 'touch', label: '事件池' },
     { id: 'view', label: '画面调整' },
     { id: 'debug', label: '调试' },
-  ];
+    // ★ 2026-10-11 新增：**只对本壁纸生效**的设置（用户拍板放在**标签条最末**）。
+    //   本页里的项由 `config.wallpaperSettings` 声明，没声明就连这个 tab 都没有（见上）。
+    { id: 'wallpaper', label: '壁纸独立设置' },
+  ].filter(
+    /**
+     * ★★ 唯一的"条件页"过滤：没声明独立设置的壁纸（如星语心恋）**看不到**这一页。
+     *
+     * 为什么不是"建一个空页、里面写一句'本壁纸没有独立设置'"：
+     * 那种页对绝大多数壁纸都是纯噪声，而这一页本身对用户没有通用价值
+     * （它的内容天然是壁纸专属的）。要出现，就得有内容。
+     */
+    (t) => t.id !== 'wallpaper' || wallpaperSpec !== null
+  );
   const pages: { [id: string]: HTMLElement } = {};
   const tabButtons: { id: string; el: HTMLElement }[] = [];
   let activeTab = TABS[0].id;
@@ -1476,11 +1555,14 @@ export const createSettingsPanel = (
    * | 页 | `id` | 管什么 | 典型设置项 |
    * |---|---|---|---|
    * | **事件触发** | `sequence` | "**什么时候 / 在哪里**触发" —— 触发条件与规则 | 常驻节奏、待机时长、热区范围、播放中点击的处理、问候取条方式 |
-   * | **事件池** | `touch` | "触发后**能抽到哪些内容**" —— 每个入口的取值范围 | 三个通道的类别多选 + 点击触摸的事件族 |
+   * | **事件池** | `touch` | "触发后**能抽到哪些内容**" —— 每个入口的取值范围 | 三个入口的类别多选（前三行）+ 点击触摸的事件族（末行） |
    *
    * ★ **为什么这样分（重叠的根源）**：重组前「触摸可触发的事件」在「动作」页，
    *   而它的**第二层筛子**（事件族）在「触摸」页 ⇒ **同一件事被劈成两页**。
-   *   现在"入口 → 取值范围"全在同一页，两层筛子（先族、后类）也上下紧邻。
+   *   现在"入口 → 取值范围"全在同一页。
+   * ★ **本页行序**（2026-10-11 定稿）：三个**入口**（待机 / 触摸 / 回到壁纸）先列完，
+   *   再收**挂在入口上的第二层筛子**（事件族）；同构的三行不被别的项打断，
+   *   事件族也不再假扮成"第四个入口"或"触摸那一行的子行"（细节见该行注释）。
    * ★ 页面顺序与 `id` 都**不变**（仍是 `touch`），只改 `label` —— 锚点与验证脚本不受影响。
    */
   rowTarget = pages.touch;
@@ -1529,13 +1611,41 @@ export const createSettingsPanel = (
     true
   );
 
+  const resumeChips = createKindChips(
+    {
+      chat: 'wb-set-resume-chat',
+      greet: 'wb-set-resume-greet',
+      touch: 'wb-set-resume-touch',
+    },
+    () => draft.resumeKinds,
+    (v) => {
+      draft.resumeKinds = v;
+    }
+  );
+  addRow(
+    '回到壁纸可触发的事件',
+    resumeChips.el,
+    '壁纸载入、回到桌面、切回窗口、离开超过 15 秒再回来时，从勾中的类别里随机抽一条。默认只勾「greet类」。',
+    pages.touch,
+    true
+  );
+
   /**
-   * ★★ **事件族 —— 点击触摸的第二层筛子**（2026-10-10）。
+   * ★★ **事件族 —— 点击触摸的第二层筛子**（2026-10-10 新增；2026-10-11 挪到本页**最后一行**）。
    *
-   * 紧排在「触摸可触发的事件」下面，是因为它**只作用于点击触摸这一个入口**：
+   * 它**只作用于点击触摸这一个入口**：
    *   ① 先按本项勾中的**事件族**筛候选；
    *   ② 再在勾中的**类别**里并池随机（`mergeKindPools`）。
-   * ⇒ 两者**叠加生效**，互不覆盖（同页相邻，不再跨页）。
+   * ⇒ 与上面「触摸可触发的事件」**叠加生效**，互不覆盖。
+   *
+   * ## ★ 为什么排在本页最后（用户 2026-10-11 拍板）
+   *
+   * 上面三行是**三个入口**（待机 / 触摸 / 回到壁纸）**同构**的"可抽到哪些类别"，
+   * 是一组平级的项目；而本项是**挂在其中一个入口上的第二层筛子**，不是第四个入口。
+   * 夹在中间会让"三个入口"这组读起来断成两截（还会被迫带一个 `└` 前缀去指向上面的行，
+   * 而它本来就不是那个入口的子行）⇒ 收在本页末尾，与前一组**分开**。
+   * ⚠️ 标签里因此**不带 `└` 前缀**（2026-10-11 用户拍板），措辞「（仅点击触摸）」
+   *   已经把作用域交代清楚了。
    *
    * ★ 三族判据 = **「婚后这一位会不会换人」**（不是动画名）：
    *   原表 `MarryAction{1,2,3}` 替换 `TouchFeedback{1,2,3}` ⇒ 婚后触摸位 1/2/3 换播别的动作、
@@ -1558,28 +1668,9 @@ export const createSettingsPanel = (
     normalizeTriggerPhases
   );
   addRow(
-    '└ 事件族（仅点击触摸）',
+    '事件族（仅点击触摸）',
     phaseChips.el,
     '在勾中的类别里再按事件族筛一层，两层叠加生效；默认勾「誓约后事件」+「普通事件」。',
-    pages.touch,
-    true
-  );
-
-  const resumeChips = createKindChips(
-    {
-      chat: 'wb-set-resume-chat',
-      greet: 'wb-set-resume-greet',
-      touch: 'wb-set-resume-touch',
-    },
-    () => draft.resumeKinds,
-    (v) => {
-      draft.resumeKinds = v;
-    }
-  );
-  addRow(
-    '回到壁纸可触发的事件',
-    resumeChips.el,
-    '壁纸载入、回到桌面、切回窗口、离开超过 15 秒再回来时，从勾中的类别里随机抽一条。默认只勾「greet类」。',
     pages.touch,
     true
   );
@@ -1622,37 +1713,14 @@ export const createSettingsPanel = (
   );
 
   /**
-   * 摩天轮轿厢姿态角（二选一）。
-   *
-   * ★★ 为什么会有两个选项（取证见 09 文档 `04_渲染差异记录.md` §D1）：
-   * 解包数据里轿厢 `startRotation` = **−15°**（美术按画面重力画），
-   * 而**游戏实录**轿厢长轴 **−0.03°**（被强制对齐画布）⇒ 两边差约 15°，
-   * 是游戏渲染侧行为造成的，**不是素材错**。只能交给用户选要哪一种。
-   *
-   * ★ 标签**不写英文配置名**（面板口径），但要点明角度与观感差异。
-   */
-  const selCabin = createSegmented(
-    'wb-set-cabin-mode',
-    [
-      ['gravity', '解包数据（−15°，随画面重力）'],
-      ['game', '游戏实测（0°，水平对齐）'],
-    ] as const,
-    true
-  );
-  addRow(
-    '摩天轮轿厢角度',
-    selCabin.el,
-    '两种角度都来自实测：解包按画面重力倾斜 −15°，游戏里却被强制水平。选哪个都不会报错，只是观感不同。',
-    pages.view,
-    true
-  );
-
-  /**
    * 指针（鼠标）拖尾粒子总开关。
    *
    * ★ 复刻的是游戏里"按住滑动 ⇒ 一串蓝色粒子连成轨迹"那个效果
    *   （`FX_UI_CommonUI_Click` 的 `/5`、`/5/6`，解包与实现见 09 文档 18 / 19）。
    * ★ 生效方式 = **保存后重载**：发射器与几何缓冲是开机一次性构造的。
+   *
+   * ⚠️ 本页**只剩两项**（对齐基准 + 本开关）：原来的「摩天轮轿厢角度」已挪进
+   *   「壁纸独立设置」页（它只对配了摩天轮的壁纸有意义，见该页注释）。
    */
   const cbTrail = createToggle(
     'wb-set-pointertrail',
@@ -1693,6 +1761,95 @@ export const createSettingsPanel = (
     '显示触摸热区框',
     '把整屏热区边界画出来（含缩放与命中数）'
   );
+
+  /* ── tab 7：壁纸独立设置（**只对本壁纸生效**；config 没声明 ⇒ 这一页整个不存在） ── */
+  /**
+   * ## 为什么单开一页（用户 2026-10-11 拍板）
+   *
+   * 「摩天轮轿厢角度」（`ferrisWheel.cabinMode`）原本在「画面调整」页，但它是
+   * **盛夏游乐场那张壁纸专属**的项：换成没有摩天轮粒子组的壁纸，这一项就是
+   * **永远无效的控件**（改了没有任何东西跟着变，也不会报错 —— 最坏的那种噪声）。
+   * ⇒ 新开一页，把"只对本壁纸生效"的项收进来，通用页只留通用项。
+   *
+   * ## ★★ 内容由 config 声明，不由面板写死
+   *
+   * 本工程是**通用引擎**：同一份 bundle 服务多张壁纸，面板是引擎的一部分，
+   * 所以"我有哪些独立设置"必须由**壁纸自己的 config** 说（`config.wallpaperSettings`）：
+   *
+   * ```json
+   * "wallpaperSettings": { "label": "盛夏游乐场", "items": ["cabinMode"] }
+   * ```
+   *
+   * ⚠️ 不声明 / `items` 为空 / 全是写错的 id ⇒ `resolveWallpaperPanelSpec` 返回 `null`
+   *   ⇒ 上面 `TABS` 的过滤已经把这一页（**连标签按钮**）整个去掉，
+   *   `pages.wallpaper` 是 `undefined` ⇒ 本段整体跳过。
+   *   ⇒ 既不会留下空页，也不会渲染出没有实现的控件。
+   *
+   * ⚠️ 本页**只改展示位置**：各项的值仍走 `view`（`cabinMode` →
+   *   `config.ferrisWheel.cabinMode`），`settingsStore` 的读写链路一行没动
+   *   （`readView` / `applyOverrides` / `sameView` 照旧）⇒ 存盘格式与旧版完全兼容。
+   * ⚠️ 本页所有行都**显式传 `parent`**（不复用 `rowTarget`）：这一页可能整个不存在，
+   *   让它去改 `rowTarget` 只会埋一个"默认父级指向 undefined"的雷。
+   */
+  let selCabin: ReturnType<typeof createSegmented> | null = null;
+  if (wallpaperSpec && pages.wallpaper) {
+    const page = pages.wallpaper;
+    createEl(
+      'div',
+      'font-size:' +
+        fpx(11) +
+        ';opacity:.55;margin-bottom:' +
+        uiPx(6) +
+        ';line-height:1.5',
+      page
+    ).textContent =
+      '这一页的设置只对当前这张壁纸生效；换用别的壁纸时不会出现这些项。';
+
+    /** 分组标题 = 本壁纸的名字（`wallpaperSettings.label`） */
+    const groupHead = createEl(
+      'div',
+      'font-size:' +
+        fpx(12.5) +
+        ';font-weight:600;opacity:.9;margin-top:' +
+        uiPx(2) +
+        ';margin-bottom:' +
+        uiPx(2),
+      page
+    );
+    groupHead.id = 'wb-wallpaper-group';
+    groupHead.setAttribute('data-wb-group', 'wallpaper');
+    groupHead.textContent = wallpaperSpec.label;
+
+    if (wallpaperSpec.items.indexOf('cabinMode') >= 0) {
+      /**
+       * 摩天轮轿厢姿态角（二选一）。
+       *
+       * ★★ 为什么会有两个选项（取证见 09 文档 `04_渲染差异记录.md` §D1）：
+       * 解包数据里轿厢 `startRotation` = **−15°**（美术按画面重力画），
+       * 而**游戏实录**轿厢长轴 **−0.03°**（被强制对齐画布）⇒ 两边差约 15°，
+       * 是游戏渲染侧行为造成的，**不是素材错**。只能交给用户选要哪一种。
+       *
+       * ★ 标签**不写英文配置名**（面板口径），但要点明角度与观感差异。
+       * ★ DOM 锚点 `wb-set-cabin-mode` **保持不变**（2026-10-11 只挪页、不改 id）——
+       *   已验证过的脚本/存档里的锚点不会因为这次搬迁失锚。
+       */
+      selCabin = createSegmented(
+        'wb-set-cabin-mode',
+        [
+          ['gravity', '解包数据（−15°，随画面重力）'],
+          ['game', '游戏实测（0°，水平对齐）'],
+        ] as const,
+        true
+      );
+      addRow(
+        '摩天轮轿厢角度',
+        selCabin.el,
+        '两种角度都来自实测：解包按画面重力倾斜 −15°，游戏里却被强制水平。选哪个都不会报错，只是观感不同。',
+        page,
+        true
+      );
+    }
+  }
 
   /* ── 底部按钮（在 tabBody **之外** ⇒ 任何 tab 都常驻可见） ── */
   const foot = createEl(
@@ -1804,7 +1961,15 @@ export const createSettingsPanel = (
     });
     cbVoice.checked = draft.voiceEnabled;
     selFitAspect.value = draft.fitAspect;
-    selCabin.value = draft.cabinMode;
+    /**
+     * ★ 轿厢角度现在挂在「壁纸独立设置」页（2026-10-11）—— 本壁纸没声明该项时
+     *   控件压根没建（`selCabin === null`）⇒ 必须判空。
+     *   ⚠️ `draft.cabinMode` 不判空、照常带着走（见 `btnSave`）：面板里没有这一项
+     *   不等于要把用户的覆盖层**抹掉**（他可能是在上一版里设过的）。
+     */
+    if (selCabin) {
+      selCabin.value = draft.cabinMode;
+    }
     cbTrail.checked = draft.pointerTrailEnabled;
     cbSeq.checked = draft.idleSequenceEnabled;
     gapSlider.value = String(
@@ -1886,12 +2051,19 @@ export const createSettingsPanel = (
       draft.fitAspect = v;
     }
   });
-  selCabin.addEventListener('change', () => {
-    const v = selCabin.value as SettingsView['cabinMode'];
-    if (v === 'gravity' || v === 'game') {
-      draft.cabinMode = v;
-    }
-  });
+  /**
+   * 摩天轮轿厢角度（「壁纸独立设置」页）—— 只有**声明了该项的壁纸**才建得出这个控件
+   * （`selCabin === null` 时整段跳过；白名单校验与其它分段控件同一口径）。
+   */
+  if (selCabin) {
+    const sc = selCabin;
+    sc.addEventListener('change', () => {
+      const v = sc.value as SettingsView['cabinMode'];
+      if (v === 'gravity' || v === 'game') {
+        draft.cabinMode = v;
+      }
+    });
+  }
   cbSeq.addEventListener('change', () => {
     draft.idleSequenceEnabled = cbSeq.checked;
     syncFromDraft();
