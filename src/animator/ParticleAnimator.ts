@@ -440,6 +440,17 @@ export class ParticleAnimator {
   private cfg: ParticleMeshConfig;
   /** 轿厢姿态角模式（仅轿厢组有值；其余为 undefined ⇒ 不干预出生朝向） */
   private cabinMode?: 'gravity' | 'game';
+  /**
+   * 轿厢**图元自带**的重力倾角（度）。只有轿厢组非 0（见 `FerrisWheelConfig.spriteTiltDeg`）。
+   *
+   * ★★ 为什么要有它（2026-10-11 修正的远古 bug）：图集里的 `FX_cf_chexiang01/02.png`
+   *   是美术**按画面重力系画的**，图元自身相对画布就已经歪着 —— 放大对比很直观：
+   *   **游戏实录**里同一只吊舱的窗格**竖直**，而**图元**的窗格是**歪的**。
+   *   代码若只转 `startRotation`（另有 −15°），两份就**叠成 −30°** ⇒ 两个档位都多歪 15°
+   *   （用户实测：`gravity` 渲染 ≈ −30°、`game` 也剩 ≈ −15°）。
+   *   把它加进出生朝向 = 把素材那一份抵消掉，`startRotation` 的面值才等于真实渲染角。
+   */
+  private spriteTiltDeg: number;
   private mesh: THREE.Mesh;
   private geometry: THREE.BufferGeometry;
   private posAttr: THREE.BufferAttribute;
@@ -500,18 +511,27 @@ export class ParticleAnimator {
    *                   `startRotation`（解包值 −15°，随画面重力）。
    *                   非轿厢组**一律传 undefined**（由 `index.ts` 按 `cabinGroups` 判定）。
    *                   取证据与二选一的理由见 `config.type.ts` 的 `FerrisWheelConfig`。
+   * @param spriteTiltDeg **轿厢图元自带的重力倾角**（度）：抵消素材里那一份，
+   *                   叠加在上面 `cabinMode` 给出的角度之后。非轿厢组传 0（默认）。
+   *                   为什么必须有它见字段注释（2026-10-11 修正）。
    */
   constructor(
     meshConfig: ParticleMeshConfig,
     texture: THREE.Texture,
     maskTexture?: THREE.Texture | null,
-    cabinMode?: 'gravity' | 'game'
+    cabinMode?: 'gravity' | 'game',
+    spriteTiltDeg?: number
   ) {
     if (!texture) {
       throw 'particle texture does not fully loaded';
     }
     this.cfg = meshConfig;
     this.cabinMode = cabinMode;
+    /** 只认有限数：写错成 `null` / `"15"` / `NaN` 时按 0 处理（= 不做补偿，与旧行为一致） */
+    this.spriteTiltDeg =
+      typeof spriteTiltDeg === 'number' && isFinite(spriteTiltDeg)
+        ? spriteTiltDeg
+        : 0;
     this.rng = new Rng(1013 + meshConfig.name.length * 7919);
     /** frameOverTime 只有"带关键帧"时才随寿命变（见 config.type.ts 的 `uv.frameOverTime`） */
     const foKeys = meshConfig.uv?.frameOverTime?.keysA;
@@ -710,9 +730,14 @@ export class ParticleAnimator {
      *   解包给的是 −15°（美术按画面重力画），但游戏实录里轿厢长轴是 −0.03°
      *   （画布对齐，见 09 文档 04 §D1）⇒ 想"与游戏逐像素一致"就得把这一项归零。
      *   `gravity` / 非轿厢组：原样用 config 的 `startRotation`。
+     *
+     * ★★ 再加 `this.spriteTiltDeg`（**只有轿厢组非 0**）：抵消**素材里自带**的那一份
+     *   重力倾角。不补的话 −15° 那份会与图元自带的 −15° 叠成 −30°，
+     *   连 `game` 档也会剩 −15°（2026-10-11 用户实测的远古 bug，详见字段注释）。
      */
     const rotDeg =
-      this.cabinMode === 'game' ? 0 : spawnValue(c.startRotation, r) / DEG2RAD;
+      (this.cabinMode === 'game' ? 0 : spawnValue(c.startRotation, r) / DEG2RAD) +
+      this.spriteTiltDeg;
 
     const p: Particle = {
       x: 0,

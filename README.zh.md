@@ -148,7 +148,7 @@ Unity 手游里的 Spine 角色 + 粒子特效 + 触摸动作，搬上桌面并�
 它由**壁纸自己的 `config.json`** 声明：
 
 ```json
-"ferrisWheel": { "cabinMode": "gravity" },
+"ferrisWheel": { "cabinMode": "gravity", "spriteTiltDeg": 15 },
 "wallpaperSettings": {
   "label": "盛夏游乐场",
   "items": ["cabinMode"]
@@ -171,6 +171,21 @@ Unity 手游里的 Spine 角色 + 粒子特效 + 触摸动作，搬上桌面并�
 > ★ `wallpaperSettings` **只声明"展示什么"**；各项的值仍在自己的正式字段里
 > （`cabinMode` → `ferrisWheel.cabinMode`），覆盖层字段名与落盘格式一律不变。
 > ★ 本页是 2026-10-11 从「画面调整」页拆出来的（那一页现在只剩「画面对齐基准」与「鼠标粒子拖尾」两项）。
+
+#### ★★ `ferrisWheel.spriteTiltDeg`：轿厢图元**自带**的倾角（缺省 15）
+
+轿厢两个档位的角度都**多算了图元自带的那一份**（远古 bug，2026-10-11 修复）：
+
+| 来源 | 说明 |
+| ---- | ---- |
+| **图元自带** | `FX_cf_chexiang01/02.png` 是美术按**画面重力系**画的 —— 图元自身相对画布就歪着（放大后与**游戏实录**里同一只吊舱对比即见：实录窗格竖直、图元窗格歪） |
+| **配置又给一份** | `startRotation` = −15°（`gravity` 档的定义） |
+| **叠加后果** | `gravity` 渲染成 **−30°**、`game` 也剩 **−15°**（两个档位都多歪 15°） |
+
+⇒ 轿厢组的出生朝向 = `cabinMode` 给的角度 **+ `spriteTiltDeg`**（**只对 `cabinGroups` 名单内的组生效**）。
+补偿后 `startRotation` 的面值 = 画布坐标下的真实渲染角：`gravity` → 15°、`game` → **0°（窗格竖直，与实录一致）**。
+
+> ⚠️ 换皮肤 / 重导素材后要重新量这个角（09 文档 `04_渲染差异记录.md` §D1 的极点法），别照抄 15。
 
 ## 快速开始
 

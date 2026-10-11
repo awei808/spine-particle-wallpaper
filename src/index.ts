@@ -901,6 +901,16 @@ const main = async () => {
    */
   const cabinMode = configs.ferrisWheel?.cabinMode ?? 'gravity';
   const cabinGroups = configs.ferrisWheel?.cabinGroups ?? DEFAULT_CABIN_GROUPS;
+  /**
+   * 轿厢**图元自带**的重力倾角（度）：抵消素材里那一份（2026-10-11 修正的远古 bug）。
+   *
+   * ★ 缺省 **15**（本项目实测：图元按画面重力画的，相对画布歪约 15°）——
+   *   不补的话「解包数据」会渲染成 −30°、「游戏实测」会渲染成 −15°，两个档位都多歪 15°。
+   * ★ 与 `cabinMode` 一样**只给轿厢组传**：其余 6 组粒子没有"实录"这种绝对参照，
+   *   一律传 0（`ParticleAnimator` 里也按 0 兜底）⇒ 解包原样不动。
+   * ★ 取值理由与量法见 `config.type.ts` 的 `FerrisWheelConfig.spriteTiltDeg`。
+   */
+  const cabinSpriteTiltDeg = configs.ferrisWheel?.spriteTiltDeg ?? 15;
 
   /**
    * loader
@@ -1180,7 +1190,11 @@ const main = async () => {
                 ? threeAssetList[meshConfig.maskFileName]
                 : null,
               // ★ 只有轿厢组才传姿态模式；其余传 undefined（不干预）
-              cabinGroups.indexOf(meshConfig.name) >= 0 ? cabinMode : undefined
+              cabinGroups.indexOf(meshConfig.name) >= 0 ? cabinMode : undefined,
+              // ★ 同理：只有轿厢组才补"图元自带倾角"，其余传 0（保持解包原样）
+              cabinGroups.indexOf(meshConfig.name) >= 0
+                ? cabinSpriteTiltDeg
+                : 0
             );
             particleAnimators.push(particleAnimator);
             meshUpdateCallbacks.push(function (delta: number) {
