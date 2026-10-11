@@ -913,6 +913,27 @@ const main = async () => {
   const cabinSpriteTiltDeg = configs.ferrisWheel?.spriteTiltDeg ?? 15;
 
   /**
+   * 这一层 texture 最终用哪张贴图（顶层 `backgroundEdge` 决定）。
+   *
+   * ★ **只认 `'original'`**，其余任何取值（含缺字段、写错词）都回落主贴图 ——
+   *   与 `settingsStore.readView` 的判据**同向**（两处不同向就会出现
+   *   "面板显示素材原样、实际渲染修复版"这种最难查的假象）。
+   * ★ `originalTextureFileName` 只有**真被修过的层**才写（见 `TextureMeshConfig`）
+   *   ⇒ 没写的层在开关两个取值下都用同一张图，切开关对它零影响。
+   * ★ 参数收**结构类型**而不是 `TextureMeshConfig`：loader 里 `texture` 与 `particle`
+   *   共用同一个分支，而粒子没有这个字段 ⇒ 传进来恒为 `undefined`，天然不受开关影响。
+   * ★★ **loader 与 waitLoad 两处必须共用本函数** —— 各写一遍就会出现
+   *   "按原版加载、却把修复版贴到 mesh 上"（两张图同时存在时最容易发生）。
+   */
+  const pickTextureName = (meshConfig: {
+    textureFileName: string;
+    originalTextureFileName?: string;
+  }): string =>
+    configs.backgroundEdge === 'original' && meshConfig.originalTextureFileName
+      ? meshConfig.originalTextureFileName
+      : meshConfig.textureFileName;
+
+  /**
    * loader
    */
   configs?.meshes?.forEach((meshConfig) => {
@@ -953,7 +974,7 @@ const main = async () => {
          * 缺它遮罩就没了（而"08 合成成品图"那条路已被证伪 —— shader 是两次独立采样，
          * 且 `_Texture` 走流动 UV、`_mask` 走静止 UV，合成会把两者混成一个）。
          */
-        const texNames: string[] = [meshConfig.textureFileName];
+        const texNames: string[] = [pickTextureName(meshConfig)];
         if (meshConfig.type === 'particle' && meshConfig.maskFileName) {
           texNames.push(meshConfig.maskFileName);
         }
@@ -1166,7 +1187,8 @@ const main = async () => {
           case 'texture': {
             const textureAnimator = new TextureAnimator(
               meshConfig,
-              threeAssetList[meshConfig?.textureFileName]
+              // ★ 与 loader 同一个判据（见 pickTextureName 的注释）：两处必须同源
+              threeAssetList[pickTextureName(meshConfig)]
             );
             meshUpdateCallbacks.push(function (delta: number) {
               textureAnimator.update(delta);

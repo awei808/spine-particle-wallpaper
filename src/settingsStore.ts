@@ -127,6 +127,16 @@ export type SettingsOverrides = {
    */
   cabinMode?: FerrisWheelConfig['cabinMode'];
   /**
+   * 背景贴图的边缘取哪一版（对应 `config.backgroundEdge`；面板「壁纸独立设置」页）。
+   *
+   * - `'clean'` = 用 `textureFileName`（已修复版，无灰线）—— **缺省**；
+   * - `'original'` = 用该层的 `originalTextureFileName`（素材原样，露出灰线）。
+   *
+   * 详见 `config.type.ts` 的 `backgroundEdge`（含"这条线怎么来的"）。
+   * 切换**需重载**：贴图在开机加载阶段按文件名取。
+   */
+  backgroundEdge?: 'clean' | 'original';
+  /**
    * 指针（鼠标）拖尾粒子总开关（对应 `config.pointerTrail.enabled`）。
    *
    * 打开 ⇒ 指针移动时沿轨迹留下**等距**粒子（复刻游戏 `FX_UI_CommonUI_Click` 的
@@ -279,6 +289,13 @@ export type SettingsView = {
   fitAspect: 'width' | 'height';
   /** 摩天轮轿厢姿态角：`gravity` = 解包 −15°（随画面重力）/ `game` = 画布对齐 0° */
   cabinMode: 'gravity' | 'game';
+  /**
+   * 背景贴图的边缘取哪一版：`clean` = 已修复（无灰线，缺省）/ `original` = 素材原样。
+   *
+   * ⚠️ 读法与所在页无关：无论面板上这一项有没有出现（取决于本壁纸的
+   *   `config.wallpaperSettings` 声明），值都从这里读 ⇒ 覆盖层与行为不受页序影响。
+   */
+  backgroundEdge: 'clean' | 'original';
   /** 指针（鼠标）拖尾粒子是否开启（对应 `config.pointerTrail.enabled`） */
   pointerTrailEnabled: boolean;
   idleSequenceEnabled: boolean;
@@ -524,6 +541,19 @@ export const applyOverrides = (cfg: Configs, o: SettingsOverrides): Configs => {
   }
 
   /**
+   * 背景贴图的边缘取哪一版（「壁纸独立设置」页）。
+   *
+   * ★ 顶层字段，直接覆写 `cfg.backgroundEdge`（`index.ts` 的 loader 在开机加载阶段
+   *   读一次 ⇒ 需重载生效）。
+   * ★ **只认 `'original'`** 之外的写法按 `'clean'` 处理由读侧（`readView`）与
+   *   `index.ts` 各自判定；这里只做"用户明确选过就写下去"，不做白名单过滤 ——
+   *   与 `fitAspect` / `cabinMode` 的写法保持一致（面板侧已做白名单校验）。
+   */
+  if (o.backgroundEdge !== undefined) {
+    out.backgroundEdge = o.backgroundEdge;
+  }
+
+  /**
    * 指针拖尾总开关（「画面调整」页）。
    *
    * ★ 只覆写 `enabled`，其余字段（`planeZ` / `emitters`）原样沿用 config ——
@@ -670,6 +700,13 @@ export const readView = (cfg: Configs): SettingsView => ({
    *   `config.wallpaperSettings` 声明），值都从这里读 ⇒ 覆盖层与行为不受页序影响。
    */
   cabinMode: cfg.ferrisWheel?.cabinMode ?? 'gravity',
+  /**
+   * ★ 缺省 `'clean'`（= 用每层自己的 `textureFileName`，与改动前逐字同行为）。
+   *   判据写成"只认 `'original'`"而不是"只认 `'clean'`" ⇒ 缺字段/写了别的无效值时
+   *   都回落到"无灰线"，与 `index.ts` 的 `pickTextureName` 解析口径**完全一致**
+   *   （两处必须同向，否则会出现"面板显示素材原样、实际渲染修复版"的假象）。
+   */
+  backgroundEdge: cfg.backgroundEdge === 'original' ? 'original' : 'clean',
   /**
    * ★ 缺省 `false`：与 `pointerTrail.ts` 的口径一致（`enabled` 必须显式为 true 才建发射器），
    *   这样没有 `pointerTrail` 块的旧 config 跑起来不会多出视觉元素。
@@ -973,6 +1010,8 @@ export const sameView = (a: SettingsView, b: SettingsView): boolean => {
     a.fitAspect !== b.fitAspect ||
     // ★ 轿厢姿态也要比：否则"只改了壁纸独立设置页"会被判成"没变化"而不重载
     a.cabinMode !== b.cabinMode ||
+    // ★ 背景贴图边缘版本同理（2026-10-11）：漏比 ⇒"只切了这一项"不重载、画面不换
+    a.backgroundEdge !== b.backgroundEdge ||
     // ★ 指针拖尾开关同理：它只改 pointerTrail.enabled，漏比就会"只改这项不重载"
     a.pointerTrailEnabled !== b.pointerTrailEnabled ||
     a.idleSequenceEnabled !== b.idleSequenceEnabled ||

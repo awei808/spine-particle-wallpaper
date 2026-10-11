@@ -106,6 +106,33 @@ export type Configs = {
    *   改本字段的缺省值**不会**让那些老壁纸悄悄变样。
    */
   fitAspect?: 'width' | 'height';
+  /**
+   * **背景贴图的边缘取哪一版**。缺省 `'clean'`（= 用每层自己的 `textureFileName`）。
+   *
+   * ## 为什么会有这个开关
+   *
+   * 解包素材里个别背景层**贴图的左边缘自带一段内容**（如 S9 盛夏游乐场的
+   * `Asuna_S9_Background_13.png`：最左 10 列是一条半透明浅灰窄带）。
+   * 游戏内因为画幅窄、这块在画外 ⇒ 看不到；而网页壁纸取景更宽 ⇒ 它会被露出来，
+   * 表现为天空里一条**淡灰细线**（定性过程见工作区 `_tmp_灰线排查/`）。
+   *
+   * 修法 = 把那几列 alpha 擦成 0（RGB 不动，mesh 与 UV 全不动），另存一份贴图；
+   * 原始那份一并留在 `assets/` 里 ⇒ 由本字段决定用哪一份：
+   *
+   * | 取值 | 用哪张 | 观感 |
+   * |---|---|---|
+   * | `'clean'`（缺省） | `textureFileName`（已修复版） | 无灰线 |
+   * | `'original'` | `originalTextureFileName`（有声明的那一层；见 `TextureMeshConfig`） | **素材原样**，露出灰线 |
+   *
+   * ★ 判据与 `fitAspect` 同口径：**只认 `'original'`**，其余任何值（含缺字段、
+   *   写错词）都回落到缺省 `'clean'` —— 既不会因写错而"画面突然多出灰线"，
+   *   也与设置面板的读法一致（两处必须同向）。
+   * ★ 用户可在**右上角设置面板 →「壁纸独立设置」**页切换（覆盖层字段 `backgroundEdge`），
+   *   **改完重载生效**：贴图在开机加载阶段按文件名取，换名字不重载不会生效。
+   * ★ 本字段**只改"取哪张贴图"**，不改任何 mesh 的 width/height/position/scale
+   *   ⇒ 两版贴图尺寸相同，切换不会挪动任何东西。
+   */
+  backgroundEdge?: 'clean' | 'original';
   /** 触摸热区配置。缺省 = 启用 + 不显示 + 用 `touch.ts` 的内置兜底区。 */
   touch?: TouchConfig;
   /**
@@ -321,12 +348,13 @@ export const DEFAULT_CABIN_GROUPS: readonly string[] = [
  * | 取值 | 面板里的项（标签逐字一致） | 值的唯一来源 | 为什么算"壁纸独立" |
  * |---|---|---|---|
  * | `'cabinMode'` | 「摩天轮轿厢角度」 | `ferrisWheel.cabinMode` | 只有配了摩天轮粒子组的壁纸才有意义 |
+ * | `'backgroundEdge'` | 「背景灰线」 | `backgroundEdge`（顶层） | 只有**素材贴图边缘自带瑕疵**的壁纸才有这条线 |
  *
  * ⚠️ 这里的 id 是**面板的渲染开关**，不是新的数据字段 —— 加一项必须**同时**在
  *   `settingsPanel.ts` 里补对应的渲染分支，否则 `resolveWallpaperPanelSpec` 会把它
  *   静默丢掉（宁可"少一项"，也不要渲染出一个没有实现的控件）。
  */
-export type WallpaperSettingItem = 'cabinMode';
+export type WallpaperSettingItem = 'cabinMode' | 'backgroundEdge';
 
 /**
  * 「壁纸独立设置」的声明（`config.wallpaperSettings`）—— 见 `Configs.wallpaperSettings` 的注释。
@@ -1462,6 +1490,20 @@ export type TextureMeshConfig = MeshConfig & {
   width: number;
   height: number;
   textureFileName: string;
+  /**
+   * **素材原样版**贴图文件名（可选）。配合顶层 `backgroundEdge` 使用。
+   *
+   * 用途：当这一层的贴图被**事后修过**（如擦掉边缘瑕疵），把**未经修改的那一份**
+   * 也放进 `assets/`，在这里写下它的名字 ⇒ 用户在设置面板里选「素材原样」时改用它。
+   *
+   * ★ 两版**必须同尺寸同摆位**（否则切换会挪画面）—— 本工程的做法是"只改 alpha、
+   *   RGB 与尺寸全不动"，见顶层 `backgroundEdge` 的说明。
+   * ★ **不写本字段的层不受 `backgroundEdge` 影响**：无论开关怎么切，都用
+   *   `textureFileName`。⇒ 只有真正有"原样版"可为的层才需要写它。
+   * ★ `textureFileName` 与 `originalTextureFileName` 指向的文件**都会按需加载**
+   *   （只加载最终选中的那一张，不会两张一起下）。
+   */
+  originalTextureFileName?: string;
   tilesHorizontal: number;
   tilesVertical: number;
   numTiles: number;
