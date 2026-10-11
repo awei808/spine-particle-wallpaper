@@ -125,8 +125,6 @@ export type WallpaperPanelSpec = {
 /** 面板**认得并能渲染**的「壁纸独立设置」项（新增一项要同时补页面里的渲染分支） */
 export const KNOWN_WALLPAPER_ITEMS: readonly WallpaperSettingItem[] = [
   'cabinMode',
-  /** 背景贴图边缘取哪一版（2026-10-11；S9 那条"天空里的灰线"） */
-  'backgroundEdge',
 ];
 
 /**
@@ -1794,12 +1792,6 @@ export const createSettingsPanel = (
    *   让它去改 `rowTarget` 只会埋一个"默认父级指向 undefined"的雷。
    */
   let selCabin: ReturnType<typeof createSegmented> | null = null;
-  /**
-   * 「背景灰线」控件（同为「壁纸独立设置」页）。
-   *
-   * ⚠️ 与 `selCabin` 同一口径：本壁纸没声明该项时 `null` ⇒ 用到它的地方全要判空。
-   */
-  let selBgEdge: ReturnType<typeof createSegmented> | null = null;
   if (wallpaperSpec && pages.wallpaper) {
     const page = pages.wallpaper;
     createEl(
@@ -1853,41 +1845,6 @@ export const createSettingsPanel = (
         '摩天轮轿厢角度',
         selCabin.el,
         '两种角度都来自实测：解包按画面重力倾斜 −15°，游戏里却被强制水平。选哪个都不会报错，只是观感不同。',
-        page,
-        true
-      );
-    }
-
-    /**
-     * 「背景灰线」—— 取哪一版背景贴图（`config.backgroundEdge`）。
-     *
-     * ## 这条线是什么
-     *
-     * 素材里个别背景层的**贴图左边缘自带一段半透明浅灰内容**，游戏内因为画幅窄、
-     * 这块落在画外 ⇒ 看不到；网页壁纸取景更宽 ⇒ 它就露出来，成为天空里一条淡灰细线。
-     * 修复做法 = 把那几列擦成透明另存一版（尺寸、RGB 全不动），
-     * 原始那份也留在 `assets/` 里 ⇒ 用本项决定取哪一份（定性过程见 `_tmp_灰线排查/`）。
-     *
-     * ★ **不写英文配置名**（面板口径）；标签与说明都只说用户看得见的差别
-     *   （有没有那条线），不提贴图文件名/列数。
-     * ★ 两个选项都**不会报错**，只是画面里那条线在不在 —— 与「摩天轮轿厢角度」
-     *   同一类"两档实测、只能交给用户选"的项。
-     * ★ 生效方式 = **保存后重载**（贴图在开机加载阶段按文件名取）。
-     */
-    if (wallpaperSpec.items.indexOf('backgroundEdge') >= 0) {
-      selBgEdge = createSegmented(
-        'wb-set-bg-edge',
-        [
-          ['clean', '修复后（无灰线）'],
-          ['original', '素材原样（含灰线）'],
-        ] as const,
-        true
-      );
-      addRow(
-        '背景灰线',
-        selBgEdge.el,
-        '这条灰线来自游戏素材本身的贴图边缘，游戏画幅内看不到。' +
-          '选「修复后」去掉它；选「素材原样」保留，与游戏素材一致。',
         page,
         true
       );
@@ -2013,10 +1970,6 @@ export const createSettingsPanel = (
     if (selCabin) {
       selCabin.value = draft.cabinMode;
     }
-    /** ★ 「背景灰线」同理：本壁纸没声明该项时控件没建 ⇒ 判空（draft 照常带着走） */
-    if (selBgEdge) {
-      selBgEdge.value = draft.backgroundEdge;
-    }
     cbTrail.checked = draft.pointerTrailEnabled;
     cbSeq.checked = draft.idleSequenceEnabled;
     gapSlider.value = String(
@@ -2111,19 +2064,6 @@ export const createSettingsPanel = (
       }
     });
   }
-  /**
-   * 背景灰线（「壁纸独立设置」页）—— 同样只有**声明了该项的壁纸**才建得出这个控件；
-   * 白名单校验与 `selCabin` / `selGreetMode` 完全同一口径（面板只收认识的值）。
-   */
-  if (selBgEdge) {
-    const se = selBgEdge;
-    se.addEventListener('change', () => {
-      const v = se.value as SettingsView['backgroundEdge'];
-      if (v === 'clean' || v === 'original') {
-        draft.backgroundEdge = v;
-      }
-    });
-  }
   cbSeq.addEventListener('change', () => {
     draft.idleSequenceEnabled = cbSeq.checked;
     syncFromDraft();
@@ -2208,7 +2148,6 @@ export const createSettingsPanel = (
       voiceVolume: draft.voiceVolume,
       fitAspect: draft.fitAspect,
       cabinMode: draft.cabinMode,
-      backgroundEdge: draft.backgroundEdge,
       pointerTrailEnabled: draft.pointerTrailEnabled,
       idleSequenceEnabled: draft.idleSequenceEnabled,
       idleSequenceItems: draft.idleSequenceItems.slice(),

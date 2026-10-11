@@ -149,10 +149,9 @@ Unity 手游里的 Spine 角色 + 粒子特效 + 触摸动作，搬上桌面并�
 
 ```json
 "ferrisWheel": { "cabinMode": "gravity", "spriteTiltDeg": 15 },
-"backgroundEdge": "clean",
 "wallpaperSettings": {
   "label": "盛夏游乐场",
-  "items": ["cabinMode", "backgroundEdge"]
+  "items": ["cabinMode"]
 }
 ```
 
@@ -161,28 +160,12 @@ Unity 手游里的 Spine 角色 + 粒子特效 + 触摸动作，搬上桌面并�
 | `wallpaperSettings.label` | 页内**分组标题** = 本壁纸的名字（如「盛夏游乐场」）。缺省 `"本壁纸"` 兜底     |
 | `wallpaperSettings.items` | 本壁纸声明的独立设置项（数组顺序 = 面板里的行序）                            |
 
-当前可声明的项：
+当前唯一可声明的项：
 
 | `items` 取值 | 面板里的项       | 值的唯一来源（★不在这里存值） | 为什么算"壁纸独立"                                |
 | ------------ | ---------------- | ----------------------------- | ------------------------------------------------- |
 | `"cabinMode"`| 「摩天轮轿厢角度」 | `ferrisWheel.cabinMode`       | 只有配了摩天轮粒子组的构图（盛夏游乐场）才有意义  |
-| `"backgroundEdge"`| 「背景灰线」 | `backgroundEdge`（顶层）      | 只有**素材贴图边缘自带瑕疵**的壁纸才有这条线      |
 
-#### 「背景灰线」与 `backgroundEdge`（2026-10-11）
-
-解包素材里个别背景层的**贴图左边缘自带一段半透明浅灰内容**：游戏内画幅窄、这块落在画外
-⇒ 看不到；网页壁纸取景更宽 ⇒ 它被露出来，表现为天空里一条**淡灰细线**。
-修复做法 = 把那几列 alpha 擦成 0（**尺寸与 RGB 全不动**）另存一版，原始那份也留在 `assets/` 里。
-
-| 字段 | 含义 |
-| ---- | ---- |
-| `backgroundEdge`（顶层） | `"clean"`（缺省）= 用 `textureFileName`；`"original"` = 用 `originalTextureFileName` |
-| `meshes[].originalTextureFileName` | 该层**素材原样版**贴图文件名（可选）。**只有真被修过的层才写** |
-
-> ★★ **判据只认 `"original"`** —— 缺字段、写错词都回落到 `"clean"`；面板与渲染两处同向。
-> ★ 两版贴图**必须同尺寸同摆位**（本工程的做法是"只改 alpha"），否则切换会挪画面。
-> ★ 没写 `originalTextureFileName` 的层在开关两个取值下都用同一张图，切开关对它零影响。
-> ★ 切换**需重载**（贴图在开机加载阶段按文件名取），与「摩天轮轿厢角度」同口径。
 > ★★ **不声明 / `items` 为空 / 全是写错的 id ⇒ 面板连这一页（含标签按钮）都不建** ——
 > 没有独立设置的壁纸不会多出一个永远空着、或永远无效的页。
 > ★ `wallpaperSettings` **只声明"展示什么"**；各项的值仍在自己的正式字段里

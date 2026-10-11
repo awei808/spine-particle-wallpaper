@@ -145,17 +145,9 @@ Other config knobs (meshes, layers, `minAspect` / `maxAspect`, `dpr: "auto"`, pa
    mismatch between the proxy and reality is *silent* black at the edges.
 4. **Config and bundle must be updated in pairs.** A `config.json` change that affects framing
    (e.g. `fitAspect`, `fov`, `cameraX`, `dpr`) only takes effect with a matching bundle reload.
-   Same for `backgroundEdge` — textures are fetched **by filename at load time**.
 5. **Frame-driven fades freeze on WE pause.** WE web wallpaper stops `requestAnimationFrame`
    on pause, but `Date.now()` keeps advancing. Any opacity/audio fade that is frame-driven
    will freeze mid-transition when paused — drive audio fades with `setTimeout` instead.
-6. **`pickTextureName()` in `index.ts` is the ONLY place deciding which texture file a
-   `texture` layer uses.** It is called twice (the loader loop and `waitLoad`'s animator
-   construction) — both MUST share it; writing the rule twice yields "loaded the original,
-   pasted the cleaned one". Rule: return `originalTextureFileName` **only** when
-   `backgroundEdge === 'original'` and the layer declares one, else `textureFileName`.
-   `settingsStore.readView` must use the **same predicate** (recognise `'original'` only),
-   otherwise the panel shows one state while the canvas renders another.
 
 ## Wallpaper Engine web-wallpaper constraints (easy to forget)
 
