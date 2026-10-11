@@ -89,7 +89,36 @@ export class TextureAnimator {
     this.textureMesh = textureMesh;
     this.spinDegPerSec = meshConfig?.spinDegPerSec ?? 0;
 
-    texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+    /**
+     * ★★ 边缘寻址必须是 **`ClampToEdgeWrapping`**，不能是 `RepeatWrapping`（2026-10-11 修）。
+     *
+     * ## 为什么
+     *
+     * 平面几何的 UV 恰好走在 `[0,1]` 上，而 GPU 双线性采样在**最边缘那一像素**会取到
+     * `v<0` / `v>1` 的 texel。`RepeatWrapping` 会把它们**环绕到贴图对面那一行/列** ——
+     * 于是"贴图顶行的颜色"与"贴图底行的颜色"在边缘被混成一个值。只要这两行颜色不同，
+     * 画面上就会出现**一条与内容无关的 1px 线**，颜色由两张边缘共同决定。
+     *
+     * ## 实测（S9 盛夏游乐场 `Asuna_S9_Background_01.png`，1700×1163）
+     *
+     * · 顶行 `RGB=[17,12,14] α=0`、底行 `RGB=[217,208,174] α=250`
+     *   ⇒ 环绕混合出 `α≈125` 的暗色；
+     * · 该层**上边缘**投影到屏幕时（长宽比小、按宽基准 ⇒ 可见高大 ⇒ 上边缘进入画面）
+     *   就横贯整幅出现一条**淡灰线**；
+     * · 逐层屏蔽实证：把这一层换成透明图 ⇒ 线消失；屏蔽其余各层 ⇒ 无变化。
+     * · 游戏画幅（2.2667）下该边缘在画外 ⇒ 实录里看不到，与用户观察一致。
+     *
+     * ## 为什么换掉是安全的
+     *
+     * · `ClampToEdge` 在边缘采样**重复边缘自身那一行/列**（不是对面的）⇒ 边缘内容连续
+     *   ⇒ 那条线消失；
+     * · 对 `[0,1]` **内部**的采样，两种模式**逐像素相同** ⇒ 不动任何正常画面；
+     * · 对 tile 动画安全：`update()` 用 `offset` 移动取景窗，`offset = k/N`（整数倍）
+     *   ⇒ UV 恒在 `[0,1]` 内、上边界恰好落在 `1.0`，clamp 取到的正是该格的边缘 texel。
+     *   本项目现存工程的 `tilesHorizontal/Vertical/numTiles` 一律 1、`tileDisplayDuration` 为 0
+     *   （tile 动画根本没启用），此改动实际只影响"边缘那一像素"。
+     */
+    texture.wrapS = texture.wrapT = THREE.ClampToEdgeWrapping;
     texture.repeat.set(1 / this.tilesHorizontal, 1 / this.tilesVertical);
 
     // how long has the current image been displayed?
