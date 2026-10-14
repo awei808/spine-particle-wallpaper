@@ -301,6 +301,108 @@ function keysAt(keys: number[][], t: number): number {
 }
 
 /**
+ * Unity `AnimationCurve` 端点**在线性分段之外**的取值模式
+ * （序列化字段 `m_PreInfinity` / `m_PostInfinity`）。
+ *
+ * 取值表（AssetStudio 对 Unity 序列化格式的整理，与 Unity 的 `WrapMode` 同源）：
+ *   0 = Constant        保持端点值（**旧实现等价于此**）
+ *   1 = Linear          按端点切线线性外推
+ *   2 = Cycle           整条曲线循环（首尾相接）
+ *   3 = CycleWithOffset 循环并累加落差
+ *   4 = Oscillate       乒乓（正放/倒放交替）
+ */
+const INF_CONSTANT = 0;
+const INF_LINEAR = 1;
+const INF_CYCLE = 2;
+const INF_CYCLE_OFFSET = 3;
+const INF_OSCILLATE = 4;
+
+/** `((a % n) + n) % n` —— JS 的 `%` 对负数取负，曲线回绕必须用这个 */
+function modPos(a: number, n: number): number {
+  return ((a % n) + n) % n;
+}
+
+/**
+ * **带端点外推**的曲线求值（Unity `AnimationCurve` 语义）。
+ *
+ * ★★ 为什么必须有它（2026-10-13，蝶语吟花"蝴蝶不扇翅膀"的根因）：
+ *   旧实现只做 `keysAt()` —— 曲线之外**一律钳到端点值**，等于假设
+ *   `m_PostInfinity = Constant`。而 `hudie01 ×3` 的 `frameOverTime`
+ *   是全部 19 个已采样粒子系统里**唯一**把 post 设成 **Linear** 的
+ *   （其余 18 个不是 post=2(Cycle) 就是没有关键帧；Cycle 的末键在 t=1，永不触发）。
+ *   Linear 的含义 = "末键之后按端点切线继续线性增长"：
+ *     `frameOverTime` 的末键在 t=0.0826 / 值 0.945 / outSlope 11.4415
+ *     ⇒ t=1 时曲线值 = 0.945 + 11.4415×(1−0.0826) = **11.4415**
+ *     ⇒ 帧号 = `floor(11.4415 × cycles(1) × 16) % 16` 在整个寿命里**连续推进 183 帧**（≈11.4 遍图集）。
+ *   旧实现把它钳在 0.945 ⇒ 帧号恒为 15 ⇒ **扇一次就定住**（CDP 实测 age 0.82 起 uvFrame 永远 15）。
+ *
+ * `pre` / `post` 缺省 = 0（Constant），与旧行为逐位一致 ⇒ 对不带这两个字段的旧 config **零影响**。
+ * `headSlope` / `tailSlope` = 首键 `inSlope` / 末键 `outSlope`（Linear 模式要用）。
+ */
+function curveAt(keys: number[][], t: number, pre = 0, post = 0,
+                 headSlope = 0, tailSlope = 0): number {
+  if (!keys || keys.length === 0) {
+    return 1;
+  }
+  const first = keys[0];
+  const last = keys[keys.length - 1];
+  const t0 = first[0];
+  const t1 = last[0];
+  const span = t1 - t0;
+
+  // ── 左端点之外 ──
+  if (t < t0) {
+    if (pre === INF_LINEAR) {
+      return first[1] + headSlope * (t - t0);
+    }
+    if (pre === INF_CYCLE && span > 1e-9) {
+      return keysAt(keys, t0 + modPos(t - t0, span));
+    }
+    if (pre === INF_OSCILLATE && span > 1e-9) {
+      const p = modPos(t - t0, 2 * span);
+      return keysAt(keys, t0 + (p <= span ? p : 2 * span - p));
+    }
+    if (pre === INF_CYCLE_OFFSET && span > 1e-9) {
+      const n = Math.floor((t - t0) / span);
+      return keysAt(keys, t0 + modPos(t - t0, span)) + n * (last[1] - first[1]);
+    }
+    return first[1];
+  }
+
+  // ── 右端点之外 ──
+  if (t > t1) {
+    if (post === INF_LINEAR) {
+      return last[1] + tailSlope * (t - t1);
+    }
+    if (post === INF_CYCLE && span > 1e-9) {
+      return keysAt(keys, t0 + modPos(t - t0, span));
+    }
+    if (post === INF_OSCILLATE && span > 1e-9) {
+      const p = modPos(t - t0, 2 * span);
+      return keysAt(keys, t0 + (p <= span ? p : 2 * span - p));
+    }
+    if (post === INF_CYCLE_OFFSET && span > 1e-9) {
+      const n = Math.floor((t - t0) / span);
+      return keysAt(keys, t0 + modPos(t - t0, span)) + n * (last[1] - first[1]);
+    }
+    return last[1];
+  }
+
+  return keysAt(keys, t);
+}
+
+/**
+ * MinMaxCurve 的"曲线支"求值：`scalar × curve(t)`（Unity：`minMaxState=1` 时取
+ * `scalar` 乘曲线）。无关键帧返回 `null`，由调用方走常量/随机两常量分支。
+ */
+function curveOf(mm: ParticleMinMax | undefined, t: number): number | null {
+  if (!mm || !mm.keysA || mm.keysA.length === 0) {
+    return null;
+  }
+  return mm.a * curveAt(mm.keysA, t, mm.pre, mm.post, mm.headSlope, mm.tailSlope);
+}
+
+/**
  * 出生时取一次的值（Unity 的 Initial module 在粒子出生时采样）。
  * mode: 0 常量 / 1 曲线（形状由 lifeMul 提供） / 2 随机两常量 /
  *       3 随机两曲线（本套数据曲线为空 → 退化成随机两常量）
@@ -318,13 +420,32 @@ function spawnValue(mm: ParticleMinMax, rng: Rng): number {
   return mm.b + (mm.a - mm.b) * rng.next();
 }
 
-/** 寿命内乘子（SizeModule / RotationModule / VelocityModule 用） */
-function lifeMul(mm: ParticleMinMax, t: number): number {
+/**
+ * 寿命内乘子（SizeModule / RotationModule / VelocityModule 用）。
+ *
+ * ★★ `mix` = **逐粒子随机系数**（一般传 `Particle.vmix`，出生时抽一次、终生不变）。
+ *
+ * 为什么必须带它（2026-10-12，芙丽希娅蝶语吟花"花瓣全一个方向"的根因）：
+ *   Unity 的 MinMaxCurve 有四种模式，其中 `mode = 2`（随机两常量）与 `mode = 3`
+ *   （随机两曲线，**曲线为空时退化成随机两常量**）的语义是
+ *   **"每颗粒子在出生时从 [min, max] 里抽一个常量，之后终生不变"**。
+ *   旧实现落进 `return mm.a` 这一支 ⇒ 同一系统的**全部粒子拿到同一个常量**。
+ *   `huaban (1)` 的 VelocityModule 是 x∈[-6,-3]、y∈[-8,-3] ⇒ 所有花瓣被钉死成
+ *   同一条 (-6,-3) 方向的速度（游戏里是各自随机的）——表现就是"花瓣只有一个方向"。
+ *
+ * 为什么默认 `mix = 0` 而不是必填：`emission.rateOverTime` 这类**系统级**曲线
+ * 不属于逐粒子量，传 0 等价于旧行为（取 `a`），避免误改。
+ */
+function lifeMul(mm: ParticleMinMax, t: number, mix = 0): number {
   if (!mm) {
     return 0;
   }
-  if (mm.keysA && mm.keysA.length > 0) {
-    return mm.a * keysAt(mm.keysA, t);
+  const cv = curveOf(mm, t);
+  if (cv !== null) {
+    return cv;
+  }
+  if ((mm.mode === 2 || mm.mode === 3) && mm.b !== mm.a) {
+    return mm.a + (mm.b - mm.a) * mix;
   }
   return mm.a;
 }
@@ -343,7 +464,7 @@ function lifeMulMix(mm: ParticleMinMax, t: number, mix: number): number {
     return 0;
   }
   if (!(mm.keysB && mm.keysB.length > 0)) {
-    return lifeMul(mm, t);
+    return lifeMul(mm, t, mix);
   }
   const hi = mm.keysA && mm.keysA.length > 0 ? mm.a * keysAt(mm.keysA, t) : mm.a;
   const lo = mm.b * keysAt(mm.keysB, t);
@@ -351,11 +472,24 @@ function lifeMulMix(mm: ParticleMinMax, t: number, mix: number): number {
 }
 
 /**
+ * 绕 Z 轴旋转二维向量（弧度）。用于把**本地速度**折算到世界（见 `Particle.localRot`）。
+ * 只做一次性旋转，不需要缓存 sin/cos —— 调用点每帧每粒子最多 1 次，开销可忽略。
+ */
+function rotVec(x: number, y: number, rot: number): { x: number; y: number } {
+  if (!rot) {
+    return { x, y };
+  }
+  const cs = Math.cos(rot);
+  const sn = Math.sin(rot);
+  return { x: x * cs - y * sn, y: x * sn + y * cs };
+}
+
+/**
  * alpha 渐变求值（ColorModule.gradient 的 alphaKeys: [[t, a], ...]）。
  * 注意 t 小于首个关键帧时取**首个关键帧的值**（Unity 的渐变外推语义），
  * star 的首个 alpha 键在 t=0.1029 —— 若当成"从 0 开始"会让星点开头多淡入一次。
  */
-function alphaAt(keys: number[][], t: number): number {
+function alphaCurve(keys: number[][], t: number): number {
   if (!keys || keys.length === 0) {
     return 1;
   }
@@ -372,6 +506,107 @@ function alphaAt(keys: number[][], t: number): number {
     }
   }
   return keys[keys.length - 1][1];
+}
+
+/**
+ * 两条梯度之间的**逐粒子**插值（Unity `MinMaxGradient` 的 `TwoGradients`）。
+ *
+ * `mix` = 出生时抽签存下的 `Particle.vmix`；`keysMin` 缺省/为空 ⇒ 直接返回 `keys` 的值，
+ * 与旧 config（只有 `alphaKeys`）**逐位一致**。
+ *
+ * ★ 蝶语吟花 `yuan_glow` 的 ColorModule 正是 `minMaxState = 3`：
+ *   max 侧 `0.632→0.784 / 0.715→0.078 / 0.868→0.588 / 1→0`（寿命后段**两次快闪**），
+ *   min 侧 `0.166→0.972 / 1→0`（**单次平滑起伏**）。只取 max 会让全体粒子一起急闪，
+ *   实录里则是"闪一下的"和"缓缓亮灭的"混在一起（2026-10-13 用户报"闪得太快"）。
+ */
+function alphaAt(keys: number[][], t: number, keysMin?: number[][], mix = 0): number {
+  const a = alphaCurve(keys, t);
+  if (!keysMin || keysMin.length === 0) {
+    return a;
+  }
+  const b = alphaCurve(keysMin, t);
+  return a + (b - a) * mix;
+}
+
+/**
+ * 在 Unity `Gradient` 上按 `u ∈ [0,1]` 采样 ⇒ `[r, g, b, a]`。
+ *
+ * ★ 颜色键与 alpha 键**各自按自己的时间轴**线性插值 —— Unity 的 `Gradient`
+ *   本来就把 colorKeys / alphaKeys 分开存（`m_NumColorKeys` ≠ `m_NumAlphaKeys` 是常态），
+ *   例如 `yuan_glow` 的 startColor 是 4 个颜色键 + 2 个 alpha 键。
+ * ★ 两端之外取端点值（`GradientMode.Blend` 的钳位语义）。
+ *
+ * 用于 `startColor` 的 **Gradient / RandomColor** 档：**每颗粒子抽一次、终生不变**。
+ */
+function sampleGradient(
+  colorKeys: Array<[number, number[]]> | undefined,
+  alphaKeys: number[][] | undefined,
+  u: number
+): [number, number, number, number] {
+  let r = 1;
+  let g = 1;
+  let b = 1;
+  if (colorKeys && colorKeys.length) {
+    const n = colorKeys.length;
+    if (u <= colorKeys[0][0]) {
+      r = colorKeys[0][1][0];
+      g = colorKeys[0][1][1];
+      b = colorKeys[0][1][2];
+    } else if (u >= colorKeys[n - 1][0]) {
+      r = colorKeys[n - 1][1][0];
+      g = colorKeys[n - 1][1][1];
+      b = colorKeys[n - 1][1][2];
+    } else {
+      for (let i = 1; i < n; i++) {
+        if (u <= colorKeys[i][0]) {
+          const p = colorKeys[i - 1];
+          const q = colorKeys[i];
+          const span = q[0] - p[0];
+          const k = span === 0 ? 0 : (u - p[0]) / span;
+          r = p[1][0] + (q[1][0] - p[1][0]) * k;
+          g = p[1][1] + (q[1][1] - p[1][1]) * k;
+          b = p[1][2] + (q[1][2] - p[1][2]) * k;
+          break;
+        }
+      }
+    }
+  }
+  const a = alphaKeys && alphaKeys.length ? alphaCurve(alphaKeys, u) : 1;
+  return [r, g, b, a];
+}
+
+/**
+ * 抽一颗粒子的 `startColor`（RGBA）。
+ *
+ * `u01` = 该粒子出生时抽到的 `[0,1)` 随机数（复用 `Particle.vmix`，
+ * **不额外消耗 rng** ⇒ 形状/速度等模块的既有抽签序列零回归）。
+ *
+ * `mode`：
+ *  · 1 / 4（Gradient / RandomColor）⇒ 在梯度上随机取一点；
+ *  · 3（TwoGradients）⇒ 先在梯度上取一点，再与 min 梯度上同一点按 `u01` 做 lerp
+ *    （Unity 用两个独立随机数，这里复用同一个 —— 分布仍是随机的，只是两轴相关，如实标注）；
+ *  · 其余 / 无梯度 ⇒ 退回常量 `startColor`（旧 config 路径，逐位一致）。
+ */
+function pickStartColor(
+  c: ParticleMeshConfig,
+  u01: number
+): [number, number, number, number] {
+  const g = c.startColorGradient;
+  if (g && ((g.colorKeys && g.colorKeys.length) || (g.alphaKeys && g.alphaKeys.length))) {
+    const hi = sampleGradient(g.colorKeys, g.alphaKeys, u01);
+    if (g.mode === 3 && g.minAlphaKeys && g.minAlphaKeys.length) {
+      const lo = sampleGradient(g.minColorKeys, g.minAlphaKeys, u01);
+      return [
+        hi[0] + (lo[0] - hi[0]) * u01,
+        hi[1] + (lo[1] - hi[1]) * u01,
+        hi[2] + (lo[2] - hi[2]) * u01,
+        hi[3] + (lo[3] - hi[3]) * u01,
+      ];
+    }
+    return hi;
+  }
+  const s = c.startColor || [1, 1, 1, 1];
+  return [s[0], s[1], s[2], s[3]];
 }
 
 /* ─────────────────────────── 粒子 ─────────────────────────── */
@@ -396,7 +631,7 @@ type Particle = {
    * UV 序列帧 `frameOverTime` 的**出生采样值**。
    *
    * 只在它是「常量 / 随机两常量」时被 `buildGeometry` 使用（值不随寿命变，故出生定一次即可）；
-   * 若它是曲线，则忽略本字段、改用曲线求值 —— 判据见 `uvOverKeys`。
+   * 若它是曲线，则忽略本字段、改由 `curveOf(frameOverTime, age/life)` 求值。
    */
   uvFrameOver: number;
   /**
@@ -427,11 +662,52 @@ type Particle = {
   ly: number;
 
   /**
-   * 双曲线（`minMaxState = 2/3`）的**逐粒子混合系数**，出生时抽一次、终生不变。
-   * `0` = 全取 minCurve、`1` = 全取 maxCurve。**只有 `keysB` 非空时才被用到**
-   * （见 `lifeMulMix`），否则恒等忽略。
+   * 逐粒子随机系数（出生时抽一次、终生不变），`[0,1)`。
+   *
+   * 两处用途：
+   *  1. `keysB` 非空时做**双曲线插值比例**（见 `lifeMulMix`，S8 `trail01` 靠它分开轨迹）；
+   *  2. 否则作为 `mode = 2/3`（随机两常量）的**抽签系数**（见 `lifeMul`）。
    */
   vmix: number;
+
+  /**
+   * 出生时抽定的 `startColor`（RGBA，**终生不变**）。
+   *
+   * ★ 为什么是**逐粒子**而不是 uniform：Unity 的 `startColor` 是 `MinMaxGradient`，
+   *   只要 mode 不是纯色（1=Gradient / 2=TwoColors / 3=TwoGradients / 4=RandomColor），
+   *   **每颗粒子各抽各的**。蝶语吟花 `yuan_glow` 是 mode=4，逐粒子 alpha ∈[0.275,0.588]
+   *   ——正是"有的光圈很亮、有的几乎看不见"的来源（2026-10-13）。
+   *   没有 `startColorGradient` 的旧 config ⇒ 直接拷 `meshConfig.startColor`，行为不变。
+   */
+  sc: [number, number, number, number];
+
+  /**
+   * 重力累计速度（世界单位/秒，**只含 y**）。
+   *
+   * `gravityModifier ≠ 0` 时每帧 `gvy += gravAccY · dt`（半隐式欧拉，与 Unity 一致），
+   * 位置积分时为 `(p.vy + vvy + p.gvy) · dt`。恒 0 ⇒ 对旧 config 逐位无影响。
+   *
+   * ⚠️ 已知近似：引擎既有的 `ClampVelocityModule` 只作用于**出生速度** `p.vx/vy`
+   *   （该行为已按实录验收过），这里**不**把 `gvy` 并进限速 —— 否则会改变
+   *   `lizi` / `huaban (1)` 两个启用 clamp 的系统的既有表现。
+   */
+  gvy: number;
+
+  /**
+   * 本地坐标系相对世界的 Z 旋角（弧度；只有**盒形发射器**会给非 0 值）。
+   *
+   * ★ 为什么要它：Unity 的 **Simulation Space = Local**（本项目全系 `moveWithTransform = 0`
+   *   ⇒ Local，S9 已定案）时，`VelocityModule` 的 x/y 是**发射器本地坐标**下的速度
+   *   ⇒ 渲染到世界要跟着节点自身的旋角一起转。
+   *   `hudie01 ×3` 的节点带 30.69° 旋角，不转就会出现"蝴蝶朝正右飞、但游戏里是朝右上飞"。
+   *
+   * ⚠️ 只由**盒形分支**赋值（`type = 5`）。锥形(Cone/ConeVolume)与圆形(Circle)分支保持
+   *   原样（`0`）—— 它们的 `emitDir` 已经把节点旋转折进去了（`_构建_配置生成.py`：
+   *   `emit_dir = normalize(quat_rot(q, (0,0,1)).xy)`），S8/S9 已按该口径对实录验收过，
+   *   此处不动以免回归。Freesia 的 `huaban/shizi/lizi/hualizi` 节点旋角本来就是 0，
+   *   所以真正受影响的只有 `hudie01 ×3`。
+   */
+  localRot: number;
 };
 
 /* ─────────────────────────── 主类 ─────────────────────────── */
@@ -451,6 +727,15 @@ export class ParticleAnimator {
    *   把它加进出生朝向 = 把素材那一份抵消掉，`startRotation` 的面值才等于真实渲染角。
    */
   private spriteTiltDeg: number;
+  /**
+   * 重力加速度（世界单位/秒²，世界 y 方向；本工程恒 ≤ 0 = 向下）。
+   *
+   * = `−(gravityModifier) × 9.81 × localScale × unitScale`。
+   * 见 `ParticleMeshConfig.gravityModifier` 的说明（官方 "Scales the gravity value set in
+   * the Physics window"，且 `scalingMode = Hierarchy` 下要乘 transform scale）。
+   * `0` ⇒ 整套重力逻辑短路（其余 10 个系统逐位不变）。
+   */
+  private gravAccY = 0;
   private mesh: THREE.Mesh;
   private geometry: THREE.BufferGeometry;
   private posAttr: THREE.BufferAttribute;
@@ -459,15 +744,9 @@ export class ParticleAnimator {
   /** `_mask` 的 UV（**不动** —— 与 `_Texture` 是两次独立采样） */
   private uvMaskAttr: THREE.BufferAttribute;
   private alphaAttr: THREE.BufferAttribute;
+  /** 逐粒子 `startColor`（RGBA，4 float/顶点；见 geometry.setAttribute('aStartCol')） */
+  private startColAttr: THREE.BufferAttribute;
   private rng: Rng;
-
-  /**
-   * `uv.frameOverTime` 的曲线关键帧。**为空 = 该值不随寿命变**（走粒子的出生定值）。
-   *
-   * 系统级常量：同一系统的所有粒子共用同一条曲线，故不必逐粒子存一份。
-   * 本套数据里只有 `niao` 非空（曲线 0→1），`qiqiu` 是随机两常量 ⇒ 为空。
-   */
-  private uvOverKeys: number[][] | null = null;
 
   private particles: Particle[] = [];
 
@@ -533,9 +812,25 @@ export class ParticleAnimator {
         ? spriteTiltDeg
         : 0;
     this.rng = new Rng(1013 + meshConfig.name.length * 7919);
-    /** frameOverTime 只有"带关键帧"时才随寿命变（见 config.type.ts 的 `uv.frameOverTime`） */
-    const foKeys = meshConfig.uv?.frameOverTime?.keysA;
-    this.uvOverKeys = foKeys && foKeys.length > 0 ? foKeys : null;
+
+    /**
+     * 重力加速度（世界单位/秒²）。
+     * = `−gravityModifier × 9.81 × localScale × unitScale`
+     *   · 9.81 = Unity `Physics.gravity` 的 y 分量默认值（本工程未改物理设置）；
+     *   · `× localScale × unitScale` = `scalingMode = Hierarchy` 下按 transform scale 折算，
+     *     与 `velocity` 完全同口径（见 ParticleMeshConfig.gravityModifier）。
+     * `gravityModifier` 缺省 / 0 ⇒ 保持 0 ⇒ 整套重力逻辑短路。
+     */
+    const gravMod = Number.isFinite(meshConfig.gravityModifier)
+      ? (meshConfig.gravityModifier as number)
+      : 0;
+    this.gravAccY =
+      gravMod === 0
+        ? 0
+        : -gravMod *
+          9.81 *
+          (Number.isFinite(meshConfig.localScale) ? meshConfig.localScale : 1) *
+          (Number.isFinite(meshConfig.unitScale) ? meshConfig.unitScale : 1);
 
     const max = Math.max(1, Math.floor(meshConfig.maxNumParticles || 1));
 
@@ -583,11 +878,22 @@ export class ParticleAnimator {
       2
     );
     this.alphaAttr = new THREE.BufferAttribute(new Float32Array(max * vpp), 1);
+    /**
+     * 逐粒子的 `startColor`（RGBA，4 float/顶点）。
+     *
+     * ★ 为什么不能继续用 uniform（2026-10-13）：Unity 的 `startColor` 是 `MinMaxGradient`，
+     *   Gradient / RandomColor / TwoGradients 档下**每颗粒子各抽各的**（`yuan_glow`
+     *   逐粒子 alpha ∈[0.275,0.588]）。uniform 只能表达"全场同一个值"，那正是
+     *   "所有光圈一样亮"的来源。旧 config 没有梯度时，每个顶点写的就是常量
+     *   `startColor` ⇒ 与旧的 uniform 路径逐位等价。
+     */
+    this.startColAttr = new THREE.BufferAttribute(new Float32Array(max * vpp * 4), 4);
     this.geometry = new THREE.BufferGeometry();
     this.geometry.setAttribute('position', this.posAttr);
     this.geometry.setAttribute('uv', this.uvTexAttr);
     this.geometry.setAttribute('aMaskUv', this.uvMaskAttr);
     this.geometry.setAttribute('aAlpha', this.alphaAttr);
+    this.geometry.setAttribute('aStartCol', this.startColAttr);
     this.geometry.setDrawRange(0, 0);
 
     for (const t of [texture, maskTexture]) {
@@ -605,7 +911,6 @@ export class ParticleAnimator {
           : THREE.ClampToEdgeWrapping;
     }
 
-    const sc = meshConfig.startColor || [1, 1, 1, 1];
     const add = meshConfig.blend === 'add';
 
     const material = new THREE.ShaderMaterial({
@@ -614,8 +919,6 @@ export class ParticleAnimator {
         uMask: { value: maskTexture || WHITE_1X1 },
         /** 是否有 `_mask` 槽（仅用于片元里选"取 rgb 塑形"还是"跳过"） */
         uHasMask: { value: maskTexture ? 1 : 0 },
-        /** = startColor（vs_COLOR0） */
-        uStartColor: { value: new THREE.Vector4(sc[0], sc[1], sc[2], sc[3]) },
         /** = 材质 `_Alphe` */
         uAlphe: {
           value: Number.isFinite(meshConfig.alphe) ? meshConfig.alphe : 1,
@@ -626,13 +929,17 @@ export class ParticleAnimator {
       vertexShader: [
         'attribute float aAlpha;',
         'attribute vec2 aMaskUv;',
+        /** ★ 逐粒子 startColor（vs_COLOR0）—— 不再是 uniform，见 startColAttr 的说明 */
+        'attribute vec4 aStartCol;',
         'varying vec2 vTexUv;',
         'varying vec2 vMaskUv;',
         'varying float vAlpha;',
+        'varying vec4 vStartCol;',
         'void main() {',
         '  vTexUv = uv;',
         '  vMaskUv = aMaskUv;',
         '  vAlpha = aAlpha;',
+        '  vStartCol = aStartCol;',
         '  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
         '}',
       ].join('\n'),
@@ -647,12 +954,12 @@ export class ParticleAnimator {
         'uniform sampler2D uMap;',
         'uniform sampler2D uMask;',
         'uniform float uHasMask;',
-        'uniform vec4 uStartColor;',
         'uniform float uAlphe;',
         'uniform float uAdditive;',
         'varying vec2 vTexUv;',
         'varying vec2 vMaskUv;',
         'varying float vAlpha;',
+        'varying vec4 vStartCol;',
         'void main() {',
         '  vec4 tex = texture2D(uMap, vTexUv);',
         '  if (uAdditive > 0.5) {',
@@ -660,16 +967,16 @@ export class ParticleAnimator {
         '    vec3 maskRgb = uHasMask > 0.5',
         '      ? texture2D(uMask, vMaskUv).rgb : vec3(1.0);',
         '    vec3 c = maskRgb * tex.rgb;',
-        '    float a = tex.a * uStartColor.a;',
-        '    c *= uStartColor.rgb;',
+        '    float a = tex.a * vStartCol.a;',
+        '    c *= vStartCol.rgb;',
         '    c *= a;',
         '    c *= uAlphe;',
         '    gl_FragColor = vec4(c * vAlpha, 1.0);',
         '  } else {',
         // ── UVliudong_Blended：mask 的 x 塑形 + 真实 alpha ──
         '    float m = uHasMask > 0.5 ? texture2D(uMask, vMaskUv).x : 1.0;',
-        '    vec3 c = tex.rgb * m * uStartColor.rgb * uAlphe;',
-        '    float a = m * tex.a * uStartColor.a * uAlphe;',
+        '    vec3 c = tex.rgb * m * vStartCol.rgb * uAlphe;',
+        '    float a = m * tex.a * vStartCol.a * uAlphe;',
         '    gl_FragColor = vec4(c, a * vAlpha);',
         '  }',
         '}',
@@ -734,9 +1041,26 @@ export class ParticleAnimator {
      * ★★ 再加 `this.spriteTiltDeg`（**只有轿厢组非 0**）：抵消**素材里自带**的那一份
      *   重力倾角。不补的话 −15° 那份会与图元自带的 −15° 叠成 −30°，
      *   连 `game` 档也会剩 −15°（2026-10-11 用户实测的远古 bug，详见字段注释）。
+     *
+     * ★★★ **2026-10-13 修正：`startRotation` 要取负号**（蝶语吟花"蝴蝶倒着飞"的根因）。
+     *
+     *   Unity 的粒子 billboard 自转角在**屏幕上与解包值反号**（左手系 / View 对齐下
+     *   正值在屏幕上是**逆时针**）。旧实现直接用 `+startRotation` ⇒ 图元朝着飞行方向的
+     *   **反方向**偏 ⇒ 蝴蝶看起来"倒着飞"。
+     *
+     *   判据（`37/38/40_判定*.py`，逐格+逐变换+逐角度枚举、回转半径归一化、NCC）：
+     *     同一张图集 `Fx_xk_hudie_05.png`（4×4），
+     *       · 网页渲染（旧实现）  14/14 命中「原样、**−60°**」，NCC 0.94~0.99
+     *       · 游戏实录（无人物）  14/14 命中「原样、**+60°**」，NCC 0.94~0.97
+     *     即 `startRotation = −59°` 在游戏里应转 **+59°**。修复后网页应读出 +60°。
+     *
+     *   ⚠️ `spriteTiltDeg` **不参与取负**：它是"抵消素材自带倾角"的人工补偿，
+     *   与 Unity 语义无关。这样保持轿厢组 `game` 档（已验证 = 竖直）逐位不变：
+     *     `game` ⇒ `−0° + 15° = +15°`，叠上素材自带的 −15° ⇒ **0°（竖直）✓ 与修复前一致**。
+     *     （代价：`gravity` 档由 −15° 变 +15°，镜像了；S9 用到该档需重看一次。）
      */
     const rotDeg =
-      (this.cabinMode === 'game' ? 0 : spawnValue(c.startRotation, r) / DEG2RAD) +
+      -(this.cabinMode === 'game' ? 0 : spawnValue(c.startRotation, r) / DEG2RAD) +
       this.spriteTiltDeg;
 
     const p: Particle = {
@@ -768,9 +1092,17 @@ export class ParticleAnimator {
       thw: 0,
       lx: 0,
       ly: 0,
-      /** 双曲线混合系数（见 Particle.vmix）；无 keysB 时不被使用 */
+      /** 逐粒子随机系数（见 Particle.vmix）：双曲线插值 或 随机两常量抽签 */
       vmix: r.next(),
+      /** 起始色：紧跟其后用 `vmix` 抽（见 pickStartColor），避免多消耗随机数 */
+      sc: [1, 1, 1, 1],
+      /** 重力累计速度（见 Particle.gvy）；只有 gravityModifier ≠ 0 的系统会变非 0 */
+      gvy: 0,
+      /** 本地→世界 Z 旋角；只有盒形分支会覆写成非 0（见 Particle.localRot） */
+      localRot: 0,
     };
+    // ★ 复用 `vmix` 抽起始色（不额外 rng ⇒ 既有抽签序列零回归；见 pickStartColor）
+    p.sc = pickStartColor(c, p.vmix);
 
     // ── 初始位置/速度：ShapeModule ──
     const sh = c.shape;
@@ -780,16 +1112,86 @@ export class ParticleAnimator {
       c.velocity && c.velocity.enabled ? c.velocity.speedModifier : 1;
     if (sh && sh.enabled && sh.type === 10) {
       /**
-       * type=10 Circle + arcMode=3(BurstSpread)：粒子沿圆周均布。
-       * 均布相位由**本批次的发射序号**决定，再叠加节点自身的 Z 轴旋角
-       * （chexiang 0.04° / chexiang(1) 16.04° → 两组轿厢正好错开 16.00°）。
+       * type=10 Circle：位置的取值方式**由 `arcMode` 决定**，不是一律均布。
+       * Unity `ParticleSystemShapeMultiModeValue`：0 = Random / 1 = Loop /
+       * 2 = Ping-Pong / **3 = BurstSpread**。
+       *
+       *   · `arcMode = 3`（BurstSpread）⇒ 粒子沿弧**均布**，相位由**本批次的发射序号**
+       *     决定，再叠加节点自身的 Z 轴旋角（chexiang 0.04° / chexiang(1) 16.04°
+       *     → 两组轿厢正好错开 16.00°）。官方原文（Shape 模块手册）：
+       *     "Burst Spread mode distributes particle generation evenly around the shape…
+       *      **best used with burst emissions**."
+       *   · 其余（**0 = Random** 等）⇒ 在**弧内随机**取角；半径由 `radiusThickness`
+       *     决定（0 = 只从圆周、1 = 铺满圆面、其间按面积比例）。官方原文：
+       *     "Radius Thickness: The proportion of the volume that emits particles.
+       *      A value of 0 emits particles from the outer surface… 1 … the entire volume."
+       *
+       * ★★ 2026-10-13 修正（蝶语吟花 `yuan_glow`「超亮光圈」的根因）：
+       *   旧实现**无视 `arcMode`**、type=10 一律走 BurstSpread 均布，而相位取自
+       *   `emittedInBatch / batchCount` —— `rateOverTime` 连续发射路径会把
+       *   `batchCount` 钉成 1、`emittedInBatch` 钉成 0（见本文件"连续发射"段）
+       *   ⇒ 角度**恒为 0** ⇒ 10 颗粒子全部堆在节点右侧 `+radius` 处，加法混合叠成一个
+       *   位置固定、常亮的巨大光斑。而 `yuan_glow` 的实际参数是 `arcMode = 0`（Random），
+       *   游戏里应是「画面左右随机位置闪烁的几个淡光圈」。
+       *
+       * `m_Scale`（config 里的 `boxX/boxY`；官方 "Scale: Change the size of the emitter
+       * shape used for spawning particles"）对 Circle 是**发射器的各轴缩放** ⇒ 可把圆形
+       * 发射区拉成椭圆（`yuan_glow` 是 (1.5, 0.5)：x 半径 839 / y 半径 280 世界单位，
+       * 横向正好铺满整幅画面，与实录取景吻合）。缺省 1 ⇒ 正圆。
        */
-      const ang =
-        (this.emittedInBatch / Math.max(1, this.batchCount)) * Math.PI * 2 +
-        c.nodeRotZ * DEG2RAD;
       const rad = (sh.radius || 0) * s * u;
-      p.x = Math.cos(ang) * rad;
-      p.y = Math.sin(ang) * rad;
+      if (sh.arcMode === 3) {
+        const ang =
+          (this.emittedInBatch / Math.max(1, this.batchCount)) * Math.PI * 2 +
+          c.nodeRotZ * DEG2RAD;
+        p.x = Math.cos(ang) * rad;
+        p.y = Math.sin(ang) * rad;
+      } else {
+        // Radius Thickness：0 = 外表面、1 = 整个体积；其间按面积比例
+        // （与锥形分支同一口径：th=1 ⇒ ρ = R·√u 面积均匀；th=0 ⇒ ρ ≡ R 只在圆周）
+        const th10 = Math.min(1, Math.max(0, sh.radiusThickness ?? 1));
+        const rho = rad * (1 - th10 + th10 * Math.sqrt(r.next()));
+        const arcRad = (sh.arc ?? 360) * DEG2RAD;
+        // 弧内随机（官方 "Random: Unity generates particles randomly around the arc"）；
+        // 起点叠加节点旋角，与 Box / 均布分支同口径
+        const ang = c.nodeRotZ * DEG2RAD + r.next() * arcRad;
+        // `m_Scale` 各轴缩放；非正数视为 1（否则会把发射区压成一条线）
+        const scX = sh.boxX && sh.boxX > 0 ? sh.boxX : 1;
+        const scY = sh.boxY && sh.boxY > 0 ? sh.boxY : 1;
+        p.x = Math.cos(ang) * rho * scX;
+        p.y = Math.sin(ang) * rho * scY;
+      }
+    } else if (sh && sh.enabled && sh.type === 5) {
+      /**
+       * Box(5)：**盒体内均匀发射**。
+       *
+       * ★ 为什么必须单独一支（2026-10-12，芙丽希娅蝶语吟花）：
+       *   `ParticleSystemShapeType` 的数值是 **Cone = 4 / Box = 5 / Mesh = 6 /
+       *   ConeVolume = 8 / Circle = 10**（与 S9 已定案的 4/8/10 同表；本工程 11 个系统里
+       *   有 8 个是 5）。旧实现只有"10 = 圆"与"其余一律当锥"两支 ⇒ Box 被当成锥：
+       *     · 用**直径 ~2.6 的小圆盘**去近似 **840×786 的盒子** ⇒ `shizi`（闪烁星星）
+       *       的发射区从铺满天空缩成角色身上一小块，被角色挡住 ⇒ 表现为"星星没有"；
+       *     · `m_Scale`（盒体真实尺寸）在生成配置时被整条丢掉，无处可查。
+       *
+       * 官方语义（Manual / ShapeModule）：`Box — Emit from the volume of a box`，
+       * 盒体尺寸 = `m_Scale`、盒心 = `m_Position`、朝向 = `m_Rotation`（均为发射器本地量）。
+       *
+       * ★ 本地量按 `localScale`(s) 与 `unitScale`(u) 折算，与锥形的 `radius` 同口径。
+       * ★ 节点自身旋角不在这里直接算朝向，而是存进 `p.localRot`：位置偏移当场转，
+       *   速度模块（`VelocityModule`）在 update 里用同一角度转（见 `Particle.localRot`）。
+       */
+      const rot = ((sh.rotZ ?? 0) + c.nodeRotZ) * DEG2RAD;
+      const bx = (sh.boxX ?? 0) * s * u;
+      const by = (sh.boxY ?? 0) * s * u;
+      const ox = (r.next() - 0.5) * bx;
+      const oy = (r.next() - 0.5) * by;
+      const off = rotVec(ox, oy, rot);
+      p.x = (sh.offsetX ?? 0) * s * u + off.x;
+      p.y = (sh.offsetY ?? 0) * s * u + off.y;
+      p.localRot = rot;
+      const spd = spawnValue(c.startSpeed, r) * s * u * spdMul;
+      p.vx = Math.cos(dirAngle + rot) * spd;
+      p.vy = Math.sin(dirAngle + rot) * spd;
     } else if (sh && sh.enabled) {
       /**
        * Cone(4) / ConeVolume(8)：锥形发射器。
@@ -858,8 +1260,12 @@ export class ParticleAnimator {
     }
 
     // ── RotationModule（rotationOverLifetime），弧度/秒 ──
+    // ★ 传 p.vmix：rotationCurve 若为"随机两常量"，每颗粒子的自旋速度也应各自抽签
+    //   （`hualizi ×2` 就是 mode=3 ⇒ 旧实现让所有花按同一角速度转）。
+    // ★★ 取负号：与出生朝向同一个口径 —— Unity 的粒子自转角在屏幕上反号
+    //   （见 `rotDeg` 处 2026-10-13 的说明）。`rotationEnabled=false` 的系统不受影响。
     if (c.rotationEnabled) {
-      p.spin = lifeMul(c.rotationCurve, 0);
+      p.spin = -lifeMul(c.rotationCurve, 0, p.vmix);
     }
 
     /**
@@ -874,14 +1280,17 @@ export class ParticleAnimator {
      */
     if (this.trailOn) {
       const tv = c.trail!;
-      const vvx0 =
-        c.velocity && c.velocity.enabled
-          ? lifeMulMix(c.velocity.x, 0, p.vmix) * s * u
-          : 0;
-      const vvy0 =
-        c.velocity && c.velocity.enabled
-          ? lifeMulMix(c.velocity.y, 0, p.vmix) * s * u
-          : 0;
+      let vvx0 = 0;
+      let vvy0 = 0;
+      if (c.velocity && c.velocity.enabled) {
+        const rv0 = rotVec(
+          lifeMulMix(c.velocity.x, 0, p.vmix) * s * u,
+          lifeMulMix(c.velocity.y, 0, p.vmix) * s * u,
+          p.localRot
+        );
+        vvx0 = rv0.x;
+        vvy0 = rv0.y;
+      }
       const spd = Math.hypot(p.vx + vvx0, p.vy + vvy0);
       p.tstep = Math.max(
         this.trailMinDist * s * u,
@@ -913,7 +1322,8 @@ export class ParticleAnimator {
     const c = this.cfg;
     const cap = c.maxNumParticles;
     const maxLife = Math.max(
-      lifeMul(c.startLifetime, 1) || c.startLifetime.a,
+      // prewarm 只用来估"预演多久"，取上界即可 ⇒ mix = 1（落在 max 侧）
+      lifeMul(c.startLifetime, 1, 1) || c.startLifetime.a,
       c.startLifetime.b || 0
     );
     const limit = Math.min(
@@ -1033,8 +1443,19 @@ export class ParticleAnimator {
       let vvx = 0;
       let vvy = 0;
       if (c.velocity && c.velocity.enabled) {
-        vvx = lifeMulMix(c.velocity.x, pr, p.vmix) * s * u;
-        vvy = lifeMulMix(c.velocity.y, pr, p.vmix) * s * u;
+        /**
+         * ★ `rotVec(..., p.localRot)`：`VelocityModule` 的 x/y 是**发射器本地坐标**
+         *   下的速度（Simulation Space = Local），盒形系统若节点带旋角
+         *   （`hudie01 ×3` = 30.69°）必须转回世界，否则蝴蝶会朝正右飞。
+         *   `localRot === 0` 时 `rotVec` 直接原样返回 ⇒ 锥形/圆形系统零开销零变化。
+         */
+        const rv = rotVec(
+          lifeMulMix(c.velocity.x, pr, p.vmix) * s * u,
+          lifeMulMix(c.velocity.y, pr, p.vmix) * s * u,
+          p.localRot
+        );
+        vvx = rv.x;
+        vvy = rv.y;
       }
 
       /**
@@ -1054,9 +1475,21 @@ export class ParticleAnimator {
         p.vy += nv.y * acc;
       }
 
+      /**
+       * 4.25 GravityModifier（`InitialModule.gravityModifier`）。
+       *
+       * Unity 语义 = 缩放 `Physics.gravity`（默认 (0, −9.81, 0)）；本工程只有 `huaban (1)`
+       * 是非 0（0.05），折算到世界坐标约 −15.2 单位/s² 向下。
+       * 用半隐式欧拉（先累速度、再积分位置），与 Unity 内部的积分顺序一致。
+       * ★ `gravAccY === 0` ⇒ 整段短路，其余系统逐位不变。
+       */
+      if (this.gravAccY !== 0) {
+        p.gvy += this.gravAccY * dt;
+      }
+
       // 4.3 积分位置：先改速度、再积分（与 Unity 的模块顺序一致）
       p.x += (p.vx + vvx) * dt;
-      p.y += (p.vy + vvy) * dt;
+      p.y += (p.vy + vvy + p.gvy) * dt;
 
       /**
        * 4.4 ClampVelocityModule（Limit Velocity Over Lifetime）。
@@ -1131,6 +1564,8 @@ export class ParticleAnimator {
     const uvs = this.uvTexAttr.array as Float32Array;
     const muvs = this.uvMaskAttr.array as Float32Array;
     const als = this.alphaAttr.array as Float32Array;
+    /** 逐粒子 startColor（4 float/顶点）——见 startColAttr 的说明 */
+    const scs = this.startColAttr.array as Float32Array;
 
     const tilesX = c.uv.enabled ? Math.max(1, c.uv.tilesX) : 1;
     const tilesY = c.uv.enabled ? Math.max(1, c.uv.tilesY) : 1;
@@ -1171,6 +1606,12 @@ export class ParticleAnimator {
     const py0 = gr ? gr.pivotY : 0;
     const useSize = !!(c.sizeModule && c.sizeModule.enabled);
     const alKeys = c.colorModule ? c.colorModule.alphaKeys : [];
+    /**
+     * ★ `TwoGradients` 的 min 侧（逐粒子在两条之间 lerp）。
+     * 缺省（旧 config）⇒ `undefined` ⇒ `alphaAt` 直接返回 `alKeys` 的值，逐位一致。
+     */
+    const alKeysMin =
+      c.colorModule && c.colorModule.alphaMix ? c.colorModule.alphaKeysMin : undefined;
 
     let n = 0;
     for (let i = 0; i < this.particles.length; i++) {
@@ -1181,7 +1622,8 @@ export class ParticleAnimator {
       //   快照里就会读到一颗已经不该渲染的粒子上的陈旧值。
       p.uvFrame = -1;
       const pr = p.age / p.life;
-      const sm = useSize ? lifeMul(c.sizeModule.curve, pr) : 1;
+      // ★ 传 p.vmix：sizeModule 若为"随机两常量"，各粒子抽自己的尺寸倍率
+      const sm = useSize ? lifeMul(c.sizeModule.curve, pr, p.vmix) : 1;
       const hw = (p.sizeX * sm) / 2;
       const hh = (p.sizeY * sm) / 2;
       /**
@@ -1192,7 +1634,7 @@ export class ParticleAnimator {
       if (!useTrail && (hw <= 0.01 || hh <= 0.01)) {
         continue;
       }
-      const al = alphaAt(alKeys, pr);
+      const al = alphaAt(alKeys, pr, alKeysMin, p.vmix);
       if (al <= 0.003) {
         continue;
       }
@@ -1267,6 +1709,11 @@ export class ParticleAnimator {
             muvs[n * 2 + 0] = v[2];
             muvs[n * 2 + 1] = v[3];
             als[n] = v[4];
+            // ★ 丝带分支同样要写 startColor（否则 attribute 留在 0 ⇒ 整条丝带全黑）
+            scs[n * 4 + 0] = p.sc[0];
+            scs[n * 4 + 1] = p.sc[1];
+            scs[n * 4 + 2] = p.sc[2];
+            scs[n * 4 + 3] = p.sc[3];
             n++;
           }
           prevX = q.x;
@@ -1284,8 +1731,12 @@ export class ParticleAnimator {
        * 寿命里播完、之后冻住不动。
        *
        * ★ `frameOverTime` 是否随寿命变，**由它的 mode 决定**（见 config.type.ts 同名注释）：
-       *   · 曲线（`uvOverKeys` 非空）⇒ `a × keysA(t)`；`niao` 由此在寿命内播 5 遍 8 帧；
+       *   · 曲线 ⇒ 由 `curveOf()` 求值（**含端点外推**，见 `curveAt`）；`niao` 由此在寿命内播 5 遍 8 帧；
        *   · 常量 / 随机两常量 ⇒ 用出生时定的 `p.uvFrameOver`；`qiqiu` 由此终生固定黄或粉。
+       *
+       * ★★ 2026-10-13：`curveOf()` 取代了原来的 `foMM.a * keysAt(uvOverKeys, pr)`。
+       *   差别就在**端点外推**：`hudie01 ×3` 的 `frameOverTime` 末键在 t=0.0826 且
+       *   `m_PostInfinity = 1(Linear)`，旧写法钳在末帧 ⇒ 蝴蝶扇一次就定住（用户的原始报障）。
        */
       let u0 = 0;
       let v0 = 0;
@@ -1293,17 +1744,33 @@ export class ParticleAnimator {
       let v1 = 1;
       if (c.uv.enabled && total > 1) {
         const foMM = c.uv.frameOverTime;
+        const cv = foMM ? curveOf(foMM, pr) : null;
         const over = !foMM
           ? pr // 兼容不带该字段的旧 config：等价于曲线 0→1（= 旧行为）
-          : this.uvOverKeys
-          ? foMM.a * keysAt(this.uvOverKeys, pr)
+          : cv !== null
+          ? cv
           : p.uvFrameOver;
         const fi =
           ((Math.floor(over * cycles * total) % total) + total) % total;
         // 写回真值：快照读的就是这里算出来的帧号，验收脚本无需重抄公式
         p.uvFrame = fi;
         u0 = (fi % tilesX) * fw;
-        v0 = Math.floor(fi / tilesX) * fh;
+        /**
+         * ★★ **行序必须自上而下**（2026-10-13，实测更正）：
+         *   Unity 的 Whole Sheet 帧序是「左→右、**上→下**」（官方 Manual 逐字：
+         *   "Will draw the animation over the whole sheet, left to right, top to bottom"），
+         *   即 `fi = 0` 在**最上面一行**。
+         *   而纹理经 `THREE.TextureLoader` 上传时走默认 `flipY = true`
+         *   ⇒ 纹理坐标 `v = 0` 对应**图像最下面一行**。
+         *   旧写法 `v0 = floor(fi/tilesX)*fh` 把 `fi = 0` 放到了**底行** ⇒ 行序整体倒过来：
+         *   4 行图集会播成 12..15 → 8..11 → 4..7 → 0..3，每过一行跳一次（帧号虽在推进但顺序错）。
+         *
+         *   判据（决定性实验，`33_校验v方向.py`）：合成一张"每格唯一纯色"的 4×4 图集，
+         *   让每颗粒子随机取一格，再从快照读它自己的 `uvFrame`、采样它所在像素的颜色反推格号 ——
+         *   修前 **14/16 个样本命中"垂直镜像"**，修后应全部"一致"。
+         *   `tilesY = 1` 的系统（qiqiu / 星点这类）此式退化成 0 ⇒ **零影响**。
+         */
+        v0 = (tilesY - 1 - Math.floor(fi / tilesX)) * fh;
         u1 = u0 + fw;
         v1 = v0 + fh;
       }
@@ -1357,6 +1824,10 @@ export class ParticleAnimator {
         muvs[n * 2 + 0] = qu[q];
         muvs[n * 2 + 1] = qv[q];
         als[n] = al;
+        scs[n * 4 + 0] = p.sc[0];
+        scs[n * 4 + 1] = p.sc[1];
+        scs[n * 4 + 2] = p.sc[2];
+        scs[n * 4 + 3] = p.sc[3];
         n++;
       }
     }
@@ -1365,6 +1836,7 @@ export class ParticleAnimator {
     this.uvTexAttr.needsUpdate = true;
     this.uvMaskAttr.needsUpdate = true;
     this.alphaAttr.needsUpdate = true;
+    this.startColAttr.needsUpdate = true;
     this.geometry.setDrawRange(0, n);
   }
 
@@ -1415,8 +1887,16 @@ export class ParticleAnimator {
         life: p.life,
         size:
           p.sizeX *
-          (useSize ? lifeMul(this.cfg.sizeModule.curve, p.age / p.life) : 1),
+          (useSize
+            ? lifeMul(this.cfg.sizeModule.curve, p.age / p.life, p.vmix)
+            : 1),
         rotDeg: p.rot / DEG2RAD,
+        /** 出生抽定的 startColor（RGBA，终生不变；见 Particle.sc） */
+        sc: [p.sc[0], p.sc[1], p.sc[2], p.sc[3]],
+        /** 逐粒子抽签系数（验收脚本复算 alphaMix / 双曲线用） */
+        vmix: p.vmix,
+        /** 本地→世界 Z 旋角（度）；盒形发射器专用，锥形/圆形恒 0（见 Particle.localRot） */
+        localRotDeg: p.localRot / DEG2RAD,
         /** 序列帧号（渲染真值；见 Particle.uvFrame）。`-1` = 未启用 */
         uvFrame: p.uvFrame,
         /**

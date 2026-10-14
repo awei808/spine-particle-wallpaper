@@ -261,6 +261,31 @@ const main = async () => {
     await fetch('./assets/config.json')
   ).json();
   const configs: Configs = applyOverrides(rawConfigs, readOverrides());
+  /**
+   * ★ `'width'` 基准下剔除「黑遮幅」（`limitEdge` 标记的层）。
+   *
+   * 遮幅钉在世界坐标上，职责是盖住「超出设计画幅的部分」—— 这在**按高**下是对的
+   * （纵向恒 = 设计高，永不超出；只有超宽屏时左右两条生效）。
+   * 但 `'width'` 把可见高放大成 `1700 / A`：窄视口（16:10, A=1.6）下 1062.5 > 750，
+   * **纵向超出设计画幅** ⇒ 下遮幅侵入可见区，画面底部出现 **104px 大黑带**
+   * （1920×1200 实测；摘掉该层后 → 0）。
+   *
+   * 用户诉求是「按宽 = 完整看设计画幅」⇒ 直接剔除这些层。
+   * 放在这里（`Scene.initScene` 之前）是为了让它们连**露黑检测**也不参与 ——
+   * 否则遮幅会以"自己盖黑了自己"的方式把 `detectLeak` 骗过去，报"未露黑"。
+   *
+   * 详见 `config.type.ts` 的 `limitEdge`。缺省（`'height'`）与老工程都不受影响。
+   */
+  if (configs.fitAspect === 'width' && configs.meshes) {
+    const kept = configs.meshes.filter((m) => !('limitEdge' in m && m.limitEdge));
+    if (kept.length !== configs.meshes.length) {
+      console.info(
+        '[fit] 按宽基准：已剔除 %d 个黑遮幅层（limitEdge）',
+        configs.meshes.length - kept.length
+      );
+      configs.meshes = kept;
+    }
+  }
   Scene.initScene(configs);
 
   /**
@@ -1054,12 +1079,19 @@ const main = async () => {
             const idleName = meshConfig.animationName;
             const touchNames = allAnimations.filter((n) => n !== idleName);
             /**
-             * 角色骨架判据：除常驻动画外还有别的动画可播。
+             * 角色骨架判据。
              *
-             * ★ 与"是否启用触摸"**拆开**：`touch.enabled=false` 只是不响应点击，
-             * 不该连带把常驻动作序列也关掉（两件事）。
+             * ★ 优先用**显式声明** `meshConfig.isCharacter`（2026-10-13 新增，见 `config.type.ts`）：
+             *   启发式「除常驻动画外还有别的动画可播」会被**多带一个动画的挂件骨架**骗过
+             *   —— 蝶语吟花 `SoulDress_Freesia_06_BJ_04.skel` 有 `['idle','idle2']`，
+             *   于是挂件被当成角色、把 `animationDurations` 覆盖掉并抢走 `touchController`
+             *   ⇒ 触摸/问候/待机全部静默失效（点了没反应、不报错）。
+             * ★ 字段**缺席 ⇒ 仍走原启发式**：老工程（S8/S9）行为逐字不变。
              */
-            const isCharacter = touchNames.length > 0;
+            const isCharacter =
+              typeof meshConfig.isCharacter === 'boolean'
+                ? meshConfig.isCharacter
+                : touchNames.length > 0;
 
             if (isCharacter) {
               /**

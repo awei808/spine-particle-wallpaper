@@ -1455,6 +1455,39 @@ export type SpineMeshConfig = MeshConfig & {
   animationName: string;
   cursorFollow?: ActionAnimation;
   cursorPress?: ActionAnimation;
+  /**
+   * **水平镜像**（缺省 false）—— 复刻 Unity UI 的 `localEulerAngles.y = 180°`。
+   *
+   * 为什么需要它：`Freesia_S6_Background` 的 `Layer_04` 挂了**两份同一个骨架**
+   * （`Bg_02` @(-558,-250) 与 `Bg_03` @(603,-228)），第二份靠绕 Y 轴 180° 镜像。
+   * 一个 SpineMeshConfig 只能加载一份骨架，所以必须由 config 声明"这一份要镜像"。
+   *
+   * 实现 = 给承载 mesh 的父节点设 `scale.x = -1`（绕该 mesh 自身原点镜像，
+   * 与 Unity 绕节点 pivot 转 180° 等价）；骨架内部数据一个字不动 ⇒ 不影响任何既有行为。
+   */
+  flipX?: boolean;
+  /**
+   * **这一层是不是「角色骨架」**（缺省 = 由启发式判定）。
+   *
+   * ## 它决定什么
+   * 只有"角色骨架"才会：挂**触摸控制器**（点击热区 → 播动作 + 字幕 + 语音）、
+   * 往 `animationDurations`（动画名 → 时长）里写、并接管**常驻动作序列** `idleSequence`。
+   *
+   * ## 为什么需要显式声明（2026-10-13 蝶语吟花踩到）
+   * 原判据是纯启发式 —— `touchNames = 骨架里除 animationName 外的动画；isCharacter = touchNames.length > 0`
+   * （见 `index.ts`）。这对"挂件骨架只有一个动画"成立，但**挂件只要多带一个动画就会被误判成角色**：
+   * `SoulDress_Freesia_06_BJ_04.skel` 有 `['idle','idle2']` ⇒ `touchNames=['idle2']` ⇒ 被当成角色，
+   * 于是**后遍历到的挂件把 `animationDurations` 整张表覆盖成 `{idle, idle2}`、
+   * 并抢走 `touchController`** ⇒ 触摸/问候/待机全部静默失效（点了没反应、也不报错）。
+   *
+   * ⇒ 显式字段把"谁是角色"从猜测变成声明。**缺省不写 ⇒ 仍走原启发式**，
+   *   老工程（S8/S9）行为逐字不变。
+   *
+   * ⚠️ 一个工程里**应当只有一层写 `true`**（引擎侧只有一份 `touchController` /
+   *   一份字幕气泡）。多层写 `true` 时后者会覆盖前者的读数（用户点击仍各自生效），
+   *   属于未支持用法。
+   */
+  isCharacter?: boolean;
 };
 
 export type TextureMeshConfig = MeshConfig & {
@@ -1466,6 +1499,27 @@ export type TextureMeshConfig = MeshConfig & {
   tilesVertical: number;
   numTiles: number;
   tileDisplayDuration: number;
+  /**
+   * 该层是「黑遮幅」，值为它贴在可视窗口的哪一边（游戏 `Layer_05_Limit` 的 4 条）。
+   *
+   * 遮幅的职责是**盖住超出「设计画幅」的部分**：
+   * - 游戏按高取景 ⇒ 纵向恒 = 设计高、永不超出 ⇒ **上下两条永不显示**；
+   * - 超宽屏（A > 1700/750 ≈ 2.267）横向超出 ⇒ **左右两条生效**（这才是它们存在的意义）。
+   *
+   * ## 为什么需要这个字段（2026-10-12 修）
+   *
+   * 壁纸侧的 `'width'` 基准把「可见宽」锁成设计宽，于是**纵向**随视口比例被放大：
+   * `可见高 = 1700 / A`。视口比设计画幅窄时（16:10 的 A = 1.6 ⇒ 可见高 1062.5 > 设计高 750）
+   * **纵向超出设计画幅** ⇒ 钉在世界坐标上的下遮幅**侵入可见区**，在画面底部变成
+   * 一条 **104px 的大黑带**（1920×1200 实测；去掉该层后黑带 → 0，已交叉验证）。
+   *
+   * 用户诉求是「按宽 = 完整看设计画幅」，这与「上下遮幅盖住纵向超出部分」直接冲突
+   * ⇒ 取 `'width'` 时把带本标记的层**整体剔除**：不建 mesh、不加载贴图、也不参与露黑检测。
+   *
+   * ⚠️ 对 `'height'`（缺省）**零影响** —— 上下两条本来就不显示，左右两条在超宽屏下照常生效。
+   * ⚠️ 老工程不带本字段 ⇒ 行为完全不变。
+   */
+  limitEdge?: 'top' | 'bottom' | 'left' | 'right';
   /**
    * ★ 自转角速度（度/秒，带符号；正 = 屏幕逆时针，与 Unity UI 的 +Z 同向）。
    *
@@ -1510,6 +1564,25 @@ export type ParticleMinMax = {
   keysA?: number[][];
   /** minCurve 的关键帧 */
   keysB?: number[][];
+  /**
+   * ── 以下 4 项只在**带关键帧**时可能用到（2026-10-13 新增）──
+   * 对应 Unity `AnimationCurve` 的端点外推：序列化字段 `m_PreInfinity` / `m_PostInfinity`。
+   *
+   * 取值：`0 = Constant`（保持端点值，**缺省 = 旧行为**）、`1 = Linear`（按端点切线线性外推）、
+   * `2 = Cycle`（整条曲线循环）、`3 = CycleWithOffset`（循环并累加落差）、`4 = Oscillate`（乒乓）。
+   *
+   * ★★ 为什么必须带上：`hudie01 ×3` 的 `frameOverTime` 是全部 19 个已采样粒子系统里
+   *   **唯一** post = **Linear**（1）的 —— 末键在 t=0.0826 / 值 0.945 / outSlope 11.4415，
+   *   线性外推到 t=1 得 11.4415 ⇒ 帧号在寿命内连续推进 183 帧（≈11.4 遍图集）= **持续扇翅**。
+   *   缺了它、只钳在末键 ⇒ 扇一次就定住（用户报的"蝴蝶不摆翅膀"）。
+   *   其余系统不是 post = 2(Cycle)（且末键就在 t=1，永不触发）就是没有关键帧 ⇒ **零影响**。
+   */
+  pre?: number;
+  post?: number;
+  /** 首键 `inSlope`（`pre = Linear` 时用） */
+  headSlope?: number;
+  /** 末键 `outSlope`（`post = Linear` 时用） */
+  tailSlope?: number;
 };
 
 export type ParticleMeshConfig = MeshConfig & {
@@ -1541,6 +1614,29 @@ export type ParticleMeshConfig = MeshConfig & {
    * 漏乘它会让这两个系统既偏亮又丢色偏。
    */
   startColor: [number, number, number, number];
+  /**
+   * ★★ **逐粒子随机起始色**（`MinMaxGradient` 的梯度侧，2026-10-13 新增）。
+   *
+   * 为什么必须有它：Unity 的 `startColor` 有 5 档（`ParticleSystemGradientMode`）：
+   *   0=Color / 1=Gradient / 2=TwoColors / 3=TwoGradients / **4=RandomColor**。
+   *   除 0（和 2 的纯色随机）外，**每颗粒子在梯度上随机取一点、终生不变**。
+   *   蝶语吟花 `yuan_glow` 是 **mode=4**：颜色键 淡青→蓝→紫，
+   *   alpha 键 `(0)→0.588`、`(1)→0.275` ⇒ 逐粒子 alpha ∈ **[0.275, 0.588]**（均值 0.43）。
+   *   旧实现只把梯度拍平成 `startColor=(1,1,1,1)` ⇒ 每颗都按 alpha=1 画：
+   *   实测「同时可见 9 个全亮光圈」，而实录只有 4~6 个、明暗差异极大（2026-10-13 定位）。
+   *
+   * 缺省（`undefined`）⇒ 退回下面的 `startColor` 常量，与旧 config 逐位一致。
+   * `mode=3` 时另带 `minColorKeys`/`minAlphaKeys`：逐粒子在 max↔min 两梯度间随机 lerp。
+   */
+  startColorGradient?: {
+    mode: number;
+    /** `[[t, [r,g,b]], ...]`，t∈[0,1]（颜色键的时间轴与 alpha 键**各自独立**） */
+    colorKeys: Array<[number, number[]]>;
+    /** `[[t, a], ...]`，t∈[0,1] */
+    alphaKeys: number[][];
+    minColorKeys?: Array<[number, number[]]>;
+    minAlphaKeys?: number[][];
+  };
   /** 世界单位 / prefab 单位（= wpp × k，随本系统的 z 平面而变） */
   unitScale: number;
   /** 节点 localScale（游戏原值 30 / 7.871…）。噪声在粒子系统**本地未缩放空间**采样，
@@ -1579,6 +1675,23 @@ export type ParticleMeshConfig = MeshConfig & {
   startSizeZ: ParticleMinMax;
   size3D: boolean;
   startRotation: ParticleMinMax;
+  /**
+   * Unity `InitialModule.gravityModifier` —— **缩放 `Physics.gravity`**（官方：
+   * "Gravity Modifier: Scales the gravity value set in the Physics window.
+   * A value of zero switches gravity off."）。0 ⇒ 关闭。
+   *
+   * ★★ 2026-10-13 补上（审计发现的唯一"解包有值、引擎没实现"的字段）：
+   *   蝶语吟花 11 个系统里只有 **`huaban (1)` = 0.05**，其余全 0。
+   *   加速度 = `gravityModifier × Physics.gravity`（默认 (0, −9.81, 0)），
+   *   且本工程 `scalingMode = 0`(Hierarchy) ⇒ 还要乘 transform 的 lossyScale，
+   *   与 `velocity` 同口径（引擎里再乘 `localScale × unitScale`）。
+   *   ⇒ 世界加速度 = `−0.05 × 9.81 × localScale × unitScale` ≈ −15.2 世界单位/s²（向下）。
+   *
+   * ⚠️ 假设：`Physics.gravity` 保持 Unity 默认 (0, −9.81, 0)（游戏未改物理设置；
+   *    解包数据里也没有 per-system 的重力矢量可读，只有这个标量倍率）。
+   * 缺省 0 ⇒ **旧 config 零影响**。
+   */
+  gravityModifier?: number;
   /** RotationModule（rotationOverLifetime），单位弧度/秒 */
   rotationEnabled: boolean;
   rotationCurve: ParticleMinMax;
@@ -1593,6 +1706,17 @@ export type ParticleMeshConfig = MeshConfig & {
   colorModule: {
     enabled: boolean;
     alphaKeys: number[][];
+    /**
+     * ★ `MinMaxGradient` 的 **min 侧**（`minMaxState = 3` TwoGradients 才有）。
+     * 官方语义：**每颗粒子在两条梯度之间随机 lerp**。
+     * 蝶语吟花 `yuan_glow`：max 侧在寿命 63%~100% 里走 `0.784→0.078→0.588→0`（**两次快闪**），
+     * min 侧是 `0→0.972→0`（**单次平滑起伏**）。旧实现只取 max ⇒ 全体粒子一起急闪，
+     * 实录里则明显更缓更疏（2026-10-13）。
+     * 缺省 ⇒ 只用 `alphaKeys`，与旧 config 逐位一致。
+     */
+    alphaKeysMin?: number[][];
+    /** `true` ⇒ 逐粒子按出生抽签的 `vmix` 在 `alphaKeys` ↔ `alphaKeysMin` 之间 lerp */
+    alphaMix?: boolean;
     /** colorModule = 来自 ColorModule.gradient；shaderUnknown-approximated =
      *  ColorModule 关闭、真实淡出在未公开的 shader 里，这里用残留渐变近似（存疑项） */
     alphaSource: string;
@@ -1673,23 +1797,53 @@ export type ParticleMeshConfig = MeshConfig & {
   };
   shape: {
     enabled: boolean;
-    /** Unity ParticleSystemShapeType：4=Cone 8=ConeVolume 10=Circle */
+    /**
+     * Unity `ParticleSystemShapeType`（数值口径与 S9 已定案的 4/8/10 同表）：
+     *   **4 = Cone（底面圆面）** / **5 = Box（盒体体积）** / **8 = ConeVolume** /
+     *   **10 = Circle（+ arcMode 3 = BurstSpread）**
+     */
     type: number;
     angle: number;
     radius: number;
     length: number;
     /**
+     * ── 以下 5 项来自 `ShapeModule.m_Scale` / `m_Position` / `m_Rotation`（2026-10-12 新增）──
+     * 单位与 `radius` 同为**发射器本地量**（引擎里再乘 `localScale × unitScale`）。
+     *
+     * **Box（`type = 5`）**：`boxX/boxY` = 盒体在 x/y 方向的**全长**（粒子在这个范围里均匀取点）。
+     * 缺省 0 ⇒ 退化成"点发射"，与旧行为一致（旧 config 无此字段 ⇒ 零影响）。
+     *
+     * **Circle（`type = 10`）且 `arcMode ≠ 3`**（2026-10-13）：官方语义是
+     * "Scale: Change the size of the emitter shape" ⇒ 这里当**各轴缩放**用，
+     * 即 `p = (cosθ·ρ·boxX, sinθ·ρ·boxY)` ⇒ 非等比时发射区是**椭圆**
+     * （`yuan_glow` = (1.5, 0.5)）。缺省/非正数 ⇒ 1（正圆）。
+     * ⚠ 同一字段在两种 shape 下语义不同（全长 vs 缩放），因为都源自 `m_Scale`。
+     */
+    boxX?: number;
+    boxY?: number;
+    /** 盒心相对发射器的偏移（同 `m_Scale` 口径换算；仅 Box 使用） */
+    offsetX?: number;
+    offsetY?: number;
+    /** `m_Rotation.z`（度）：盒体自身的额外朝向；叠加节点旋角 `nodeRotZ`（仅 Box 使用） */
+    rotZ?: number;
+    /**
      * Unity `ShapeModule.radiusThickness`：发射粒子的体积比例。
      *   **0 = 只从外表面**发射、**1 = 从整个体积**发射。
      *
-     * 实测：qiqiu / niao（Cone / ConeVolume）= **1.0**；chexiang ×2（Circle）= **0.0**
-     *   ⇒ 这正是 10 颗轿厢落在**圆周**上、而不是圆盘内的原因
-     *      （旧实现直接按圆周写死，正好只对上了 Circle 那一支）。
+     * 实测：qiqiu / niao（Cone / ConeVolume）= **1.0**；
+     *   chexiang ×2（Circle + `arcMode = 3` BurstSpread）= **0.0**
+     *   ⇒ 10 颗轿厢落在**圆周**上（均布分支本来就按圆周写死，恰好一致）；
+     *   yuan_glow（Circle + `arcMode = 0` Random）= **0.8**
+     *   ⇒ 半径在 [0.2R, R] 内按面积比例随机（2026-10-13 起 Circle 随机分支才用它）。
      * 缺省 1（兼容不带该字段的旧 config）。
      */
     radiusThickness?: number;
     arc: number;
-    /** 3 = BurstSpread（沿弧均布） */
+    /**
+     * Unity `ParticleSystemShapeMultiModeValue`：
+     *   **0 = Random** / 1 = Loop / 2 = Ping-Pong / **3 = BurstSpread（沿弧均布）**。
+     * ★ type=10 的两条分支就按它分流（2026-10-13；旧实现无视它、一律均布）。
+     */
     arcMode: number;
   };
   clamp: {

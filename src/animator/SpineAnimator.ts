@@ -46,6 +46,15 @@ export class SpineAnimator {
       meshConfig?.position?.y ?? 0,
       meshConfig?.position?.z ?? 0
     );
+    /**
+     * ★ 水平镜像（`config.meshes[].flipX`）：复刻 Unity UI 的 `localEulerAngles.y=180°`。
+     * 给父节点设 `scale.x = -1` 即可绕**本 mesh 的原点**镜像 —— 与 Unity 绕节点 pivot
+     * 转 180° 等价，且完全不碰骨架数据（改的是承载它的那个 Mesh）。
+     * 在 `position.set` 之后设置：镜像轴就是 mesh 自己的 x，不改变它的落点。
+     */
+    if (meshConfig?.flipX) {
+      mesh.scale.x = -1;
+    }
     Scene.scene?.add(mesh);
 
     const atlas = spineAssetManager.get(meshConfig.atlasFileName);
