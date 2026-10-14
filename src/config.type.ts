@@ -1677,6 +1677,49 @@ export type ParticleMeshConfig = MeshConfig & {
   cycleSec: number;
   maxNumParticles: number;
   prewarm: boolean;
+  /**
+   * 是否**开场就自动跑**（缺省 **true** = 现状，老 config 零影响）。
+   *
+   * ★★ 为什么需要它（2026-10-14，`config.actionEffects` 配套）：
+   *   游戏里的「动作特效 prefab」（`FX_Freesia_S6_Background_chat` 这类）是
+   *   **动作播的那一刻才 Instantiate**、播完销毁 —— 它的 `playOnAwake = true`
+   *   只对"被实例化出来的那个 prefab"成立。
+   *   而壁纸侧这些系统是**常驻 mesh**：若照 `playOnAwake` 自动跑，页面一加载
+   *   就会把 burst（`bao` / `shan` 这类一次性特效）当场放掉，之后点击反而不见了。
+   *
+   *   ⇒ 这类组一律写 `autoplay: false`：**开场不发射、不推进系统时钟**，
+   *     等 `config.actionEffects` 触发 `ParticleAnimator.restart()` 时才从 0 开始跑。
+   *
+   * 语义边界（如实标注）：
+   *   · 只挡"**发射**"。构造时若 `prewarm: true` 也不预热（预热本身就是发射的模拟），
+   *     一次性特效本来也不该预热 —— 本工程两支特效 `prewarm` 均为 false。
+   *   · `restart()` 会把它置为已启动，所以"触发 → 重播"这条路不受影响。
+   *   · 与 `mesh.visible` 无关：本引擎的可见性一直由 `setDrawRange` 按存活粒子数决定，
+   *     没有粒子可画 = 不可见。
+   */
+  autoplay?: boolean;
+  /**
+   * Unity `ParticleSystem.MainModule.looping`（缺省 **true** = 现状，老 config 零影响）。
+   *
+   * 语义（Unity 官方）：`looping` 打开 ⇒ 一个 `lengthInSec`（= 本 config 的 `cycleSec`）
+   *   的发射周期结束后**重复**；关闭 ⇒ **只跑一个周期就停**（已发射的粒子照旧走完寿命）。
+   *
+   * ★★ 为什么需要它（2026-10-14，`config.actionEffects` 配套）：
+   *   动作特效 prefab 里的系统**全是 `looping = false`**（`_chat` 的 bao/glow01/lizi_san/shan、
+   *   `_touch2` 的两簇花瓣）。它们的意图是"动作触发 → 放一次 → 结束"，配合
+   *   `startDelay`（`_chat` 是 **7 s**、`_touch2` 是 1.6/1.7 s）落在 10.667 s 的动作里。
+   *   引擎原先**只有 `cycleSec`**、没有 `looping` 概念 ⇒ 同一段 burst 会每 `cycleSec`
+   *   （1.0~1.3 s）重放一次、**永远不停**，与"一次性特效"完全不符。
+   *
+   * 语义边界：
+   *   · 只挡**发射**：emit 窗口 = `[startDelay, startDelay + cycleSec)`，只走第 0 个周期；
+   *     窗口内已发射的粒子仍按各自寿命正常演化、淡出。
+   *   · `restart()` 会把周期计数与 `stopped` 一起复位 ⇒ 每次触发都完整重放一遍。
+   *   · **缺省 true** ⇒ 既有 22 层逐位不变（本项目背景层里 `hua01`/`hua02` 数据上也是
+   *     `looping=false`，但既有观感是按"每 20 s 一轮"验收的，故**本次不给它们下发该字段**，
+   *     保持零回归；如需严格逐值复刻可后续单独开）。
+   */
+  looping?: boolean;
   startLifetime: ParticleMinMax;
   startSpeed: ParticleMinMax;
   startSize: ParticleMinMax;
@@ -2025,6 +2068,11 @@ export type ActionEffectConfig = {
    * - `true`（缺省）：清空该组已有粒子并复位系统时钟 ⇒ 每次都完整播一遍。
    *   与游戏侧"每次动作都重新 `PlayEffect`"一致。
    * - `false`：只把它置为可见、让它在自己的自然周期里继续跑（适合"本来就在循环"的组）。
+   *
+   * ⚠️ **复位后不会强制预热** —— 要不要 `prewarm` 只看该组自己的 `prewarm` 字段
+   * （`ParticleMeshConfig.prewarm`）。历史坑：曾经无条件强制预热，而 `prewarm()` 是
+   * "模拟到稳态"、会把系统时钟往前推最多 30 s ⇒ `autoplay:false` 的一次性特效组一触发
+   * 时钟就已经在 `startDelay` 附近甚至越过发射窗口，表现为"特效迟到"或"根本不出现"。
    *
    * ⚠️ 本字段只对**本条绑定里列出的粒子组**生效 —— 不会被同一条动作的其他绑定影响。
    */

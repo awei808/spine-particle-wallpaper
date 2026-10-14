@@ -551,13 +551,30 @@ const main = async () => {
           return;
         }
         /**
-         * 缺省 `restart: true` ⇒ 清空并从头播（= 游戏侧每次动作都重新 `PlayEffect`）。
-         * `restart: false` ⇒ 只保证它可见、让它按自己的自然周期继续跑。
-         * 后者用 `restart(false)` 表达：不复位时钟，只是把"此刻起继续"这件事交给
-         * 它自己的 `update()` —— 但若它此前被隐藏过，就得先把可见性交还给 `update`，
-         * 所以这里仍调一次 `restart(false)`（它内部**不碰 visible**，见其注释）。
+         * 缺省 `restart !== false` ⇒ 清空并从头播（= 游戏侧每次动作都重新 `PlayEffect`）。
+         *
+         * ★★ **不要写成 `restart(bind.restart !== false)`**（2026-10-14 实测踩到的坑）：
+         *   `restart(rePrewarm)` 的第二参是"是否**强制**预热"，传 `true` 会让
+         *   `autoplay: false` 的一次性特效组也去跑 `prewarm()`。而 `prewarm()` 是按
+         *   "模拟到稳态"**推进系统时钟**的（最长 30 s）⇒ 时钟一上来就被推到
+         *   `startDelay` 附近、甚至远远越过发射窗口：
+         *     · `fx_chat_lizi_san`（delay=7 / cycle=1 / looping=false）prewarm 停在 **4.02 s**
+         *       ⇒ 特效迟到约 3 s（要等时钟从 4 s 慢慢走到 7 s）；
+         *     · `fx_chat_glow01_1`（`maxNumParticles = 1`）prewarm 直接跑到 **7 s**，
+         *       **在预热期间就把唯一那颗粒子发掉了** ⇒ 触发瞬间看到的是"已经播到一半"。
+         *   实测（`_tmp_探针_触发前后.js`，原子读数）：触发前后 `systemTime` 14.59 → 4.02（而非 0）。
+         *
+         *   不传参数 ⇒ `restart` 退回 `cfg.prewarm`（本工程 7 个特效组**全 false**）
+         *   ⇒ 时钟**干净归零**，特效严格按 `startDelay` 在动作开始后 7 s / 1.6 s 出现。
+         *
+         * `restart === false` ⇒ 只保证它开跑、按自己的自然周期继续跑（**不**复位时钟）。
+         * 用 `ensureStarted()` 表达 —— 它的语义就是"置 `started = true`"，不碰时钟 / 粒子。
          */
-        anim.restart(bind.restart !== false);
+        if (bind.restart === false) {
+          anim.ensureStarted();
+        } else {
+          anim.restart();
+        }
         n++;
       });
     });

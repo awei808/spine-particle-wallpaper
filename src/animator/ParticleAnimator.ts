@@ -752,6 +752,20 @@ export class ParticleAnimator {
 
   /** 系统时间（秒）：lengthInSec 循环 + burst 触发用 */
   private systemTime = 0;
+  /**
+   * 是否已经"开跑"（`ParticleMeshConfig.autoplay`，2026-10-14）。
+   *
+   * `autoplay: false` 的组（动作特效那批）构造后停在 `false`：`step()` 直接返回，
+   * 既不发 burst、也不推进 `systemTime` ⇒ 画面里一个粒子都没有；
+   * 等 `restart()` 被 `config.actionEffects` 调用时才置 `true` 并从头跑。
+   * 缺省 `true` ⇒ 与改动前逐位一致。
+   */
+  private started = true;
+  /**
+   * Unity `looping`（`ParticleMeshConfig.looping`，2026-10-14）。
+   * `false` ⇒ 只跑一个 `cycleSec` 就停发（见该字段的注释）。缺省 `true`。
+   */
+  private looping = true;
   /** 系统组自转角（弧度），摩天轮用 */
   private groupAngle = 0;
   /** rateOverTime 的发射累加器 */
@@ -806,6 +820,16 @@ export class ParticleAnimator {
     }
     this.cfg = meshConfig;
     this.cabinMode = cabinMode;
+    /**
+     * `autoplay: false` ⇒ 开场不跑（见字段注释）。缺省 / 非 false ⇒ true。
+     * 只认字面 `false`：写成 `0` / `"false"` 这类都按 `true` 处理（与旧行为一致、不猜）。
+     */
+    this.started = meshConfig.autoplay !== false;
+    /**
+     * `looping`：只认字面 `false`（缺省 true = 现状）。
+     * 与 `autoplay` 同一口径 —— 不猜 `0` / `"false"` 这类写法。
+     */
+    this.looping = meshConfig.looping !== false;
     /** 只认有限数：写错成 `null` / `"15"` / `NaN` 时按 0 处理（= 不做补偿，与旧行为一致） */
     this.spriteTiltDeg =
       typeof spriteTiltDeg === 'number' && isFinite(spriteTiltDeg)
@@ -1009,7 +1033,7 @@ export class ParticleAnimator {
     this.mesh.frustumCulled = false;
     Scene.scene?.add(this.mesh);
 
-    if (meshConfig.prewarm) {
+    if (meshConfig.prewarm && this.started) {
       this.prewarm();
     }
   }
@@ -1345,6 +1369,15 @@ export class ParticleAnimator {
     const c = this.cfg;
     const r = this.rng;
 
+    /**
+     * `autoplay: false` 且尚未被触发 ⇒ **整段不发**（连 `systemTime` 都不推进）。
+     * 这样"第一次触发"一定从 t=0 开始，不会因为页面已经开了几分钟而错过 burst。
+     * 缺省 `started = true` ⇒ 老 config 完全不受影响。
+     */
+    if (!this.started) {
+      return;
+    }
+
     // ── 1) 系统时间 + burst ──
     const prevSystemTime = this.systemTime;
     this.systemTime += dt;
@@ -1361,8 +1394,14 @@ export class ParticleAnimator {
     const delay = Number.isFinite(c.startDelay) ? Math.max(0, c.startDelay) : 0;
     const emitTime = this.systemTime - delay;
     const prevEmitTime = prevSystemTime - delay;
+    /**
+     * ★★ `looping === false`（2026-10-14）：发射窗口收口到**第 0 个周期**
+     *   `[delay, delay + cycle)` —— 与 Unity「Looping 关闭 ⇒ 播一个 duration 就停」一致。
+     *   缺省 `true` ⇒ `lastCycle = Infinity`，走原逻辑、老 config 零影响。
+     */
+    const lastCycle = this.looping ? Infinity : 0;
     const prevCycle = Math.floor(prevEmitTime / cycle);
-    const nowCycle = Math.floor(emitTime / cycle);
+    const nowCycle = Math.min(Math.floor(emitTime / cycle), lastCycle);
     for (let cy = prevCycle; cy <= nowCycle; cy++) {
       if (emitTime < 0) {
         break; // 还在 startDelay 内，一次都不发
@@ -1403,8 +1442,14 @@ export class ParticleAnimator {
     }
 
     // ── 2) 连续发射 rateOverTime ──
+    // ★ 发射窗口与 burst 同一口径：`[startDelay, startDelay + cycle)`，
+    //   `looping === false` 时还要 ≤ 第 0 个周期末尾（见上方 `lastCycle`）。
+    //   ⚠️ 补上 `emitTime >= 0` 这一半是顺带修的一个不一致：本工程 11 个背景系统
+    //      `startDelay` 全为 0 ⇒ 逐位无影响；旧实现里"rate 不看 delay、burst 看 delay"
+    //      会让带 startDelay 的系统在延时期间照样连续发射。
+    const emitOpen = emitTime >= 0 && emitTime < (this.looping ? Infinity : cycle);
     const rate = lifeMul(c.emission.rateOverTime, 0);
-    if (rate > 0) {
+    if (rate > 0 && emitOpen) {
       this.emitAcc += rate * dt;
       while (this.emitAcc >= 1) {
         this.emitAcc -= 1;
@@ -1946,6 +1991,8 @@ export class ParticleAnimator {
    *   本来就配了 `prewarm: true` 的组开；缺省 true 时构造里也会按 `cfg.prewarm` 判定。
    */
   public restart = (rePrewarm?: boolean): void => {
+    // ★ 先"开跑"：`autoplay: false` 的组靠这一步开始工作（见 `started` 的注释）
+    this.started = true;
     this.particles.length = 0;
     this.systemTime = 0;
     this.groupAngle = 0;
@@ -1960,6 +2007,21 @@ export class ParticleAnimator {
       this.prewarm();
       this.buildGeometry();
     }
+  };
+
+  /**
+   * **只把它"开跑"，不复位任何状态**（2026-10-14）。
+   *
+   * 用途 = `config.actionEffects[].restart === false`：语义是"这条动作第一次触发时把它
+   * 拉起来，之后让它按自己的自然周期继续跑"，而不是"每触发一次就重播一遍"。
+   * 与 `restart()` 的**唯一**区别：不清粒子、不归零时钟、不预热。
+   *
+   * ★ 为什么不能拿 `restart(false)` 顶替：`restart()` 无论第一参是什么都会
+   *   `systemTime = 0` + 清空 `particles`（见其实现）⇒ 那是"重播"，不是"别重播"。
+   *   要表达"别重播"就必须有一个**不碰状态**的入口，故单开这一个方法。
+   */
+  public ensureStarted = (): void => {
+    this.started = true;
   };
 
   /** 验收脚本的钩子：直接调用真身做 curl 散度判据，避免"手抄复刻" */
