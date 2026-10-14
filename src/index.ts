@@ -46,6 +46,8 @@ import {
   GreetMode,
   TriggerEventKind,
   TriggerPhase,
+  ActionEffectConfig,
+  ActionEffectsConfig,
   DEFAULT_CABIN_GROUPS,
 } from './config.type';
 import {
@@ -327,6 +329,17 @@ const main = async () => {
   /** 粒子系统实例（仅用于探针调试，正式构建里也是空跑一次赋值） */
   const particleAnimators: ParticleAnimator[] = [];
   /**
+   * **粒子组名 → 实例** 的索引（2026-10-14 新增，`config.actionEffects` 用）。
+   *
+   * 为什么要它：`actionEffects[].particles` 里写的是 `config.meshes[].name`（字符串），
+   * 而重播要的是**实例**。两个数组 `configs.meshes` 与 `particleAnimators` 的**下标并不对应**
+   * （前者含 texture/spine 层），所以不能按下标硬凑 —— 必须按 `meshConfig.name` 建表。
+   *
+   * ⚠️ 重名（同一个 `name` 出现两次）时**后者覆盖前者**（与构造顺序一致），
+   *   这与 `cabinGroups.indexOf(name)` 那套"按名匹配"的口径相同。
+   */
+  const particleByName: { [name: string]: ParticleAnimator } = {};
+  /**
    * 指针拖尾（仅 `config.pointerTrail.enabled` 为真时创建）。
    *
    * 与 `particleAnimators` 分开持有：两者发射模型不同（外部指针驱动 vs 自发射），
@@ -466,6 +479,92 @@ const main = async () => {
   };
 
   /**
+   * 「动作 → 额外特效」索引：`动画名 → 绑定列表`（2026-10-14）。
+   *
+   * 数据来自 `config.actionEffects`（见 `ActionEffectsConfig` 的完整说明）——
+   * 复刻游戏 `CfgSoulSpineActionTable` 的 `EffectId` / `MarryEffectId`：
+   * 某条动作播的时候额外拉起一簇粒子。
+   *
+   * ★★ 为什么按**动画名**建索引、而不是 actionId：
+   *   游戏侧绑的是 `actionId`，但壁纸侧的动作播放在 `touch.ts` 里是**按动画名**驱动的
+   *   （`entry.animation`），而且同一条 `actionId` 在誓约前后走两个不同动画
+   *   （`SoulActionState` / `MarryActionState`）—— 特效也分 `EffectId` / `MarryEffectId` 两套，
+   *   恰好一一对应。用动画名作键天然覆盖"多条念白共用同一动画"（S8 的 `63007/63008/63013` 都是 `touch1`）。
+   *
+   * ⚠️ **本索引在资源加载之前就建好**（`configs` 已到手），`particleByName` 是后填的
+   *   ⇒ 查表时**必须再判一次** `particleByName[name]` 是否存在（那才是"这一组真的建起来了"）。
+   */
+  const actionEffectIndex: { [animation: string]: ActionEffectConfig[] } = {};
+  /** 已经因为"名字写错"报过 warn 的组名 —— 避免同一处每播一次刷一条日志 */
+  const warnedEffectNames: { [name: string]: boolean } = {};
+
+  /**
+   * 重建「动画名 → 绑定」索引。
+   *
+   * ★ 抽成函数（而不是就地写一段 forEach）是为了让**探针**能在运行时替换它
+   *   （`__WB_FX__.setActionEffects`，见下）—— 验收脚本要验"绑上之后真的会重播"，
+   *   而 `actionEffects` 是 config 里的块、**不在设置覆盖层的取值域里**
+   *   （`applyOverrides` 只覆盖已有设置项），靠 localStorage 注入不了。
+   *   两处若各写一份索引逻辑，迟早会漂移 ⇒ 只留这一个入口。
+   */
+  const rebuildActionEffectIndex = (list?: ActionEffectsConfig): void => {
+    Object.keys(actionEffectIndex).forEach((k) => delete actionEffectIndex[k]);
+    (list ?? []).forEach((bind) => {
+      if (!bind || !bind.animation || !(bind.particles ?? []).length) {
+        console.warn('[actionEffects] 有一条绑定缺 animation / particles，已忽略:', bind);
+        return;
+      }
+      (actionEffectIndex[bind.animation] ??= []).push(bind);
+    });
+  };
+  rebuildActionEffectIndex(configs.actionEffects);
+
+  /**
+   * 播放某条动作时，拉起它绑定的额外粒子组。**三条通道共用**（在 `showDialogue` 里调用）。
+   *
+   * @param animationName 本次要播的动画名（与 `DialogueEntry.animation` 同一口径）
+   * @returns 实际重播/激活的组数（0 = 这条动画没绑特效，或绑的组名都不存在）
+   */
+  const playActionEffects = (animationName: string): number => {
+    const binds = actionEffectIndex[animationName];
+    if (!binds || !binds.length) {
+      return 0;
+    }
+    let n = 0;
+    binds.forEach((bind) => {
+      bind.particles.forEach((name) => {
+        const anim = particleByName[name];
+        if (!anim) {
+          /**
+           * 名字写错**只 warn 不抛** —— 宁可少一个特效，也不要整条通道挂掉。
+           * 去重后只报一次（`warnedEffectNames`），免得每次点击都刷屏。
+           */
+          if (!warnedEffectNames[name]) {
+            warnedEffectNames[name] = true;
+            console.warn(
+              '[actionEffects] 找不到粒子组 "%s"（动画 %s 绑定的）⇒ 跳过；' +
+                '请核对 config.meshes[].name',
+              name,
+              bind.animation
+            );
+          }
+          return;
+        }
+        /**
+         * 缺省 `restart: true` ⇒ 清空并从头播（= 游戏侧每次动作都重新 `PlayEffect`）。
+         * `restart: false` ⇒ 只保证它可见、让它按自己的自然周期继续跑。
+         * 后者用 `restart(false)` 表达：不复位时钟，只是把"此刻起继续"这件事交给
+         * 它自己的 `update()` —— 但若它此前被隐藏过，就得先把可见性交还给 `update`，
+         * 所以这里仍调一次 `restart(false)`（它内部**不碰 visible**，见其注释）。
+         */
+        anim.restart(bind.restart !== false);
+        n++;
+      });
+    });
+    return n;
+  };
+
+  /**
    * 显示一条念白的字幕。
    *
    * 停留时长 = **`min(TextTime, 该动画的 duration)`** ——
@@ -473,6 +572,18 @@ const main = async () => {
    * 两个来源都没给时退到保守的 6 秒，不至于一闪而过。
    */
   const showDialogue = (entry: DialogueEntry | null, animationName: string) => {
+    /**
+     * ★★ 「动作 → 额外特效」的**唯一触发点**（2026-10-14）。
+     *
+     * 放在这里而不是 `TouchController.onAction`：那是**触摸路径专属**的回调，
+     * 覆盖不到 boot 问候 / 长时间待机这两条自动通道。而本函数是
+     * **三条通道（触摸 / 问候 / 待机）的唯一汇合处** —— 见调用点
+     * `index.ts` 的 `onAction`（触摸）与 `idleSequence.onItem`（序列/问候/待机）。
+     *
+     * ⚠️ 必须**在 `entry` 为空时也照常触发**：动作与特效是两件事，
+     *   念白缺失（`entry=null`）只意味着"不出字幕"，不意味着"不播特效"。
+     */
+    playActionEffects(animationName);
     if (!entry) {
       // 本次动作没配字幕 ⇒ 收起上一条，免得"动作换了、台词还是上一句"
       if (voiceBubble) {
@@ -1229,6 +1340,10 @@ const main = async () => {
                 : 0
             );
             particleAnimators.push(particleAnimator);
+            // ★ `config.actionEffects` 按名字找实例 ⇒ 建索引（见 `particleByName` 的说明）
+            if (meshConfig.name) {
+              particleByName[meshConfig.name] = particleAnimator;
+            }
             meshUpdateCallbacks.push(function (delta: number) {
               particleAnimator.update(delta);
             });
@@ -1508,6 +1623,61 @@ const main = async () => {
             fxFrozen = v;
           },
           snapshots: () => particleAnimators.map((a) => a.getSnapshot()),
+          /**
+           * 「动作 → 额外特效」的**只读**读数（2026-10-14）。
+           *
+           * 为什么需要：这个钩子的效果是"动作播的时候某组粒子从头重播"，
+           * 而**粒子系统本来就在自己循环**（`rateOverTime > 0` 的那些一直在发）——
+           * 光看截图分不出"是被动作拉起来的"还是"它本来就在跑"。
+           * 有了它就能断言"这条动画确实绑了 N 组、且组名都真的存在"。
+           *
+           * 返回：`{ bindings: {animation → 组名[]}, resolvable: 组名 → 是否真建起来了 }`
+           */
+          actionEffects: () => ({
+            bindings: Object.keys(actionEffectIndex).reduce(
+              (acc: { [k: string]: string[] }, k) => {
+                acc[k] = actionEffectIndex[k].map((b) => b.particles).flat();
+                return acc;
+              },
+              {}
+            ),
+            resolvable: Object.keys(particleByName).reduce(
+              (acc: { [k: string]: boolean }, k) => {
+                acc[k] = !!particleByName[k];
+                return acc;
+              },
+              {}
+            ),
+          }),
+          /**
+           * 直接驱动一次"动作特效"（只读语义：不播动作、不出字幕，只拉起粒子）。
+           *
+           * 为什么单独给这个：`__WB_DIALOGUE__.trigger()` 走的是完整播放路径
+           * （要过打断闸门、要等前一条播完），验证"特效钩子"本身时没必要背那套时序。
+           */
+          playActionEffects: (animationName: string) =>
+            playActionEffects(animationName),
+          /**
+           * **调试用**：替换「动作 → 特效」绑定表（仅探针开启时可用）。
+           *
+           * 为什么必须开这个口子：`actionEffects` 是 `config.json` 里的块，
+           * 而设置覆盖层（`applyOverrides`）**只覆盖已存在的设置项** ⇒ 验收脚本
+           * 没法靠 localStorage 注入它。要验"绑上之后真的会从头重播"，
+           * 就得能在运行时改这张表。
+           *
+           * ⚠️ 它**只改内存里的索引**（不落盘、不影响 `config.json`）⇒ 重载即还原。
+           * ⚠️ 只在 `PROBE_OPTS.enabled` 时暴露（与 `__WB_FX__` 整体同一门槛），
+           *    发布态拿不到这个后门。
+           *
+           * @returns 重建后实际生效的绑定条数
+           */
+          setActionEffects: (list: ActionEffectsConfig) => {
+            rebuildActionEffectIndex(list);
+            return Object.keys(actionEffectIndex).reduce(
+              (n, k) => n + actionEffectIndex[k].length,
+              0
+            );
+          },
           /** 指针拖尾快照（未启用时为 null）；字段见 pointerTrail.ts 的 snapshot() */
           trailSnapshot: () => (pointerTrail ? pointerTrail.snapshot() : null),
           /** 定步长推进 n 步（每步 dt 秒） */

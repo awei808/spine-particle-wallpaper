@@ -1913,6 +1913,55 @@ export class ParticleAnimator {
 
   public getMesh = (): THREE.Mesh => this.mesh;
 
+  /* ── 「动作 → 额外特效」钩子用的能力（2026-10-14）───────────────────── */
+
+  /**
+   * **从头重播本系统**（清空已有粒子 + 复位系统时钟 + 重新预热）。
+   *
+   * 用途：`config.actionEffects` 把某条动作绑到本组粒子时，动作每次触发都要
+   * "完整播一遍"，而不是接着上一轮的相位继续跑。
+   *
+   * ## 复位的字段（必须全部复位，漏一个就会"播出来但不是从头"）
+   * - `particles`：清空 ⇒ 旧粒子不会与新一轮叠在一起；
+   * - `systemTime` / `emitAcc` / `burstFired` / `emittedInBatch` / `batchCount`：
+   *   发射相关的时钟与记账 ⇒ `startDelay`、burst 的 `time`、周期序号都从 0 重新算；
+   * - `groupAngle`：整组自转（摩天轮轮毂）回到初始相位；
+   * - `buildGeometry()`：清空后立刻把顶点数刷成 0，避免**这一帧**还残留上一轮的四边形。
+   *
+   * ## ★ 为什么**不**复位 `rng`
+   *
+   * 粒子随机数发生器保留当前状态 —— 每次重播的粒子分布**不重复**。
+   * 这与 Unity 一致（Unity 的随机种子在系统实例化时就定了，重播不会重掷）。
+   * ⚠️ 若把 `rng` 也复位，同一动作连点两次会得到**逐帧完全相同**的两簇粒子，
+   * 观感上是"卡住重放"，反而更像 bug。
+   *
+   * ## ★ 为什么**不**碰 `mesh.visible`
+   *
+   * 本组的可见性由 `update()` 每帧按"有没有存活粒子 / 有没有在发射"自行维护
+   * （见 `update` 的实现）⇒ 重播后它会在下一帧自动变可见，不需要外部干预；
+   * 外部硬置 `visible=true` 反而会与那套逻辑打架。
+   *
+   * @param rePrewarm 是否重新跑 `prewarm()`（缺省 **true**，与开场行为一致）。
+   *   ⚠️ `prewarm` 是"模拟到稳态"的重活（最长 30 s 的定步长），只建议对本系统
+   *   本来就配了 `prewarm: true` 的组开；缺省 true 时构造里也会按 `cfg.prewarm` 判定。
+   */
+  public restart = (rePrewarm?: boolean): void => {
+    this.particles.length = 0;
+    this.systemTime = 0;
+    this.groupAngle = 0;
+    this.emitAcc = 0;
+    this.burstFired = {};
+    this.emittedInBatch = 0;
+    this.batchCount = 1;
+    // 先按当前（空）状态刷一次顶点，保证"这一帧就是空的"
+    this.buildGeometry();
+    const want = typeof rePrewarm === 'boolean' ? rePrewarm : this.cfg.prewarm;
+    if (want) {
+      this.prewarm();
+      this.buildGeometry();
+    }
+  };
+
   /** 验收脚本的钩子：直接调用真身做 curl 散度判据，避免"手抄复刻" */
   public static __noise = { perlin3, curl3, divCurlNumerical, NOISE_EPS };
 }

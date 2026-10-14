@@ -210,6 +210,15 @@ export type Configs = {
    * 整段文案的措辞与句式仍由代码统一负责（包括 Spine 许可段，那是固定的法律文本）。
    */
   disclaimer?: DisclaimerConfig;
+  /**
+   * 「动作 → 额外特效」绑定。缺省 = **不启用**（老 config 零影响）。
+   *
+   * 见 `ActionEffectsConfig` 的完整说明（数据来源、为什么按动画名绑、触发语义）。
+   *
+   * ★ 它放在顶层、与 `bgm` / `idleSequence` / `pointerTrail` 平级：管的是
+   *   **"动作播的时候还要多播什么"**，与"播什么动作 / 出不出字幕"是两件事。
+   */
+  actionEffects?: ActionEffectsConfig;
   meshes: Array<
     SpineMeshConfig | TextureMeshConfig | VideoMeshConfig | ParticleMeshConfig
   >;
@@ -1946,3 +1955,94 @@ export type ParticleMeshConfig = MeshConfig & {
     maxPoints?: number;
   } | null;
 };
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 「动作 → 额外特效」绑定：一条动作播的时候，额外拉起哪些粒子系统
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * ## 复刻对象与数据来源（解包权威，2026-10-14 普查）
+ *
+ * 游戏里"点角色 → 播动作 + 同时来一簇粒子"是**通用的数据驱动功能**，不是某皮肤独有。
+ * 绑定写在 `CfgSoulSpineActionTable[actionId]` 上（字段与取值见
+ * `09_壁纸适配_素材与技术/` 与 `_work_芙丽希娅_蝶语吟花/out/51_动作特效全景.txt`）：
+ *
+ * ```
+ * CfgSoulSpineActionTable[actionId] = {
+ *   SoulActionState, MarryActionState,
+ *   EffectId / EffectOrder,               -- ★ 普通态额外播的特效
+ *   MarryEffectId / MarryEffectOrder,     -- ★ 誓约态额外播的特效
+ * }
+ * EffectId → CfgEffectTable[EffectId].EntityID
+ *          → CfgEffectEntityTable[EntityID].PrefabName   （如 FX_UI/FX_Freesia_S6_Background_chat）
+ * ```
+ * 实测覆盖：**112 个动作控制表里 69 个（61.6%）**至少有一条动作带特效；
+ * 用到 118 个不同 prefab，78% 路径含 `_Background_`（`*_Background_<state>` 命名族）。
+ * ⚠️ 注意：**我们先前做的 S8 其实也有**（`63007/63008/63013` 三条 `touch1` → `FX_Asuna_S8_Background_touch1`），
+ * 只有 S9 真没有。所以这**不是"给蝶语吟花开的特例"**，是补上引擎一直缺的一块能力。
+ *
+ * ## 为什么按「动画名」绑，而不是按「actionId」
+ *
+ * 游戏侧绑的是 `actionId`，但**同一条 `actionId` 在誓约前后走的是两个不同动画**
+ * （`SoulActionState` / `MarryActionState`），而特效也分成 `EffectId` / `MarryEffectId`
+ * 两套 —— 恰好一一对应。壁纸侧的动作播放在 `touch.ts` 里是**按动画名**驱动的
+ * （`entry.animation`），且同一动画名可能被多条念白复用（S8 的 `63007/63008/63013` 都是 `touch1`）
+ * ⇒ 用 `animation`（动画名）作键**天然覆盖了"多条动作共用同一动画"这一情况**，
+ * 也比 `actionId` 更贴近引擎实际播放的那一层。
+ *
+ * ## 触发时机与语义
+ *
+ * - **触发点**：`index.ts` 的 `showDialogue(entry, animationName)` —— 那是**三条通道
+ *   （触摸 / 问候 / 待机）的唯一汇合处**，放这里才不会漏掉自动事件那两路。
+ *   （引擎的 `TouchController.onAction` 只在触摸路径回调，覆盖不到 boot 问候与待机。）
+ * - **同名动画重复触发**：**重新从头播**（= 重新发射），不做"还在播就不管"。
+ *   与游戏侧每次动作都 `PlayEffect` 一致。
+ * - **旧动作播完要不要停**：**不停**。这些特效系统的 `lengthInSec` 就是它的自然寿命
+ *   （蝶语吟花 `_chat` 主系统 5 s、`_touch2` 花瓣 6.5 s），自己会走完并清空。
+ *   刻意**不做"按动作时长裁剪"** —— 那会引入"特效比动作长就该被砍"的臆断。
+ *
+ * ## ★ 缺省 = 不启用
+ *
+ * `actionEffects` 整个缺席 ⇒ 引擎行为与改动前**逐字一致**（老 config 零影响）。
+ * 与 `pointerTrail` 同一口径：必须显式声明才会多出视觉元素。
+ */
+export type ActionEffectConfig = {
+  /**
+   * 用哪个**动画名**来触发。与 `DialogueEntry.animation` 逐字比对
+   * （如 `"chat"` / `"touch2"` / `"touch1_marry"`）。
+   */
+  animation: string;
+  /**
+   * 要额外播放的粒子组名列表，对应 `config.meshes[].name`（`type:'particle'` 那批）。
+   *
+   * ⚠️ 名字必须**逐字**匹配 `meshes[].name`；匹配不到时控制台留一条 warn 并跳过该组
+   * （宁可少一个特效，也不要静默什么都不发生）。
+   */
+  particles: string[];
+  /**
+   * 是否在**每次**触发时都让这些粒子组**从头重播**（缺省 **true**）。
+   *
+   * - `true`（缺省）：清空该组已有粒子并复位系统时钟 ⇒ 每次都完整播一遍。
+   *   与游戏侧"每次动作都重新 `PlayEffect`"一致。
+   * - `false`：只把它置为可见、让它在自己的自然周期里继续跑（适合"本来就在循环"的组）。
+   *
+   * ⚠️ 本字段只对**本条绑定里列出的粒子组**生效 —— 不会被同一条动作的其他绑定影响。
+   */
+  restart?: boolean;
+};
+
+/**
+ * 动作特效总配置。缺省 = **不启用**（老 config 零影响）。
+ *
+ * ```json
+ * "actionEffects": [
+ *   { "animation": "chat",   "particles": ["fx_chat_glow", "fx_chat_spark"] },
+ *   { "animation": "touch2", "particles": ["fx_touch2_petals"] }
+ * ]
+ * ```
+ *
+ * ★ 本工程（蝶语吟花）**暂不绑定任何动画** —— 先只把钩子做出来（见
+ *   `_work_芙丽希娅_蝶语吟花/` 的构建链；绑定留到后续一步）。
+ */
+export type ActionEffectsConfig = ActionEffectConfig[];
+
