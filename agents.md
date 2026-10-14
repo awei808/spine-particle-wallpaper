@@ -31,8 +31,9 @@ src/
   touch.ts          Hit zones + action gating (mutual exclusion / interrupt rules)
   touchZoneOverlay.ts  Visual overlay for hit zones
   pointerTrail.ts   Cursor trail (deliberately separate from scene particles)
-  settingsPanel.ts  Built-in settings panel (7 tabs — the last one, "壁纸独立设置", is
+  settingsPanel.ts  Built-in settings panel (6 tabs — the last one, "壁纸独立设置", is
                     config-gated: only built when config.wallpaperSettings declares items)
+                    + the separate debug panel (entry button right below the gear)
   settingsStore.ts  Settings read/write + overrides
   uiScale.ts        Panel scaling
   archive.ts        Archive panel

@@ -1606,6 +1606,12 @@ const main = async () => {
         visible: weShowSettings ?? storedSettings.showSettings !== false,
         open: storedSettings.panelOpen === true,
         /**
+         * 调试面板的展开状态（**入口在齿轮下方**，2026-10-15 从设置面板里独立出来）。
+         *
+         * ⚠️ 与 `open` 互斥由面板内部保证（两个都存了 `true` ⇒ 只开设置面板）。
+         */
+        debugOpen: storedSettings.debugPanelOpen === true,
+        /**
          * 生效方式：写盘 → **重载页面**。
          *
          * 为什么不做热切换：气泡 DOM / 语音播放器 / 常驻序列都是开机一次性构造的，
@@ -1631,6 +1637,10 @@ const main = async () => {
         /** 展开状态也持久化，重载后面板保持原样（否则每保存一次就"啪"地合上） */
         onOpenChange: (open) => {
           writeOverrides({ panelOpen: open });
+        },
+        /** 调试面板同理（与上面互相独立地各存各的，互斥由面板内部处理） */
+        onDebugOpenChange: (open) => {
+          writeOverrides({ debugPanelOpen: open });
         },
       });
 

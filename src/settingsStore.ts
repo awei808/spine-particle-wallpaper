@@ -258,6 +258,13 @@ export type SettingsOverrides = {
   showArchive?: boolean;
   /** 设置面板当前是否展开。仅用于重载后还原 UI 状态 */
   panelOpen?: boolean;
+  /**
+   * 调试面板（齿轮下方那个入口）当前是否展开。仅用于重载后还原 UI 状态。
+   *
+   * ★ 与 `panelOpen` **互斥**：两个都存了 `true` 时只还原设置面板
+   * （见 `settingsPanel.ts` 里 `debugOpen` 的初值）。
+   */
+  debugPanelOpen?: boolean;
 };
 
 /** 合并后的"当前生效值"，给面板渲染用（永远有值，无 undefined） */
@@ -878,7 +885,7 @@ export const toEnum = <T extends string>(
  * |---|---|---|
  * | `showSettings` | 设置按钮显示 | `showSettings` |
  * | `muteAll` | 全部静音 | `muteAll` |
- * | `debugEnabled` | 调试总开关 | `probeEnabled`（与面板「调试」页同一个字段 ⇒ 两边同源） |
+ * | `debugEnabled` | 调试总开关 | `probeEnabled`（与**调试面板**里的「调试总开关」同一个字段 ⇒ 两边同源） |
  * | `showDisclaimer` | 显示免责声明与许可证要求 | `showDisclaimer`（居中弹窗，常驻显示） |
  * | `showArchive` | 显示档案 | `showArchive`（居中「档案」面板，常驻显示） |
  *

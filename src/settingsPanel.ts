@@ -18,7 +18,21 @@
  */
 
 /**
- * 右上角「设置」入口 —— 齿轮按钮 + 展开面板。
+ * 右上角两个入口 —— **设置**（齿轮按钮 + 展开面板）与**调试**（齿轮**下方**的按钮 + 小面板）。
+ *
+ * ## ★★ 调试为什么从设置面板里独立出来（用户 2026-10-15 拍板）
+ *
+ * 原先「调试」是设置面板里的**第 6 个分页**（总开关 / HUD / 红圈 / 热区框 4 项）。
+ * 它跟其余 6 页不是一类东西：那些是**观赏设置**（调完就不管了），
+ * 而调试是**诊断工具**（排查时反复开关、每次改完都要重载）。
+ * ⇒ 塞在同一面板里 ⇒ 每次排查都要"开面板 → 翻到调试页 → 改 → 保存"四步。
+ *
+ * 改法：调试页整个撤掉，改成**齿轮正下方**的一个入口按钮 + 一个常驻小面板，
+ * 一步点到、改完就地保存。两者**互斥展开**（见 `setDebugOpen`）。
+ *
+ * ⚠️ 只是**搬了入口**，字段没变：4 个开关仍落在 `probeEnabled / probeHud /
+ * probeCrosshair / probeZones`，存盘格式与 WE 属性面板的「调试总开关」
+ * （`debugEnabled` → `probeEnabled`）**完全兼容**，老存档零影响。
  *
  * ## ★★ 必须 `stopPropagation` 的理由（不做的话会发生什么）
  *
@@ -89,12 +103,20 @@ export type SettingsPanelOptions = {
   visible: boolean;
   /** 面板是否初始展开 */
   open?: boolean;
+  /**
+   * 调试面板是否初始展开。
+   *
+   * ⚠️ 与 `open` **互斥**：两个都存了 `true` 时只有设置面板展开（见 `debugOpen` 初值）。
+   */
+  debugOpen?: boolean;
   /** 保存 ⇒ 由调用方落盘并重载 */
   onSave: (patch: SettingsOverrides) => void;
   /** 恢复默认 ⇒ 由调用方清覆盖层并重载 */
   onReset: () => void;
   /** 面板展开/收起变化时回调（用于把 `panelOpen` 也持久化） */
   onOpenChange?: (open: boolean) => void;
+  /** 调试面板展开/收起变化时回调（用于把 `debugPanelOpen` 也持久化） */
+  onDebugOpenChange?: (open: boolean) => void;
 };
 
 export type SettingsPanel = {
@@ -376,6 +398,13 @@ export const createSettingsPanel = (
   /** 面板内的草稿状态（点了"保存"才落盘） */
   let draft: SettingsView = { ...options.view };
   let open = options.open === true;
+  /**
+   * 调试面板是否展开。
+   *
+   * ★ 与设置面板**互斥**：存档里两个都存了 `true`（分别开过）时**只开设置面板**，
+   *   否则一进壁纸就两个面板叠在一起。
+   */
+  let debugOpen = options.debugOpen === true && !open;
   let visible = options.visible !== false;
 
   // ★ 先初始化 UI 缩放变量（幂等）：下面所有 px 都依赖它
@@ -406,16 +435,25 @@ export const createSettingsPanel = (
     );
   });
 
+  /* ── 右上角按钮列的几何（齿轮在上、调试在它**正下方**）─────────
+   *
+   * ★ root 是 `position:fixed;top:0;right:0` 的零尺寸盒 ⇒ 绝对定位子元素的原点
+   *   就是**视口右上角**，所以这里的 top/right 直接就是"距视口上/右缘"的距离。
+   */
+  const CORNER_BTN = 38;
+  const CORNER_TOP = 14;
+  const CORNER_GAP = 10;
+
   /* ── 齿轮按钮 ─────────────────────────────── */
   const gear = createEl(
     'button',
     [
       'pointer-events:auto',
       'position:absolute',
-      'top:' + uiPx(14),
-      'right:' + uiPx(14),
-      'width:' + uiPx(38),
-      'height:' + uiPx(38),
+      'top:' + uiPx(CORNER_TOP),
+      'right:' + uiPx(CORNER_TOP),
+      'width:' + uiPx(CORNER_BTN),
+      'height:' + uiPx(CORNER_BTN),
       'padding:0',
       'border:' + uiPx(1) + ' solid rgba(255,255,255,0.28)',
       'border-radius:50%',
@@ -452,6 +490,54 @@ export const createSettingsPanel = (
     '2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.47 1.6 1.6 0 0 0 1.77-.33l.06-.06a2 2 ' +
     '0 1 1 2.83 2.83l-.06.06A1.6 1.6 0 0 0 19.4 9v.07a1.6 1.6 0 0 0 1.47 ' +
     '1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.47 1z"/></svg>';
+
+  /* ── 调试入口按钮（齿轮**正下方**）─────────────────────────────
+   *
+   * ★ 几何：与齿轮同列、紧跟其下（`CORNER_TOP + CORNER_BTN + CORNER_GAP`）。
+   * ★ 图标 = bug（诊断），同样内联 SVG + 跟着 `uiPx` 缩放，理由同齿轮。
+   * ★ 显隐跟随 `visible`（= WE 属性 `showSettings`）：它是"桌面 UI"的一员，
+   *   用户把设置按钮藏起来时不该再多出一个按钮。
+   */
+  const debugBtn = createEl(
+    'button',
+    [
+      'pointer-events:auto',
+      'position:absolute',
+      'top:' + uiPx(CORNER_TOP + CORNER_BTN + CORNER_GAP),
+      'right:' + uiPx(CORNER_TOP),
+      'width:' + uiPx(CORNER_BTN),
+      'height:' + uiPx(CORNER_BTN),
+      'padding:0',
+      'border:' + uiPx(1) + ' solid rgba(255,255,255,0.28)',
+      'border-radius:50%',
+      'background:rgba(20,22,30,0.82)',
+      'color:#fff',
+      'cursor:pointer',
+      'display:flex',
+      'align-items:center',
+      'justify-content:center',
+      // ★ 不用 backdrop-filter —— WE CEF 上会崩渲染进程，见文件头注释
+      'transition:background .18s ease,transform .18s ease',
+    ].join(';'),
+    root
+  );
+  debugBtn.id = 'wb-debug-btn';
+  debugBtn.title = '调试';
+  debugBtn.setAttribute('aria-label', '调试');
+  debugBtn.innerHTML =
+    '<svg width="19" height="19" style="width:' +
+    uiPx(19) +
+    ';height:' +
+    uiPx(19) +
+    '" viewBox="0 0 24 24" fill="none" ' +
+    'stroke="currentColor" stroke-width="1.9" stroke-linecap="round" ' +
+    'stroke-linejoin="round">' +
+    // 虫身 + 头
+    '<rect x="6.5" y="7.5" width="11" height="12" rx="5.5"/>' +
+    '<path d="M9.5 7.5 8 5.2M14.5 7.5 16 5.2"/>' +
+    // 六条腿
+    '<path d="M4 11h2.5M17.5 11H20M4 16h2.5M17.5 16H20M6.5 19.5 5 21.5M17.5 19.5 19 21.5"/>' +
+    '</svg>';
 
   /* ── 面板本体（居中 + 屏幕 80% + 分 tab） ─────────
    *
@@ -558,7 +644,8 @@ export const createSettingsPanel = (
     { id: 'sequence', label: '事件触发' },
     { id: 'touch', label: '事件池' },
     { id: 'view', label: '画面调整' },
-    { id: 'debug', label: '调试' },
+    // ★ 这里**没有**「调试」页了：2026-10-15 起调试独立成齿轮下方的入口
+    //   （见文件头与「调试面板」段）；字段仍是 `probeEnabled` 那四个，没改名。
     // ★ 2026-10-11 新增：**只对本壁纸生效**的设置（用户拍板放在**标签条最末**）。
     //   本页里的项由 `config.wallpaperSettings` 声明，没声明就连这个 tab 都没有（见上）。
     { id: 'wallpaper', label: '壁纸独立设置' },
@@ -1728,18 +1815,76 @@ export const createSettingsPanel = (
     '指针在桌面移动时沿轨迹留下等距发光粒子；粒子随寿命收缩到消失'
   );
 
-  /* ── tab 6：调试（探针） ───────────────────── */
-  rowTarget = pages.debug;
+  /* ── 调试面板（**独立**小面板，入口 = 齿轮下方那个按钮）──────────────
+   *
+   * ## 为什么不再做成设置面板的一个分页
+   *
+   * 调试是**诊断工具**而不是观赏设置：排查时要反复开关、每次改完都得重载，
+   * 塞在 6 分页的深处意味着"开面板 → 翻页 → 改 → 保存"四步。
+   * 独立成一个常驻小面板后**一步点到**、改完就地保存（用户 2026-10-15 拍板）。
+   *
+   * ## ★ 与设置面板**互斥展开**
+   *
+   * 两个面板各自维护一份 `draft`；若同时开着，一边保存会把另一边没保存的
+   * 草稿状态带进去（值本身不会错，但用户看到的现象是"我没改这项它却变了"）
+   * ⇒ 开一个必关另一个（见下面两个 click 监听与 `setDebugOpen`）。
+   *
+   * ## ★ 保存只下发这 4 个键
+   *
+   * `writeOverrides` 是**合并写** ⇒ 不带别的键就不会动别的设置；
+   * 反过来，设置面板的「保存并应用」也**不再**带这 4 个键（见 `btnSave`），
+   * 两边互不覆盖。存盘字段名与旧版**完全一致**（`probeEnabled` …）⇒ 老存档兼容。
+   *
+   * ## ★ 不做滚动 / 不用 backdrop-filter
+   *
+   * 内容只有 4 行，**刻意**不设 `max-height` + `overflow:auto`：
+   * WE 不转发滚轮（见上文"自适应"段），一旦需要滚动就永远滚不动。
+   * 毛玻璃则在 WE CEF 上直接崩渲染进程，见文件头。
+   */
+  const debugPanel = createEl(
+    'div',
+    [
+      'pointer-events:auto',
+      'position:fixed',
+      // 挂在调试按钮**下方**（与齿轮同一列）
+      'top:' + uiPx(CORNER_TOP + (CORNER_BTN + CORNER_GAP) * 2),
+      'right:' + uiPx(CORNER_TOP),
+      'width:' + uiPx(300),
+      'box-sizing:border-box',
+      'padding:' + uiPx(14) + ' ' + uiPx(16) + ' ' + uiPx(12),
+      'display:none',
+      'border:' + uiPx(1) + ' solid rgba(255,255,255,0.16)',
+      'border-radius:' + uiPx(12),
+      'background:rgba(16,18,26,0.94)',
+      'box-shadow:0 ' + uiPx(10) + ' ' + uiPx(28) + ' rgba(0,0,0,0.45)',
+      'color:#eef1f6',
+      'font-size:' + fpx(13),
+      'line-height:1.5',
+    ].join(';'),
+    root
+  );
+  debugPanel.id = 'wb-debug-panel';
+  const dbgTitle = createEl(
+    'div',
+    'font-size:' + fpx(15) + ';font-weight:600;letter-spacing:' + uiPx(0.5),
+    debugPanel
+  );
+  dbgTitle.textContent = '调试';
   const dbgTip = createEl(
     'div',
     'font-size:' +
       fpx(11) +
-      ';opacity:.55;margin-bottom:' +
-      uiPx(6) +
-      ';line-height:1.5',
-    pages.debug
+      ';opacity:.55;margin-top:' +
+      uiPx(2) +
+      ';line-height:1.45',
+    debugPanel
   );
-  dbgTip.textContent = '这些是诊断开关，改完点「保存并应用」重载生效。';
+  dbgTip.textContent = '诊断开关；改完点「保存并应用」，壁纸会重新加载以生效。';
+  const debugBody = createEl('div', 'margin-top:' + uiPx(4), debugPanel);
+  debugBody.id = 'wb-debug-body';
+  /** ★ `createToggle` 走默认父级 `rowTarget` ⇒ 临时切过去再切回来 */
+  const prevRowTarget = rowTarget;
+  rowTarget = debugBody;
   // ★ 文案与 WE 属性面板的「调试总开关」对齐（两者是同一个字段 probeEnabled）
   const cbProbe = createToggle(
     'wb-set-probe',
@@ -1761,6 +1906,18 @@ export const createSettingsPanel = (
     '显示触摸热区框',
     '把整屏热区边界画出来（含缩放与命中数）'
   );
+  rowTarget = prevRowTarget;
+  const debugFoot = createEl(
+    'div',
+    'display:flex;gap:' + uiPx(8) + ';margin-top:' + uiPx(12),
+    debugPanel
+  );
+  const btnDebugSave = createEl('button', BTN_PRIMARY, debugFoot);
+  btnDebugSave.id = 'wb-debug-save';
+  btnDebugSave.textContent = '保存并应用';
+  const btnDebugClose = createEl('button', BTN_GHOST, debugFoot);
+  btnDebugClose.id = 'wb-debug-close';
+  btnDebugClose.textContent = '关闭';
 
   /* ── tab 7：壁纸独立设置（**只对本壁纸生效**；config 没声明 ⇒ 这一页整个不存在） ── */
   /**
@@ -2000,8 +2157,10 @@ export const createSettingsPanel = (
 
   const applyVisibility = () => {
     gear.style.display = visible ? 'flex' : 'none';
+    debugBtn.style.display = visible ? 'flex' : 'none';
     // ★ 'flex'（不是 'block'）：面板是 flex column（header/tabBar/tabBody/foot）
     panel.style.display = visible && open ? 'flex' : 'none';
+    debugPanel.style.display = visible && debugOpen ? 'block' : 'none';
     // 展开/收起后面板尺寸变了 ⇒ 重新自适应 + 对齐兜底滚动条
     relayoutPanel();
   };
@@ -2127,12 +2286,56 @@ export const createSettingsPanel = (
     draft.probeZones = cbZones.checked;
   });
 
+  /**
+   * 展开/收起调试面板（**与设置面板互斥**：开一个必关另一个）。
+   *
+   * 为什么必须互斥：两个面板各持一份 `draft`，同时开着时一边保存会把另一边
+   * **尚未保存**的草稿一起带进覆盖层 ⇒ 用户看到"我没改这项它却变了"。
+   */
+  const setDebugOpen = (v: boolean) => {
+    debugOpen = v;
+    if (debugOpen && open) {
+      open = false;
+      if (options.onOpenChange) {
+        options.onOpenChange(false);
+      }
+    }
+    applyVisibility();
+    if (options.onDebugOpenChange) {
+      options.onDebugOpenChange(debugOpen);
+    }
+  };
+
   gear.addEventListener('click', () => {
     open = !open;
+    if (open && debugOpen) {
+      debugOpen = false;
+      if (options.onDebugOpenChange) {
+        options.onDebugOpenChange(false);
+      }
+    }
     applyVisibility();
     if (options.onOpenChange) {
       options.onOpenChange(open);
     }
+  });
+  debugBtn.addEventListener('click', () => setDebugOpen(!debugOpen));
+  btnDebugClose.addEventListener('click', () => setDebugOpen(false));
+  /**
+   * 调试面板的保存：**只下发这 4 个键**（合并写 ⇒ 不会动别的设置）。
+   *
+   * ★ 与设置面板的 `btnSave` 完全对称：那边的保存**不带**这 4 个键（见下），
+   *   两边各写各的，谁也不会覆盖谁。
+   */
+  btnDebugSave.addEventListener('click', () => {
+    options.onSave({
+      probeEnabled: draft.probeEnabled,
+      probeHud: draft.probeHud,
+      probeCrosshair: draft.probeCrosshair,
+      probeZones: draft.probeZones,
+      // ★ 保存即重载 ⇒ 顺手记下"面板还开着"，重载后不用再点一次
+      debugPanelOpen: true,
+    });
   });
 
   btnSave.addEventListener('click', () => {
@@ -2159,10 +2362,11 @@ export const createSettingsPanel = (
       resumeKinds: draft.resumeKinds.slice(),
       touchFeedbackMode: draft.touchFeedbackMode,
       greetMode: draft.greetMode,
-      probeEnabled: draft.probeEnabled,
-      probeHud: draft.probeHud,
-      probeCrosshair: draft.probeCrosshair,
-      probeZones: draft.probeZones,
+      /**
+       * ★ 4 个调试开关**故意不带**（2026-10-15）：它们已归齿轮下方的调试面板管，
+       *   那边保存时只下发这 4 个键 ⇒ 两边各写各的、互不覆盖。
+       *   （`writeOverrides` 是合并写 ⇒ 这里不带 = 覆盖层里的调试值原样保留。）
+       */
       touchFullscreen: draft.touchFullscreen,
       panelOpen: open,
     });
