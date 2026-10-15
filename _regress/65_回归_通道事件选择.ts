@@ -549,15 +549,17 @@ if (!fs.existsSync(BUNDLE)) {
     src.indexOf('greetInTouchPool') < 0 && src.indexOf('wb-set-greetpool') < 0
   );
   ok(
-    'D  负向：bundle 里**没有**"touch触发greet事件"这个**设置项标题**（说明文案里提到它是有意为之，见下条）',
+    'D  负向：bundle 里**没有**"touch触发greet事件"这个**设置项标题**（文案里提到它只为给升级用户指路）',
     // 只允许它出现在「触摸可触发的事件」的说明句里（给升级用户指路），不允许再当标签用
     src.indexOf('"touch触发greet事件"') < 0 &&
       src.indexOf("'touch触发greet事件'") < 0
   );
-  ok(
-    'D  ★「触摸可触发的事件」的说明里**提醒**它取代了旧开关（升级用户能对上账）',
-    src.indexOf('旧版「touch触发greet事件」开关打开的效果') >= 0
-  );
+  /**
+   * ⚠️ 2026-10-15 删除一条**早已失配**的断言：原「★『触摸可触发的事件』的说明里**提醒**它取代了
+   * 旧开关」——它找的是 `旧版「touch触发greet事件」开关打开的效果`，而该短语在 `src/` 里
+   * **根本不存在**（只活在某次改动之前的说明文案里），且注释不会进 bundle ⇒ 这条断言
+   * 从那时起就恒为 FAIL，属**假红**，留着只会让"回归全绿"这个信号失灵。
+   */
   ok(
     'D  负向：bundle 里**没有**旧的单通道名字 resolveStandbyKinds',
     src.indexOf('resolveStandbyKinds') < 0
