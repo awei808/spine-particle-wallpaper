@@ -51,6 +51,7 @@ import {
   DEFAULT_CABIN_GROUPS,
 } from './config.type';
 import {
+  buildFamilyRegistry,
   buildPool,
   mergeKindPools,
   normalizeGreetIds,
@@ -672,39 +673,58 @@ const main = async () => {
    * 三个通道勾上 chat类 时都从这个池取条（并池见 `pickChannelEntry`）。
    */
   /**
-   * ★★ **事件族筛子（2026-10-10）** —— 见 `config.type.ts` 的 `TriggerPhase`。
+   * ★★ **事件族注册表（2026-10-15 起）** —— 见 `config.type.ts` 的 `EventFamily`。
    *
+   * · 注册表本身由 `config.subtitle.eventFamilies` 声明
+   *   （**没声明 ⇒ 内置单族 `normal`** ⇒ 非誓约皮肤看不到「誓约前/誓约后事件」）；
    * · 触摸通道：用用户在面板「事件池」页选的 `subtitle.touchPhases`
-   *   （缺省 `['postMarry','normal']` = 游戏誓约后那套可触发事件）；
-   * · 待机 / 回到壁纸：**固定只用普通事件** —— 誓约类内容只由「触摸 · 可触发的事件」控制，
-   *   免得用户没动它、却在别的通道里冒出誓约态台词。
+   *   （缺省 = 注册表的缺省勾选 `defaultIds`）；
+   * · 待机 / 回到壁纸：**只用缺省族**（`fallbackId`）—— 非缺省族的内容只由
+   *   「触摸 · 可触发的事件」控制，免得用户没动它、却在别的通道里冒出来。
+   * · 注册表**为空**（config 写了 `eventFamilies: []` = 本项目无事件族机制）
+   *   ⇒ `*Filter` 全为 `undefined` ⇒ **不按族筛**，所有条目一视同仁。
    *
    * ★ 触摸池与另外两个通道的池**分开建**（`TOUCH_KIND_POOLS` vs `KIND_POOLS`），
    *   这是"两层筛子（先族后类）"里"族"那一层的落点。
    */
-  const touchPhases = resolveTriggerPhases(subtitleCfg?.touchPhases);
-  const AUTO_PHASES: readonly TriggerPhase[] = ['normal'];
-  /** 待机 / 回到壁纸用的事件表（已按 `AUTO_PHASES` 筛过）—— 供 `pickChannelEntry` 的单勾 greet 分支用 */
-  const dialoguesAuto: DialogueEntry[] = dialogues.filter(
-    (d) => AUTO_PHASES.indexOf(resolveDialoguePhase(d)) >= 0
-  );
+  const fams = buildFamilyRegistry(subtitleCfg?.eventFamilies);
+  const touchPhases = resolveTriggerPhases(subtitleCfg?.touchPhases, fams);
+  const autoPhases: readonly TriggerPhase[] =
+    fams.fallbackId !== null ? [fams.fallbackId] : [];
+  /** 待机 / 回到壁纸的族筛（注册表空 ⇒ `undefined` = 不筛） */
+  const autoFilter: readonly TriggerPhase[] | undefined = fams.families.length
+    ? autoPhases
+    : undefined;
+  /** 触摸通道的族筛（同上） */
+  const touchFilter: readonly TriggerPhase[] | undefined = fams.families.length
+    ? touchPhases
+    : undefined;
+  /** 待机 / 回到壁纸用的事件表（已按缺省族筛过）—— 供 `pickChannelEntry` 的单勾 greet 分支用 */
+  const dialoguesAuto: DialogueEntry[] = autoFilter
+    ? dialogues.filter(
+        (d) => autoFilter.indexOf(resolveDialoguePhase(d, fams)) >= 0
+      )
+    : dialogues;
 
   const chatPool: DialogueEntry[] = buildPool(
     dialogues,
     resolveChatIds(subtitleCfg?.chat, subtitleCfg?.standby),
-    AUTO_PHASES
+    autoFilter,
+    fams
   );
   /** ★★「问候」池 —— `greet` 池（或旧时段表 `greeting`），只勾 greet类 时按 `greetMode` 取条 */
   const greetPool: DialogueEntry[] = buildPool(
     dialogues,
     normalizeGreetIds(greetSource),
-    AUTO_PHASES
+    autoFilter,
+    fams
   );
   /** ★★「触摸」池 —— `subtitle.touch`，与**点击热区**同一份候选 */
   const touchBasePool: DialogueEntry[] = buildPool(
     dialogues,
     resolveTouchIds(subtitleCfg?.touch),
-    AUTO_PHASES
+    autoFilter,
+    fams
   );
 
   /**
@@ -716,17 +736,20 @@ const main = async () => {
     chat: buildPool(
       dialogues,
       resolveChatIds(subtitleCfg?.chat, subtitleCfg?.standby),
-      touchPhases
+      touchFilter,
+      fams
     ),
     greet: buildPool(
       dialogues,
       normalizeGreetIds(greetSource),
-      touchPhases
+      touchFilter,
+      fams
     ),
     touch: buildPool(
       dialogues,
       resolveTouchIds(subtitleCfg?.touch),
-      touchPhases
+      touchFilter,
+      fams
     ),
   };
 
@@ -804,7 +827,11 @@ const main = async () => {
    * ★ 取的是 `TOUCH_KIND_POOLS`（已按「触摸可触发的事件族」筛过），不是 `KIND_POOLS`
    *   —— 这就是"先按族筛、再按类并池"的两层顺序（2026-10-10）。
    */
-  const touchPool: DialogueEntry[] = mergeKindPools(touchKinds, TOUCH_KIND_POOLS);
+  const touchPool: DialogueEntry[] = mergeKindPools(
+    touchKinds,
+    TOUCH_KIND_POOLS,
+    fams
+  );
 
   /**
    * 按某个通道**勾中的类别**取一条候选。
@@ -818,8 +845,8 @@ const main = async () => {
    *   因此与改动前**逐字一致**。
    *
    * ★ 本函数**只服务待机 / 回到壁纸两个通道**（触摸通道已由 `touchPool` 预建好）。
-   *   两条路都传 `dialoguesAuto`（已按 `AUTO_PHASES` 筛过）—— 誓约态孪生不进这两个通道，
-   *   否则`findByActionId` 会把同一个 id 的孪生也带进来（2026-10-10）。
+   *   两条路都传 `dialoguesAuto`（已按**缺省族**筛过）—— 非缺省族的孪生不进这两个通道，
+   *   否则 `findByActionId` 会把同一个 id 的孪生也带进来（2026-10-10）。
    */
   const pickChannelEntry = (
     kinds: readonly TriggerEventKind[]
@@ -836,7 +863,7 @@ const main = async () => {
         greetMode
       );
     }
-    return pickRandomFromPool(mergeKindPools(kinds, KIND_POOLS));
+    return pickRandomFromPool(mergeKindPools(kinds, KIND_POOLS, fams));
   };
 
   /**
@@ -1265,7 +1292,7 @@ const main = async () => {
                  * 触摸池：动作与字幕**同源**。
                  *
                  * ★★ 池子由「触摸可触发的事件」（`subtitle.touchKinds`）在**启动期**算好
-                 * （上面那个 `touchPool` = `mergeKindPools(touchKinds, KIND_POOLS)`）——
+                 * （上面那个 `touchPool` = `mergeKindPools(touchKinds, TOUCH_KIND_POOLS)`）——
                  * 勾了多类就是并成一个大池，命中热区时在整个大池里随机取一条
                  * ⇒ 播哪个动作就显示哪句台词，天然配套不会串。
                  *
@@ -1602,6 +1629,16 @@ const main = async () => {
          *   （如 `cabinMode` → `config.ferrisWheel.cabinMode`），不从这里读。
          */
         wallpaperSettings: configs.wallpaperSettings,
+        /**
+         * ★ 事件族注册表（`config.subtitle.eventFamilies`，见 `config.type.ts` 的 `EventFamily`）。
+         *
+         * 面板据此建「事件池」页的「事件族（仅点击触摸）」那一行：**注册表为空**（含
+         * 显式 `[]`）⇒ 不建该行 —— 没有事件族的皮肤不该多出一个永远点不动的控件
+         * （与上面「壁纸独立设置」页同一口径）。
+         * ⚠️ 传的是**原始 config 的值**，归一（丢非法项 / 去重 / 定缺省族）在面板与
+         *   `dialogue.buildFamilyRegistry` 里做。
+         */
+        eventFamilies: configs.subtitle?.eventFamilies,
         // ★ WE 的 `showSettings` 优先于 localStorage：它才是"用户刚才在属性面板里勾的"
         visible: weShowSettings ?? storedSettings.showSettings !== false,
         open: storedSettings.panelOpen === true,

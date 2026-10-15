@@ -119,6 +119,16 @@ The old boolean `greetInTouchPool` was **removed**; "clicks may also trigger gre
 Every entry is an `actionId` from `subtitle.dialogues`. To add a candidate, append a number
 to the relevant array — no code change required.
 
+**Event families are a config-declared registry** (`subtitle.eventFamilies`, since 2026-10-15).
+The engine used to hardcode `'preMarry' | 'postMarry' | 'normal'`, which made every wallpaper look
+like a vow/wedding skin. Now each wallpaper declares its own families — `[{ id, label, default?,
+fallback?, matchSuffix? }]` — and `subtitle.touchPhases` selects a subset of them (touch channel
+only; the standby/resume channels always use the `fallback` family). An entry's family = explicit
+`DialogueEntry.phase` → per-family `matchSuffix` on the animation name → the `fallback` family.
+**Undeclared ⇒ one built-in family `normal`**; **`[]` ⇒ no event families at all** (the panel row
+is not built and no family filtering happens). Never reintroduce hardcoded family names — see
+`dialogue.ts` (`buildFamilyRegistry` / `resolveDialoguePhase`) and `config.type.ts` (`EventFamily`).
+
 Other config knobs (meshes, layers, `minAspect` / `maxAspect`, `dpr: "auto"`, panel
 `fitAspect`) are described in `public/assets/README.md`.
 

@@ -57,7 +57,11 @@ import {
 // 只为读"探针当前生效值"的缺省（见 readView）——probe 不反向依赖本模块，无循环
 import { PROBE_OPTS } from './probe';
 // 摊平"新多选 / 待机通道的旧两个布尔"的口径（纯函数，可单测）；dialogue 不反向依赖本模块，无循环
-import { resolveTriggerIntent, resolveTriggerPhases } from './dialogue';
+import {
+  buildFamilyRegistry,
+  resolveTriggerIntent,
+  resolveTriggerPhases,
+} from './dialogue';
 
 /** localStorage 键。带版本号，将来改结构时便于一次性弃用旧值 */
 export const SETTINGS_STORAGE_KEY = 'wb.swe.settings.v1';
@@ -171,11 +175,12 @@ export type SettingsOverrides = {
   /**
    * **触摸可触发的事件族（多选）** —— 对应 `config.subtitle.touchPhases`（2026-10-10 新增）。
    *
-   * `TriggerPhase` 的子集（`'preMarry'` 誓约前 / `'postMarry'` 誓约后 / `'normal'` 普通）。
+   * 取值是 `config.subtitle.eventFamilies` 注册表的 id 子集（见 `config.type.ts` 的
+   * `EventFamily`）—— 2026-10-15 起**不再限定"誓约前/誓约后/普通"这几种**。
    * 与 `touchKinds` 是**两层筛子**：先按族筛候选，再在勾中的 chat/greet/touch 类里并池随机。
    *
-   * **缺省（不写本字段）= `['postMarry','normal']`** ⇒ = 游戏誓约（婚后）状态那套可触发事件。
-   * ⚠️ 显式空数组 = 全关（三族都不出条）。改了要重载。
+   * **缺省（不写本字段）= 注册表的缺省勾选**（没声明注册表 ⇒ 内置单族 `normal`）。
+   * ⚠️ 显式空数组 = 全关（一族都不出条）。改了要重载。
    */
   touchPhases?: TriggerPhase[];
   /**
@@ -307,9 +312,9 @@ export type SettingsView = {
    */
   touchKinds: TriggerEventKind[];
   /**
-   * 触摸可触发的**事件族**（多选，**意向列表**，固定顺序 `preMarry` → `postMarry` → `normal`）。
+   * 触摸可触发的**事件族**（多选，**意向列表**，顺序 = 注册表声明顺序）。
    *
-   * ⚠️ 同样是意向列表，不判可用性。缺省 `['postMarry','normal']`。
+   * ⚠️ 同样是意向列表，不判可用性。缺省 = 注册表的缺省勾选（没声明注册表 ⇒ `['normal']`）。
    */
   touchPhases: TriggerPhase[];
   /**
@@ -713,11 +718,14 @@ export const readView = (cfg: Configs): SettingsView => ({
   /** ★ 缺省 `['touch']`（= 点击只从 `touch` 池随机，与改动前一致） */
   touchKinds: resolveTriggerIntent('touch', cfg.subtitle?.touchKinds),
   /**
-   * ★ 缺省 `['postMarry','normal']`（= 游戏誓约后那套可触发事件）。
-   *   摊平口径复用 `dialogue.resolveTriggerPhases` —— 面板勾选态与运行时真正筛的族
-   *   不可能各写一套判据。
+   * ★ 缺省 = **注册表的缺省勾选**（`config.subtitle.eventFamilies` 里标 `default` 的那些；
+   *   没声明注册表 ⇒ 内置单族 `normal`）。摊平口径复用 `dialogue.resolveTriggerPhases`
+   *   —— 面板勾选态与运行时真正筛的族不可能各写一套判据。
    */
-  touchPhases: resolveTriggerPhases(cfg.subtitle?.touchPhases),
+  touchPhases: resolveTriggerPhases(
+    cfg.subtitle?.touchPhases,
+    buildFamilyRegistry(cfg.subtitle?.eventFamilies)
+  ),
   /** ★ 缺省 `['greet']`（= 四个自动时机仍只播问候） */
   resumeKinds: resolveTriggerIntent('resume', cfg.subtitle?.resumeKinds),
   /**

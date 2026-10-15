@@ -45,7 +45,7 @@
  *    以保住「问候触发方式」（`greetMode` 按时段 / 随机）。
  *
  * ★★ **两层筛子（2026-10-10）**：触摸通道先按**事件族**（`subtitle.touchPhases`，
- *    见 `config.type.ts` 的 `TriggerPhase`）筛一遍，再按**类别**（`touchKinds`）并池随机。
+ *    见 `config.type.ts` 的 `EventFamily` 注册表）筛一遍，再按**类别**（`touchKinds`）并池随机。
  *
  * ## ⚠️ "随机"这件事的成色
  *
@@ -60,6 +60,7 @@ import {
   DialogueEntry,
   DialogueSlotKey,
   DialogueTimeRange,
+  EventFamily,
   GreetMode,
   TriggerChannel,
   TriggerEventKind,
@@ -153,14 +154,18 @@ export const buildPool = (
    *
    * · **不给**（缺省）⇒ 不看 `phase`，行为与改动前逐字相同。
    * · **给了** ⇒ 只收 `phase` 落在其中的条目。
+   *   ⚠️ 注册表为空的工程（`eventFamilies: []`）**应当传 `undefined`**（= 不按族筛，
+   *     所有条目一视同仁）—— 见 `index.ts` / `archive.ts` 的 `*Filter` 判据。
    *
    * ★★ 为什么是"**收全命中**"而不是像旧实现那样 `findByActionId` 取首个：
-   *   誓约态孪生条目与本体**共用 `actionId`**（游戏里本就是"同一条动作、两套动画"）。
+   *   同一动作的不同族孪生条目**共用 `actionId`**（游戏里本就是"同一条动作、两套动画"）。
    *   取首个的话，勾了 `['normal','postMarry']` 时孪生**永远轮不到**（静默偏向普通态）。
    *   收全之后由 `mergeKindPools` 按 `actionId|phase` 去重，两条都留在池里。
    *   ⚠️ 对既有 config（一个 id 只对应一条）**结果完全相同**。
    */
-  phases?: readonly TriggerPhase[]
+  phases?: readonly TriggerPhase[],
+  /** 事件族注册表（决定"条目属于哪一族"；缺省 = 内置单族 `normal`） */
+  reg: FamilyRegistry = DEFAULT_FAMILY_REGISTRY
 ): DialogueEntry[] => {
   if (!entries?.length || !ids?.length) {
     return [];
@@ -172,7 +177,7 @@ export const buildPool = (
       if (!e || e.actionId !== ids[i]) {
         continue;
       }
-      if (phases && phases.indexOf(resolveDialoguePhase(e)) < 0) {
+      if (phases && phases.indexOf(resolveDialoguePhase(e, reg)) < 0) {
         continue;
       }
       pool.push(e);
@@ -347,83 +352,171 @@ export const isTriggerChannel = (v: unknown): v is TriggerChannel =>
   v === 'standby' || v === 'touch' || v === 'resume';
 
 /* ══════════════════════════════════════════════════════════════════════
- * 事件族（`TriggerPhase`）—— 2026-10-10
+ * 事件族注册表（`EventFamily` / `TriggerPhase`）
+ * —— 2026-10-10 引入，2026-10-15 由写死的三族改为**注册表制**
  *
- * 三族定义见 `config.type.ts` 的 `TriggerPhase`；本节只放"纯函数口径"：
- * 归一化、缺省、以及"条目属于哪一族"的判据。
- * ⚠️ 目前**只有触摸通道**按族筛选（`subtitle.touchPhases`）；
- *    待机 / 回到壁纸固定只用 `'normal'`。
+ * 族的定义见 `config.type.ts` 的 `EventFamily`；本节只放"纯函数口径"：
+ * 归一化注册表、缺省、以及"条目属于哪一族"的判据。
+ * ⚠️ 按族筛选同样只作用于**触摸通道**（`subtitle.touchPhases`）；
+ *    待机 / 回到壁纸两个自动通道只用**缺省族**（由 `FamilyRegistry.fallbackId` 决定）。
  * ══════════════════════════════════════════════════════════════════════ */
 
-export type { TriggerPhase };
+export type { EventFamily, TriggerPhase };
 
 /**
- * 事件族的**固定顺序**（= 面板里 chips 的显示顺序，也是归一化排序依据）。
+ * 内置**缺省注册表** —— config 没声明 `eventFamilies` 时用它。
  *
- * ★ 与 `TRIGGER_KIND_ORDER` 同一条口径：用户在 config / 面板里敲的顺序无关紧要，
- *   归一化后永远是这一种形状 ⇒ 断言可写死，也不会出现"同一组勾选、两种顺序"。
+ * ★ **只有一族 `normal`（普通事件）**：非誓约皮肤（如 S9 阿丝娜时装）本就没有
+ *   「誓约前/誓约后」这套，给一个永远为空的族只会让面板多出几个点了没用的勾
+ *   ⇒ 缺省就只留"普通事件"这一族（= 所有条目）。
+ * ⚠️ 誓约皮肤要的是三族，必须**自己声明**（见 `config.type.ts` 的 `EventFamily` 示例）。
  */
-export const TRIGGER_PHASE_ORDER: readonly TriggerPhase[] = [
-  'preMarry',
-  'postMarry',
-  'normal',
+export const DEFAULT_EVENT_FAMILIES: readonly EventFamily[] = [
+  { id: 'normal', label: '普通事件', fallback: true, default: true },
 ];
 
 /**
- * 触摸通道**缺省**只用哪几族（字段缺席时）。
+ * 归一后的**事件族注册表** —— 一次摊平、处处复用
+ * （`index.ts` / `archive.ts` / 设置面板 / `settingsStore` 共用同一份判据）。
  *
- * ★ 缺省 = **誓约后 + 普通**（2026-10-10 晚按用户口径改，原为 `['normal']`）。
- *
- * 语义：一份"模板工程"（如誓约皮肤）把动作按「婚后这一位会不会换人」分成三族，
- * 缺省选中的这两族合起来 = **游戏里誓约（婚后）状态下的那套可触发事件**：
- *   · `normal`    = 婚后两态同一个动作（换不换婚约都一样）
- *   · `postMarry` = 婚后的替换者（游戏 `MarryAction` 组）
- * ⇒ 缺省池的**条数**与"游戏誓约后的可触发事件数"一致（触摸位 6）。
- * 想要婚后/婚前两套内容都留着看的用户，可到面板「事件池」页加勾 `preMarry`。
- *
- * ⚠️ 只影响**触摸通道**；待机 / 回到壁纸固定只用 `normal`（见 `index.ts` 的 `AUTO_PHASES`）。
+ * ★ 与 `resolveTriggerIntent` 对 `*Kinds` 的关系一样：把"config 里怎么写的"摊平成
+ *   "运行时怎么算"，避免各处各写一套 if。
  */
-export const DEFAULT_TOUCH_PHASES: readonly TriggerPhase[] = [
-  'postMarry',
-  'normal',
-];
+export type FamilyRegistry = {
+  /** 归一后的族列表（保持声明顺序；已丢非法项、按 `id` 去重） */
+  families: EventFamily[];
+  /** 合法族 id 列表（= 面板 chips 的显示顺序，也是 `*Phases` 的排序依据） */
+  ids: string[];
+  /** 缺省族 id（`fallback` 标记的那个；没标取首项；**注册表为空 ⇒ `null`**） */
+  fallbackId: string | null;
+  /** 缺省勾选的族（`default` 标记的那些；都没标 ⇒ `[缺省族]`；注册表为空 ⇒ `[]`） */
+  defaultIds: string[];
+  /** 是不是合法族 id */
+  has: (v: unknown) => boolean;
+  /** 取族的显示名（没写 / 写空 `label` ⇒ 回落成 `id`） */
+  label: (id: string) => string;
+};
 
-/** 是不是合法的事件族名（非法值静默丢弃，与 `isTriggerEventKind` 同一容错口径） */
-export const isTriggerPhase = (v: unknown): v is TriggerPhase =>
-  v === 'preMarry' || v === 'postMarry' || v === 'normal';
+/** 注册表项是否合法：`id` 必须是非空字符串（config 无 schema 校验 ⇒ 非法项静默丢弃） */
+const isValidFamily = (v: unknown): v is EventFamily =>
+  !!v &&
+  typeof v === 'object' &&
+  typeof (v as EventFamily).id === 'string' &&
+  (v as EventFamily).id.length > 0;
 
 /**
- * 判某条念白属于哪一族。
+ * 把 `config.subtitle.eventFamilies` 归一成注册表。
  *
- * ★ **显式 `phase` 优先**；没写时按**动画名后缀**兜底
- *   （以 `_marry` 结尾 ⇒ `'postMarry'`，否则 `'normal'`）。
- *   ⇒ 老 config（无 `phase`、动画全是普通态）**全部落到 `'normal'`**，而 `'postMarry'`
- *     池为空 ⇒ 即使缺省（见 `DEFAULT_TOUCH_PHASES`）含着 `'postMarry'`，行为仍与改动前逐字相同。
+ * | 输入 | 结果 |
+ * |---|---|
+ * | 没配 / 非数组 / 数组里**一个合法项都没有**（拼错） | 内置缺省（单族 `normal`） |
+ * | **空数组 `[]`** | **空注册表**（= 本项目无事件族机制） |
+ * | 合法数组 | 归一：丢非法项、按 `id` 去重、**保持声明顺序** |
+ *
+ * ★ 容错口径与 `resolveTriggerIntent` 对 `*Kinds` 完全一致：拼错一个词不该静默把机制
+ *   关掉（宁可降级到内置缺省），但空数组是合法的显式表达。
+ * ⚠️ 数组是**新拷贝**，不会就地改到调用方的 config 对象。
  */
-export const resolveDialoguePhase = (e: DialogueEntry): TriggerPhase => {
-  if (isTriggerPhase(e?.phase)) {
+export const buildFamilyRegistry = (raw: unknown): FamilyRegistry => {
+  let families: EventFamily[];
+  if (Array.isArray(raw)) {
+    const want: EventFamily[] = [];
+    const seen: string[] = [];
+    raw.forEach((f: unknown) => {
+      if (isValidFamily(f) && seen.indexOf(f.id) < 0) {
+        seen.push(f.id);
+        want.push(f);
+      }
+    });
+    families =
+      want.length > 0 || raw.length === 0 ? want : DEFAULT_EVENT_FAMILIES.slice();
+  } else {
+    families = DEFAULT_EVENT_FAMILIES.slice();
+  }
+
+  const ids = families.map((f) => f.id);
+  /** 缺省族：标 `fallback` 的第一项；没标取首项；空注册表 ⇒ 无 */
+  const fb = families.find((f) => f.fallback === true);
+  const fallback = fb ?? (families.length ? families[0] : undefined);
+  const fallbackId = fallback ? fallback.id : null;
+  /** 缺省勾选：标 `default` 的那些；都没标 ⇒ 只勾缺省族；空注册表 ⇒ 空 */
+  const marked = families.filter((f) => f.default === true).map((f) => f.id);
+  const defaultIds = marked.length
+    ? marked
+    : fallbackId !== null
+      ? [fallbackId]
+      : [];
+
+  return {
+    families,
+    ids,
+    fallbackId,
+    defaultIds,
+    has: (v: unknown): v is string =>
+      typeof v === 'string' && ids.indexOf(v) >= 0,
+    label: (id: string): string => {
+      const f = families.find((x) => x.id === id);
+      return f && typeof f.label === 'string' && f.label ? f.label : id;
+    },
+  };
+};
+
+/** 内置缺省注册表（`DEFAULT_EVENT_FAMILIES` 的归一结果）—— 供缺省参数复用，避免每处各建一份 */
+export const DEFAULT_FAMILY_REGISTRY: FamilyRegistry =
+  buildFamilyRegistry(undefined);
+
+/**
+ * 判某条念白属于哪一族（**注册表驱动的三段判据**）。
+ *
+ * ① 条目**显式 `phase`** 且是注册表里的 id ⇒ 就是它；
+ * ② 否则按注册表各族的 `matchSuffix` 匹配动画名（**先声明先赢**）；
+ * ③ 都不中 ⇒ **缺省族**。
+ *
+ * ⚠️ 注册表为空（本项目无事件族机制）⇒ **不判族**：原样返回条目自己的 `phase`
+ *   （没有则 `''`），只为 `mergeKindPools` 的去重键保留区分度（此时不按族筛，见 `buildPool`）。
+ */
+export const resolveDialoguePhase = (
+  e: DialogueEntry,
+  reg: FamilyRegistry = DEFAULT_FAMILY_REGISTRY
+): TriggerPhase => {
+  if (!reg.families.length) {
+    return typeof e?.phase === 'string' ? e.phase : '';
+  }
+  if (typeof e?.phase === 'string' && reg.has(e.phase)) {
     return e.phase;
   }
-  return typeof e?.animation === 'string' && e.animation.endsWith('_marry')
-    ? 'postMarry'
-    : 'normal';
+  const anim = typeof e?.animation === 'string' ? e.animation : '';
+  if (anim) {
+    for (let i = 0; i < reg.families.length; i++) {
+      const suf = reg.families[i].matchSuffix;
+      if (typeof suf === 'string' && suf && anim.endsWith(suf)) {
+        return reg.families[i].id;
+      }
+    }
+  }
+  return reg.fallbackId ?? '';
 };
 
 /**
- * 把任意值归一成**合法的事件族列表**：丢弃非法值、去重、按 `TRIGGER_PHASE_ORDER` 排序。
+ * 把任意值归一成**注册表内合法的事件族列表**：丢弃非法值、去重、按**注册表声明顺序**排序。
+ *
+ * ★ 与 `normalizeTriggerKinds` 同一条口径：面板里敲的顺序无关紧要，归一后永远同一种形状。
  * ⚠️ 非数组 ⇒ 空数组（调用方据此区分"没配"与"配了个空的"）。
  */
-export const normalizeTriggerPhases = (phases: unknown): TriggerPhase[] => {
+export const normalizeTriggerPhases = (
+  phases: unknown,
+  reg: FamilyRegistry = DEFAULT_FAMILY_REGISTRY
+): TriggerPhase[] => {
   if (!Array.isArray(phases)) {
     return [];
   }
-  const want: TriggerPhase[] = [];
+  const want: string[] = [];
   phases.forEach((p: unknown) => {
-    if (isTriggerPhase(p) && want.indexOf(p) < 0) {
-      want.push(p);
+    if (reg.has(p) && want.indexOf(p as string) < 0) {
+      want.push(p as string);
     }
   });
-  return TRIGGER_PHASE_ORDER.filter((p) => want.indexOf(p) >= 0);
+  return reg.ids.filter((id) => want.indexOf(id) >= 0);
 };
 
 /**
@@ -431,22 +524,26 @@ export const normalizeTriggerPhases = (phases: unknown): TriggerPhase[] => {
  *
  * | 输入 | 结果 |
  * |---|---|
- * | 没配 / 非数组 | 缺省 `['postMarry','normal']`（= 游戏誓约后那套） |
+ * | 没配 / 非数组 | 注册表的**缺省勾选**（`reg.defaultIds`） |
  * | 合法数组（含**空数组**） | 归一后的列表；**空数组 = 显式全关**（绝不退回缺省） |
  * | 数组里一个合法值都没有（拼错） | 当作"没配"，退回缺省（config 无 schema 校验，宁可降级） |
  *
  * ★ 与 `resolveTriggerIntent` 对 `*Kinds` 的口径**完全一致**（同一个理由：拼错一个词
  *   不该静默把整条通道关掉；但空数组是合法的显式表达）。
+ * ⚠️ **注册表为空 ⇒ 恒返回 `[]`**，且此时调用方**不按族筛**（见 `buildPool` 的 `phases`）。
  * ⚠️ 返回值**每次新拷贝**一份 —— 外部就地改它会污染缺省表。
  */
-export const resolveTriggerPhases = (phases: unknown): TriggerPhase[] => {
+export const resolveTriggerPhases = (
+  phases: unknown,
+  reg: FamilyRegistry = DEFAULT_FAMILY_REGISTRY
+): TriggerPhase[] => {
   if (Array.isArray(phases)) {
-    const want = normalizeTriggerPhases(phases);
+    const want = normalizeTriggerPhases(phases, reg);
     if (want.length || phases.length === 0) {
       return want;
     }
   }
-  return DEFAULT_TOUCH_PHASES.slice();
+  return reg.defaultIds.slice();
 };
 
 /**
@@ -553,18 +650,20 @@ export const hasGreetingSlots = (greeting?: GreetSource): boolean =>
  */
 export const mergeKindPools = (
   kinds: readonly TriggerEventKind[],
-  pools: Readonly<Record<TriggerEventKind, DialogueEntry[]>>
+  pools: Readonly<Record<TriggerEventKind, DialogueEntry[]>>,
+  /** 事件族注册表（去重键里的族由它判定；缺省 = 内置单族 `normal`） */
+  reg: FamilyRegistry = DEFAULT_FAMILY_REGISTRY
 ): DialogueEntry[] => {
   const out: DialogueEntry[] = [];
   /**
    * 去重键 = **`actionId|phase`**（2026-10-10 改；此前只有 `actionId`）。
    *
-   * ★★ 誓约态孪生与本体**共用 `actionId`** ⇒ 只按 id 去重会把孪生**静默丢掉**。
+   * ★★ 同一动作的不同族孪生条目**共用 `actionId`** ⇒ 只按 id 去重会把孪生**静默丢掉**。
    *   ⚠️ 对既有 config（一个 id 只对应 `'normal'` 一条）**结果完全相同**
    *   —— 同一个 id 的 key 仍只有一个。
    */
   const seen: string[] = [];
-  /** 逐类拼接；按 `actionId|phase` 去重（既防跨类重复，也保住誓约态孪生） */
+  /** 逐类拼接；按 `actionId|phase` 去重（既防跨类重复，也保住不同族的孪生） */
   TRIGGER_KIND_ORDER.forEach((kind) => {
     if (kinds.indexOf(kind) < 0) {
       return;
@@ -573,7 +672,7 @@ export const mergeKindPools = (
       if (!e) {
         return;
       }
-      const key = e.actionId + '|' + resolveDialoguePhase(e);
+      const key = e.actionId + '|' + resolveDialoguePhase(e, reg);
       if (seen.indexOf(key) >= 0) {
         return;
       }

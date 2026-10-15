@@ -38,7 +38,10 @@
     "touchFeedbackMode": "legacy",
     "standbyKinds": ["chat"],
     "touchKinds": ["touch"],
-    "resumeKinds": ["greet"]
+    "resumeKinds": ["greet"],
+    "eventFamilies": [
+      { "id": "normal", "label": "普通事件", "fallback": true, "default": true }
+    ]
   },
   "bgm": {
     "enabled": true,

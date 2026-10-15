@@ -74,8 +74,10 @@ import {
 } from './config.type';
 import {
   DEFAULT_TIME_RANGES,
+  FamilyRegistry,
   SLOT_ORDER,
   TRIGGER_KIND_ORDER,
+  buildFamilyRegistry,
   buildPool,
   findByActionId,
   mergeKindPools,
@@ -206,23 +208,26 @@ const voiceBase = (voice?: string): string => {
   return parts[parts.length - 1] || voice;
 };
 
-/** 事件族名（人话）—— 表格与细则共用 */
-const PHASE_TEXT: Record<TriggerPhase, string> = {
-  preMarry: '誓约前事件',
-  postMarry: '誓约后事件',
-  normal: '普通事件',
-};
-
-const makeRow = (event: string, cond: string, e: DialogueEntry): Row => {
+/**
+ * 造一行。★ 事件族名由**注册表**给（`reg.label`）—— 2026-10-15 起不再是写死的三族表。
+ */
+const makeRow = (
+  event: string,
+  cond: string,
+  e: DialogueEntry,
+  reg: FamilyRegistry
+): Row => {
   const short = shortLabel(e.label);
   /**
-   * ★ 非普通事件在角标后**缀上事件族**（2026-10-10）——
-   *   缺省池里既有 `postMarry`（动画 `*_marry`）又有 `normal`，光看 `#63004` 分不出属于哪一族；
+   * ★ 非**缺省族**的条目在角标后**缀上事件族名**（2026-10-10）——
+   *   缺省池里既有缺省族、又有别的族时，光看 `#63004` 分不出属于哪一族；
    *   缀上后"表里显示什么"与"实际会播什么"一眼对得上。
-   *   ★ 普通事件**不缀** ⇒ 老 config（全是普通事件）的角标逐字不变。
+   *   ★ 缺省族的条目**不缀** ⇒ 老 config（条目全落缺省族）的角标逐字不变。
+   *   ★ 注册表为空（无事件族机制）⇒ 也不缀。
    */
-  const ph = resolveDialoguePhase(e);
-  const phTail = ph === 'normal' ? '' : ' · ' + PHASE_TEXT[ph];
+  const ph = resolveDialoguePhase(e, reg);
+  const phTail =
+    reg.families.length && ph !== reg.fallbackId ? ' · ' + reg.label(ph) : '';
   return {
     event,
     cond,
@@ -245,18 +250,20 @@ type ArchiveState = {
   chatIds: number[];
   greetIds: number[];
   touchIds: number[];
-  /** 三个类别各自的条目池（`buildPool` 的产物；**只含普通事件**，= `index.ts` 的 `KIND_POOLS`） */
+  /** 三个类别各自的条目池（`buildPool` 的产物；**只含缺省族**，= `index.ts` 的 `KIND_POOLS`） */
   pools: Record<TriggerEventKind, DialogueEntry[]>;
   /**
    * **触摸通道专用**的三个池（再按 `touchPhases` 筛过一次）= `index.ts` 的 `TOUCH_KIND_POOLS`。
    *
    * ★★ 为什么必须分开：触摸通道现在有**两层筛子**（先事件族、后类别），
-   *   而待机 / 回到壁纸固定只用普通事件 ⇒ 两个池集不同，不能共用一份
+   *   而待机 / 回到壁纸只用**缺省族** ⇒ 两个池集不同，不能共用一份
    *   （否则"表里说会播"与"实际会不会播"会不一致，正是本文件要避免的事）。
    */
   touchPools: Record<TriggerEventKind, DialogueEntry[]>;
   /** 触摸通道勾中的事件族（摊平后） */
   touchPhases: TriggerPhase[];
+  /** 事件族注册表（`config.subtitle.eventFamilies` 归一而来；族名/缺省族/判据都从它取） */
+  families: FamilyRegistry;
   /** 三个通道**真正会播**哪些类别（口径 + 可用性，= 运行时同一判据） */
   channels: Record<TriggerChannel, TriggerEventKind[]>;
   greetMode: 'time' | 'random';
@@ -271,18 +278,27 @@ const resolveState = (cfg: Configs): ArchiveState => {
   const chatIds = resolveChatIds(sub?.chat, sub?.standby);
   const greetIds = normalizeGreetIds(greetSource);
   const touchIds = resolveTouchIds(sub?.touch);
-  /** ★ 待机 / 回到壁纸固定只用普通事件（与 `index.ts` 的 `AUTO_PHASES` 同值） */
-  const AUTO_PHASES: readonly TriggerPhase[] = ['normal'];
-  const touchPhases = resolveTriggerPhases(sub?.touchPhases);
+  /**
+   * ★ 事件族注册表（2026-10-15）—— 与 `index.ts` 完全同一套摊平口径。
+   *   待机 / 回到壁纸只用**缺省族**；注册表为空 ⇒ 不按族筛（`undefined`）。
+   */
+  const families = buildFamilyRegistry(sub?.eventFamilies);
+  const autoPhases: readonly TriggerPhase[] =
+    families.fallbackId !== null ? [families.fallbackId] : [];
+  const autoFilter: readonly TriggerPhase[] | undefined =
+    families.families.length ? autoPhases : undefined;
+  const touchPhases = resolveTriggerPhases(sub?.touchPhases, families);
+  const touchFilter: readonly TriggerPhase[] | undefined =
+    families.families.length ? touchPhases : undefined;
   const pools: Record<TriggerEventKind, DialogueEntry[]> = {
-    chat: buildPool(dialogues, chatIds, AUTO_PHASES),
-    greet: buildPool(dialogues, greetIds, AUTO_PHASES),
-    touch: buildPool(dialogues, touchIds, AUTO_PHASES),
+    chat: buildPool(dialogues, chatIds, autoFilter, families),
+    greet: buildPool(dialogues, greetIds, autoFilter, families),
+    touch: buildPool(dialogues, touchIds, autoFilter, families),
   };
   const touchPools: Record<TriggerEventKind, DialogueEntry[]> = {
-    chat: buildPool(dialogues, chatIds, touchPhases),
-    greet: buildPool(dialogues, greetIds, touchPhases),
-    touch: buildPool(dialogues, touchIds, touchPhases),
+    chat: buildPool(dialogues, chatIds, touchFilter, families),
+    greet: buildPool(dialogues, greetIds, touchFilter, families),
+    touch: buildPool(dialogues, touchIds, touchFilter, families),
   };
   const has = (k: TriggerEventKind): boolean => pools[k].length > 0;
   const tHas = (k: TriggerEventKind): boolean => touchPools[k].length > 0;
@@ -294,6 +310,7 @@ const resolveState = (cfg: Configs): ArchiveState => {
     pools,
     touchPools,
     touchPhases,
+    families,
     channels: {
       // ★ 与 `index.ts` 完全同一组入参 —— 表里显示的"会播哪几类"不可能与实际行为不同
       standby: resolveTriggerKinds(
@@ -385,7 +402,7 @@ const buildRows = (cfg: Configs, st: ArchiveState): Row[] => {
     if (!kinds.length) {
       return;
     }
-    const mergedPool = mergeKindPools(kinds, st.pools);
+    const mergedPool = mergeKindPools(kinds, st.pools, st.families);
     /** 勾了多类 ⇒ 合成一个池一起抽（池内每条等概率，所以条目多的类别更容易抽到） */
     const tail =
       kinds.length > 1
@@ -408,7 +425,8 @@ const buildRows = (cfg: Configs, st: ArchiveState): Row[] => {
                 '（chat 池共 ' +
                 st.pools.chat.length +
                 ' 条）',
-              e
+              e,
+              st.families
             )
           );
         });
@@ -446,7 +464,7 @@ const buildRows = (cfg: Configs, st: ArchiveState): Row[] => {
                   ? '（' + hourRangeText(range.start, range.end) + '）'
                   : '')
               : tail);
-          rows.push(makeRow(prefix + ' · ' + name, cond, e));
+          rows.push(makeRow(prefix + ' · ' + name, cond, e, st.families));
         });
         return;
       }
@@ -460,7 +478,8 @@ const buildRows = (cfg: Configs, st: ArchiveState): Row[] => {
               '（touch 池共 ' +
               st.pools.touch.length +
               ' 条，与「点击触摸」同一批候选）',
-            st.pools.touch[0]
+            st.pools.touch[0],
+            st.families
           )
         );
       }
@@ -475,9 +494,9 @@ const buildRows = (cfg: Configs, st: ArchiveState): Row[] => {
 
   /* ③ 点击触摸 —— 池 = 「触摸可触发的事件」勾中的类别并池，且**先按「可触发的事件族」筛过** */
   const touchKinds = st.channels.touch;
-  const touchPool = mergeKindPools(touchKinds, st.touchPools);
+  const touchPool = mergeKindPools(touchKinds, st.touchPools, st.families);
   const phaseText = st.touchPhases.length
-    ? st.touchPhases.map((p) => PHASE_TEXT[p]).join(' / ')
+    ? st.touchPhases.map((p) => st.families.label(p)).join(' / ')
     : '（未勾任何事件族 ⇒ 抽不出条目）';
   touchPool.forEach((e, i) => {
     const kind = kindOfEntry(e, touchKinds, st.touchPools);
@@ -493,7 +512,8 @@ const buildRows = (cfg: Configs, st: ArchiveState): Row[] => {
           '（' +
           KIND_TEXT[kind] +
           '）',
-        e
+        e,
+        st.families
       )
     );
   });
@@ -518,7 +538,7 @@ const buildRows = (cfg: Configs, st: ArchiveState): Row[] => {
         gapMs +
         ' ms';
       if (e) {
-        rows.push(makeRow('常驻序列 #' + (i + 1), cond, e));
+        rows.push(makeRow('常驻序列 #' + (i + 1), cond, e, st.families));
       } else {
         rows.push({
           event: '常驻序列 #' + (i + 1),
@@ -566,7 +586,7 @@ const describeChannel = (st: ArchiveState, kind: TriggerChannel): string => {
       ? '从 greet 列表里随机取 1 条（不看时间）'
       : '按当前时刻取 greet 列表里对应序号那条（第 1 条=清晨、第 2 条=中午、第 3 条=傍晚）';
   }
-  const pool = mergeKindPools(kinds, st.pools);
+  const pool = mergeKindPools(kinds, st.pools, st.families);
   return (
     '把「' +
     kinds.map((k) => KIND_TEXT[k]).join('、') +
@@ -613,7 +633,7 @@ const buildNotes = (cfg: Configs, st: ArchiveState): string[] => {
     '「点击触摸」= 点中任一热区后从池中随机取 1 条；池 = ' +
       (st.channels.touch.length
         ? '「触摸可触发的事件」勾中的类别合成一个池，共 ' +
-          mergeKindPools(st.channels.touch, st.pools).length +
+          mergeKindPools(st.channels.touch, st.pools, st.families).length +
           ' 条（配置里 touch 列表 ' +
           st.touchIds.length +
           ' 条）'

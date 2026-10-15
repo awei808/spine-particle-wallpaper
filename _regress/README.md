@@ -32,6 +32,7 @@ npx ts-node --transpile-only _regress/<脚本名>.ts [参数...]
 | `66_回归_音频总闸边界.ts` | **无**（用 DOM 桩，不需要外部文件） | — | — |
 | `67_回归_触摸反馈与问候模式.ts` | `argv[2]` = bundle（其余用例自带数据，不需要 config） | `WK_BUNDLE` | `dist/bundle.js` |
 | `68_回归_触摸反馈三模式.ts` | `argv[2]` = `.skel` 路径 | `WK_SKEL` | `assets/character.skel` |
+| `69_回归_事件族注册表.ts` | `argv[2]` = bundle（用例自带数据，不需要 config） | `WK_BUNDLE` | `dist/bundle.js` |
 
 例：
 
@@ -61,5 +62,9 @@ npx ts-node --transpile-only _regress/64_回归_触摸通道并池.ts
 | `66` | 音频总闸的各条边界（暂停/恢复/幂等/stop 后不复活等），**纯 DOM 桩，无外部依赖** |
 | `67` | 事件列表（`greet` / `chat` / `touch` 三条数组）+ 问候取条方式（按时 / 随机）+ 触摸反馈四档（`legacy` 缺省 / `immediate` / `queue` / `none`）的**纯判定与配置链路**（含旧 `greeting` / `standby` 的向后兼容） |
 | `68` | 触摸反馈四档在**叠加模式**下的真实播放行为（待播槽：排进去、自动接上、容量 1、dispose 不留定时器；`legacy` 的两半：触摸在演忽略、问候在演打断） |
+| `69` | **事件族注册表**（2026-10-15 改注册表制）—— 直接 import `src/dialogue` 的纯函数，覆盖：注册表归一（缺省单族 `normal` / 空注册表 / 非法项丢弃 / 去重保序 / 自定义族）、条目判族三段判据（显式 `phase` → `matchSuffix` → 缺省族）、挂件勾选归一与缺省（`touchPhases`）、`buildPool` 的族筛与孪生"收全命中"、`mergeKindPools` 的 `actionId\|phase` 去重；末段读 bundle 断言**产物里不再有写死的族名/族标签** |
+
+> ⚠️ `65` 的 D 段有一条**早已失配**的断言（找面板文案「旧版「touch触发greet事件」开关打开的效果」，
+> 该短语在 `src/` 里根本不存在、且注释不会进 bundle）⇒ 它会稳定报 1 条 FAIL，与本次改动无关。
 
 退出码 `0` = 全通过，非 `0` = 有失败项。

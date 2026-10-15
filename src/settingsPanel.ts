@@ -74,14 +74,16 @@
  * ⇒ 面板/齿轮一律用**实色半透明背景**代替毛玻璃。气泡模糊不受影响。
  */
 
-import { TriggerEventKind, TriggerPhase } from './config.type';
 import {
+  EventFamily,
+  TriggerEventKind,
+  TriggerPhase,
   WallpaperSettingItem,
   WallpaperSettingsConfig,
 } from './config.type';
 import {
   TRIGGER_KIND_ORDER,
-  TRIGGER_PHASE_ORDER,
+  buildFamilyRegistry,
   normalizeTriggerKinds,
   normalizeTriggerPhases,
 } from './dialogue';
@@ -121,6 +123,14 @@ export type SettingsPanelOptions = {
    * ★ 缺省 / `items` 为空 ⇒ 面板**不建**这一页（连标签按钮一起省掉）。
    */
   wallpaperSettings?: WallpaperSettingsConfig;
+  /**
+   * 本壁纸的**事件族注册表**（对应 `config.subtitle.eventFamilies`，见 `config.type.ts`
+   * 的 `EventFamily`）。
+   *
+   * ★ 缺省 / 归一后为空 ⇒ 「事件池」页**不建**「事件族（仅点击触摸）」那一行
+   *   （与 `wallpaperSettings` 同一口径：没有事件族的皮肤不该多出一个点不动的控件）。
+   */
+  eventFamilies?: EventFamily[];
   /** 齿轮按钮是否显示（对应 WE 属性 `showSettings`） */
   visible: boolean;
   /** 面板是否初始展开 */
@@ -1591,14 +1601,13 @@ export const createSettingsPanel = (
     );
 
   /**
-   * 「可触发的事件（事件族）」—— 触摸页专用（2026-10-10）。
-   * 选项名按用户口径：**誓约前事件 / 誓约后事件 / 普通事件**。
+   * 本壁纸的**事件族注册表**（`config.subtitle.eventFamilies` 归一而来，2026-10-15）。
+   *
+   * ★ 一次归一、多处复用：chips 的选项 / 顺序 / 显示名 / 归一函数全部从它取
+   *   （见下面「事件族（仅点击触摸）」）。
+   * ⚠️ 归一结果**为空** ⇒ 该行不建；**没声明** `eventFamilies` ⇒ 内置单族 `normal`，仍会建。
    */
-  const PHASE_LABEL: Record<TriggerPhase, string> = {
-    preMarry: '誓约前事件',
-    postMarry: '誓约后事件',
-    normal: '普通事件',
-  };
+  const fams = buildFamilyRegistry(options.eventFamilies);
 
   /**
    * ★★ **触摸热区范围改为全屏**（2026-10-10；2026-10-10 晚随页序重组移到本页）。
@@ -1752,7 +1761,8 @@ export const createSettingsPanel = (
   );
 
   /**
-   * ★★ **事件族 —— 点击触摸的第二层筛子**（2026-10-10 新增；2026-10-11 挪到本页**最后一行**）。
+   * ★★ **事件族 —— 点击触摸的第二层筛子**（2026-10-10 新增；2026-10-11 挪到本页**最后一行**；
+   *   **2026-10-15 改为注册表驱动**）。
    *
    * 它**只作用于点击触摸这一个入口**：
    *   ① 先按本项勾中的**事件族**筛候选；
@@ -1768,33 +1778,42 @@ export const createSettingsPanel = (
    * ⚠️ 标签里因此**不带 `└` 前缀**（2026-10-11 用户拍板），措辞「（仅点击触摸）」
    *   已经把作用域交代清楚了。
    *
-   * ★ 三族判据 = **「婚后这一位会不会换人」**（不是动画名）：
-   *   原表 `MarryAction{1,2,3}` 替换 `TouchFeedback{1,2,3}` ⇒ 婚后触摸位 1/2/3 换播别的动作、
-   *   位 4/5/6 原样沿用（全库 26 个 control 结构一致）。定义见 `config.type.ts` 的 `TriggerPhase`。
-   * ★ 缺省 `['postMarry','normal']` = **游戏誓约（婚后）状态那套** ⇒ 缺省触摸池的条数
-   *   与"游戏誓约后的可触发事件数"一致。
+   * ## ★★ 选项全部来自 `config.subtitle.eventFamilies`（2026-10-15）
+   *
+   * 顺序 = 注册表声明顺序、显示名 = `label`、归一 = `normalizeTriggerPhases(v, reg)`。
+   * ⇒ 引擎里**不再有内置族名**，也**不再限定"誓约前/誓约后/普通"**：加一族 = 改 config。
+   * ⚠️ **注册表为空**（没声明且归一后无族 / 显式 `[]`）⇒ **整行不建**（与「壁纸独立设置」
+   *   页同一口径）。
+   * ⚠️ DOM 锚点是**按注册表拼**的 `wb-set-phase-<id>`（不再有字面量）：
+   *   验证脚本请按 `data-wb-opt="<id>"` 或 `[data-wb-set^="wb-set-phase-"]` 定位。
    */
-  const phaseChips = createChips<TriggerPhase>(
-    {
-      preMarry: 'wb-set-phase-premarry',
-      postMarry: 'wb-set-phase-postmarry',
-      normal: 'wb-set-phase-normal',
-    },
-    () => draft.touchPhases,
-    (v) => {
-      draft.touchPhases = v;
-    },
-    TRIGGER_PHASE_ORDER,
-    PHASE_LABEL,
-    normalizeTriggerPhases
-  );
-  addRow(
-    '事件族（仅点击触摸）',
-    phaseChips.el,
-    '在勾中的类别里再按事件族筛一层，两层叠加生效；默认勾「誓约后事件」+「普通事件」。',
-    pages.touch,
-    true
-  );
+  let phaseChips: { el: HTMLElement; paint: () => void } | null = null;
+  if (fams.families.length) {
+    const phaseIds: Record<string, string> = {};
+    const phaseLabels: Record<string, string> = {};
+    fams.ids.forEach((id) => {
+      phaseIds[id] = 'wb-set-phase-' + id;
+      phaseLabels[id] = fams.label(id);
+    });
+    phaseChips = createChips<TriggerPhase>(
+      phaseIds,
+      () => draft.touchPhases,
+      (v) => {
+        draft.touchPhases = v;
+      },
+      fams.ids,
+      phaseLabels,
+      (v) => normalizeTriggerPhases(v, fams)
+    );
+    addRow(
+      '事件族（仅点击触摸）',
+      phaseChips.el,
+      '在勾中的类别里再按事件族筛一层，两层叠加生效；选项与本项目的事件族一致' +
+        '（缺省勾选见 config 的 eventFamilies）。',
+      pages.touch,
+      true
+    );
+  }
 
   /* ── tab 5：画面调整 ───────────────────────── */
   rowTarget = pages.view;
@@ -2288,8 +2307,10 @@ export const createSettingsPanel = (
     standbyChips.paint();
     touchChips.paint();
     resumeChips.paint();
-    // ★ 触摸页的事件族 chips 同理（2026-10-10）
-    phaseChips.paint();
+    // ★ 触摸页的事件族 chips 同理（2026-10-10）；注册表为空时该行没建 ⇒ 跳过
+    if (phaseChips) {
+      phaseChips.paint();
+    }
     cbTouchFullscreen.checked = draft.touchFullscreen;
     selTouchFeedback.value = draft.touchFeedbackMode;
     selGreetMode.value = draft.greetMode;

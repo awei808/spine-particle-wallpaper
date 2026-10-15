@@ -545,14 +545,17 @@ export type DialogueEntry = {
    */
   animation: string;
   /**
-   * **事件族**（`'preMarry'` / `'postMarry'` / `'normal'`）。缺省按动画名后缀兜底：
-   * 以 `_marry` 结尾 ⇒ `'postMarry'`，否则 `'normal'`（见 `dialogue.resolveDialoguePhase`）。
+   * **事件族 id** —— 必须是 `config.subtitle.eventFamilies` 注册表里的某个 `id`
+   * （见 `EventFamily`）。
+   *
+   * ⚠️ 没写 / 写了非法值时按 `dialogue.resolveDialoguePhase` 的三段判据兜底：
+   *   先看注册表各族的 `matchSuffix`，再不中则归入**缺省族**。
    *
    * ★ 只有**触摸通道**会按它筛选（用户在面板「事件池」页选哪些族可触发）；
-   *   待机 / 回到壁纸两个通道固定只用 `'normal'` 的条目。
+   *   待机 / 回到壁纸两个自动通道**只用缺省族**的条目。
    *
-   * ⚠️ 誓约态孪生条目与本体**共用 `actionId`**（游戏里本就是"同一条动作、两套动画"），
-   *   靠本字段区分；`buildPool` / `mergeKindPools` 已做 phase 感知，不会误去重。
+   * ⚠️ 同一动作的不同族孪生条目**共用 `actionId`**（游戏里本就是"同一条动作、两套动画"），
+   *   靠本字段区分；`buildPool` / `mergeKindPools` 已做族感知，不会误去重。
    */
   phase?: TriggerPhase;
   /** 念白正文（字幕文本） */
@@ -1075,46 +1078,87 @@ export type TriggerEventKind = 'chat' | 'greet' | 'touch';
 export type TriggerChannel = 'standby' | 'touch' | 'resume';
 
 /**
- * **事件族** —— 一条念白属于哪个「誓约阶段」（2026-10-10 新增）。
+ * **事件族（EventFamily）与它的注册表** —— 一条念白属于哪个「事件族」
+ * （2026-10-10 引入；**2026-10-15 改为注册表制**）。
  *
- * ## 为什么需要它
+ * ## 为什么是注册表
  *
- * 本皮肤是**誓约（婚纱）皮肤**：游戏原表 `CfgSoulSpineActionControlTable[603]` 里
- * **每个动作同时挂着两个动画状态** —— `SoulActionState`（普通态）与
- * `MarryActionState`（誓约态）；此外还有一组 `MarryAction{1:63004, 2:63005, 3:63010}`
- * （誓约专属动作）。⇒ 壁纸侧把念白按这三种"族"分开，让用户决定**点击时允许触发哪些族**。
+ * 事件族最初是为**誓约（婚纱）皮肤**引入的（2026-10-10）：游戏原表
+ * `CfgSoulSpineActionControlTable[603]` 里同一条动作在婚前后走两个动画
+ * （`SoulActionState` / `MarryActionState`），于是把念白按「誓约前 / 誓约后 / 普通」
+ * 三族分开，让用户决定点击时允许触发哪些族。原始判据 = **「婚后这一位会不会换人」**
+ * （不是动画名）：`MarryAction{1,2,3}` 替换 `TouchFeedback{1,2,3}`，
+ * 婚后位 1/2/3 换播别的动作、4/5/6 原样沿用。
  *
- * | 取值 | 面板选项 | 判定 | 本工程（S8）当前内容 |
- * |---|---|---|---|
- * | `'preMarry'` | 誓约前事件 | 条目显式写 `phase`（= 游戏的 `MarryAction` 组） | 3 条（63004/63005/63010） |
- * | `'postMarry'` | 誓约后事件 | 条目显式写 `phase`；动画名以 `_marry` 结尾 | 10 条（普通动作的誓约态孪生） |
- * | `'normal'` | 普通事件 | 其余（含**缺 `phase` 字段**的旧 config） | 10 条（普通态动画） |
+ * ⚠️ 但**不是每张皮肤都有这套机制**（如 S9 阿丝娜时装：10 条念白全无誓约态）——
+ *   把三族写死在代码里 ⇒ 非誓约皮肤也会看到一个凭空冒出的「誓约前/誓约后事件」，
+ *   而且**再加事件族就得改引擎**。故改为**注册表制**：有哪些族、叫什么名字、
+ *   缺省勾谁、谁是缺省族，全部由 `config.subtitle.eventFamilies` 声明
+ *   （与 `config.wallpaperSettings` 同一套"config 声明即建 UI"的口径）。
  *
- * ## ★★ 这是"复刻"之外的**分类维度**，务必知情
+ * ## 注册表项
  *
- * ## 三族的判据（2026-10-10 晚定稿）
+ * | 字段 | 必填 | 含义 |
+ * |---|---|---|
+ * | `id` | ✅ | 事件族 id —— 条目 `DialogueEntry.phase` 引用它。**自由字符串**，不再限定三种 |
+ * | `label` | | 面板 / 档案里显示的**人话名**（如「誓约后事件」）。缺省回落成 `id` |
+ * | `default` | | 面板**缺省勾选**（同时是 `touchPhases` 的缺省）。可标多个；都没标 ⇒ 只勾缺省族 |
+ * | `fallback` | | **缺省族**（有且仅有一个）：条目未写 `phase` / 写了非法值时归入本族；**也决定「待机 / 回到壁纸」两个自动通道用哪一族**。都没标 ⇒ 取注册表第一项 |
+ * | `matchSuffix` | | 可选的**动画名后缀**判据（取代原先写死的 `_marry` 启发式）：条目未写 `phase` 时，动画名以此结尾 ⇒ 归入本族（优先于缺省族）。誓约工程写 `"_marry"` 即可还原旧行为 |
  *
- * 游戏原表 `CfgSoulSpineActionControlTable` 里 `MarryAction{1,2,3}` **替换**
- * `TouchFeedback{1,2,3}` —— 婚后触摸位 1/2/3 换播别的动作，4/5/6 原样沿用
- * （全库 26 个 control 结构一致：两表同键空间、`MarryAction` 是前缀子集）。
- * ⇒ 判据是**「婚后这一位会不会换人」**，不是动画名：
+ * ## 条目 → 事件族的三段判据（`dialogue.resolveDialoguePhase`）
  *
- * | 取值 | 判据 |
- * |---|---|
- * | `preMarry` | 婚后**被换掉**的那一位（婚前专属） |
- * | `postMarry` | 婚后的**替换者**（= `MarryAction` 组） |
- * | `normal` | 婚后**两态同一个动作**（换不换婚约都一样） |
+ * ① 条目**显式 `phase`** 且是注册表里的 id ⇒ 就是它；
+ * ② 否则按注册表各族的 `matchSuffix` 匹配动画名（先声明先赢）；
+ * ③ 都不中 ⇒ 归入**缺省族**。
  *
- * 分类在工程侧完成（`_work_星语心恋/17_注入S8语音字幕.py`），**不是游戏原样**。
- * ⚠️ `dialogue.buildPool` / `mergeKindPools` 仍是 phase 感知的（去重键 `actionId|phase`）
+ * ## 誓约工程（S8/603）怎么声明（示例口径，不是内置）
+ *
+ * ```jsonc
+ * "eventFamilies": [
+ *   { "id": "preMarry",  "label": "誓约前事件" },
+ *   { "id": "postMarry", "label": "誓约后事件", "default": true, "matchSuffix": "_marry" },
+ *   { "id": "normal",    "label": "普通事件",   "default": true, "fallback": true }
+ * ]
+ * ```
+ * ⇒ 缺省勾「誓约后 + 普通」= 游戏誓约（婚后）状态那套可触发事件；缺省族是 `normal`。
+ *
+ * ⚠️ 分类在工程侧完成（`_work_星语心恋/17_注入S8语音字幕.py`），**不是游戏原样**。
+ * ⚠️ `dialogue.buildPool` / `mergeKindPools` 仍是族感知的（去重键 `actionId|phase`）
  *   —— 这是防御：万一某份 config 把同一条 `actionId` 分别标了两个族，不会静默丢一条。
  *
- * ⚠️ **缺 `phase` 字段时按动画名后缀兜底**（`dialogue.resolveDialoguePhase`）：
- *   动画名以 `_marry` 结尾 ⇒ `'postMarry'`，否则 `'normal'`。
- *   ⇒ 老 config（无 `phase`、无 `_marry` 动画）**全部落到 `'normal'`**，而 `'postMarry'`
- *     池为空 ⇒ 即使缺省含着 `'postMarry'`，行为仍与改动前逐字相同。
+ * ## 空的与没写的
+ *
+ * | `subtitle.eventFamilies` | 结果 |
+ * |---|---|
+ * | **没配 / 非数组 / 数组里一个合法项都没有（拼错）** | 内置缺省 = **只有一族 `normal`（普通事件，且为缺省族）** |
+ * | **空数组 `[]`** | **本项目没有事件族机制**：面板不建「事件族」这一行、不按族筛（所有条目一视同仁） |
+ * | 合法数组 | 原样归一（丢非法项、按 `id` 去重、保持声明顺序） |
+ *
+ * ⚠️ 空数组是**显式表达**（与 `standbyKinds` 的"空数组 = 全关"同一容错口径）；
+ *   而"全是非法值"当作**没配**、退回内置缺省 —— 宁可降级也不要静默把机制关掉。
  */
-export type TriggerPhase = 'preMarry' | 'postMarry' | 'normal';
+export type EventFamily = {
+  /** 事件族 id（条目 `phase` 引用的值）。**自由字符串** —— 想叫什么叫什么 */
+  id: string;
+  /** 面板 / 档案里显示的人话名。缺省回落成 `id` */
+  label?: string;
+  /** 面板缺省勾选（可标多个；都没标 ⇒ 只勾缺省族） */
+  default?: boolean;
+  /** 缺省族（唯一）：条目未标族时归入本族；也是自动通道用的那一族。都没标 ⇒ 取首项 */
+  fallback?: boolean;
+  /** 可选的动画名后缀判据（条目无 `phase` 时用它兜底）。誓约工程写 `"_marry"` */
+  matchSuffix?: string;
+};
+
+/**
+ * **事件族 id** —— 条目 `DialogueEntry.phase` 引用的值。
+ *
+ * ⚠️ 2026-10-15 由写死的联合类型 `'preMarry' | 'postMarry' | 'normal'` 放宽为
+ * **自由字符串**：合法性只由 `config.subtitle.eventFamilies` 注册表判定（见 `EventFamily`）。
+ * 引擎里**不再有任何内置族名**，也不再限定"誓约前/誓约后/普通"这几种。
+ */
+export type TriggerPhase = string;
 
 /**
  * 念白字幕气泡配置。
@@ -1353,6 +1397,19 @@ export type SubtitleConfig = {
    */
   standbyIdleMs?: number;
   /**
+   * **事件族注册表** —— 本项目有哪些事件族（2026-10-15 起由写死的三族改为**注册表制**）。
+   *
+   * ★★ **没配** ⇒ 内置缺省**只有一族 `normal`（普通事件）** ⇒ 非誓约皮肤看不到
+   *   「誓约前 / 誓约后事件」；誓约皮肤（如 S8/603）在这里显式声明三族即可逐字还原旧行为
+   *   （示例见 `EventFamily` 的注释）。
+   * ⚠️ 显式写**空数组 `[]`** = 本项目**没有**事件族机制 ⇒ 面板不建「事件族」行、不按族筛。
+   *
+   * ★ 各族的 `default` / `fallback` / `matchSuffix` 语义、以及"条目 → 族"的三段判据，
+   *   全部见 `EventFamily`。
+   * ★ 面板：「设置 → 事件池 → 事件族（仅点击触摸）」只在注册表非空时出现。
+   */
+  eventFamilies?: EventFamily[];
+  /**
    * **长时间待机可触发的事件（多选）**——`TriggerEventKind` 的子集，通道 `'standby'`。
    *
    * ★★ **缺省（本字段没配时）= `['chat']`**：还原"配了 `standby` 就一定会播"的老行为，
@@ -1380,23 +1437,25 @@ export type SubtitleConfig = {
    */
   touchKinds?: TriggerEventKind[];
   /**
-   * **触摸可触发的事件族（多选）**——`TriggerPhase` 的子集，**只作用于 `'touch'` 通道**
-   * （2026-10-10 新增，面板「事件池」页）。
+   * **触摸可触发的事件族（多选）**—— [`eventFamilies`] 注册表 id 的子集，
+   * **只作用于 `'touch'` 通道**（2026-10-10 新增，面板「事件池」页）。
    *
    * 与 `touchKinds` 是**两层筛子**，先族后类：
-   *   ① 先按本字段把候选条目**筛成勾中的族**（见 `TriggerPhase` 的三族定义）；
+   *   ① 先按本字段把候选条目**筛成勾中的族**（族的定义见 `eventFamilies`）；
    *   ② 再在勾中的 `chat类 / greet类 / touch类` 里按 `mergeKindPools` 并池随机。
    *
-   * ★★ **缺省（本字段没配时）= `['postMarry','normal']`** ⇒ 合起来正好是
-   *   **游戏誓约（婚后）状态**下的那套可触发事件 ⇒ 条数与"游戏誓约后的可触发事件数"一致。
-   *   ⚠️ 显式写空数组 `[]` = 显式全关 ⇒ 三族都不出条 ⇒ 触摸池为空，
+   * ★★ **缺省（本字段没配时）= 注册表的缺省勾选**（各族里标 `default: true` 的那些；
+   *   一个都没标 ⇒ 只勾**缺省族**）。誓约工程声明三族时只需给 `postMarry`/`normal`
+   *   标上 `default` 即可还原原来的 `['postMarry','normal']`。
+   *   ⚠️ 显式写空数组 `[]` = 显式全关 ⇒ 一族都不出条 ⇒ 触摸池为空，
    *      此时 `touch.ts` 会**退回"只随机挑动画名、不出字幕"**的兜底行为（不是报错）。
    *   ⚠️ 与 `standbyKinds` 同一容错口径：写了数组但一个合法值都没有（拼错）⇒ 当作"没配"退回缺省。
    *
-   * ★ 待机 / 回到壁纸两个通道**不受本字段影响** —— 它们固定只用 `'normal'` 的条目。
+   * ★ 待机 / 回到壁纸两个通道**不受本字段影响** —— 它们只用**缺省族**的条目
+   *   （`eventFamilies` 里标 `fallback` 的那一族）。
    * ★ 面板：「设置 → 事件池 → 事件族（仅点击触摸）」（2026-10-11 起是**该页最后一行**：
    *   上面三行是三个入口同构的"可抽到哪些类别"，本项是挂在其中一个入口上的第二层筛子）；
-   *   **保存后重载生效**（触摸池是开机一次性构造的）。
+   *   ⚠️ **注册表为空时不建这一行**；**保存后重载生效**（触摸池是开机一次性构造的）。
    */
   touchPhases?: TriggerPhase[];
   /**
