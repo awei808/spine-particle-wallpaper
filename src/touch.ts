@@ -371,6 +371,25 @@ export type TouchController = {
    * @returns 是否真的播了
    */
   trigger: (entry: DialogueEntry | null, source: ActionSource) => boolean;
+  /**
+   * **调试用**：直接播**指定名字**的动画，**不带台词、不带语音**（2026-10-15）。
+   *
+   * 与 `trigger` 的区别：`trigger` 收的是「念白条目」（动作+台词+语音一整套），
+   * 这里收的是**动画名本身** —— 排查"这条动画播出来对不对"时不需要背台词。
+   *
+   * ★ 走的是 `playAction` 这条**与真实点击完全相同**的播放路径
+   *   （含复位 setup pose / 排队模式的轨道交接 / 播完混出），
+   *   唯一区别是**不过闸门**：调试就是要能"正在播也能强行换一条"，
+   *   不然排查时先得等当前动作播完，等于没法用。
+   *   `entry` 传 `null` ⇒ `onAction` 回调里 `showDialogue(null, name)`
+   *   ⇒ 只收起字幕/停掉上一条语音，**不会**凭空冒出台词。
+   *
+   * ⚠️ 计入 `firedCount`（`source` 用 `'touch'`）：它就是"一次指定动画的点击"，
+   *   与真实点击同口径，探针读数才不会有一类"来源不明的动作"。
+   *
+   * @returns 是否真的播了（`false` = 名字为空 / 骨架里没有这条动画）
+   */
+  playAnimation: (name: string) => boolean;
   /** 当前是否有动作在播（供待机计时判断） */
   isBusy: () => boolean;
   /** 当前在播的动画名；空串 = 没在播 */
@@ -440,6 +459,8 @@ const createNoopController = (
 ): TouchController => ({
   dispose: () => undefined,
   trigger: () => false,
+  /** 骨架还没就绪时的空实现（同其它方法：`false` = 没播起来） */
+  playAnimation: () => false,
   isBusy: () => false,
   playingAnimation: () => '',
   snapshot: () => ({
@@ -919,6 +940,8 @@ export const createTouchController = (
       clearActive();
     },
     trigger,
+    /** 见类型注释：与点击同路径、不过闸门、`entry = null`（不出台词） */
+    playAnimation: (name: string) => playAction(name, 'touch', null),
     /** 正在播 = 有 track entry；**待播也算忙**（否则 `queue` 模式下双击会被待机 tick 插队） */
     isBusy: () => !!activeEntry || pendingQueue.length > 0,
     playingAnimation: () => activeEntry?.animation?.name ?? '',

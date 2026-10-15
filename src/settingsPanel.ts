@@ -88,9 +88,31 @@ import {
 import { SettingsOverrides, SettingsView } from './settingsStore';
 import { UI_SCALE_VAR, fpx, getUiScale, initUiScale, uiPx } from './uiScale';
 
+/**
+ * 调试面板「触发事件」的一条候选 —— 就是 `config.subtitle.dialogues` 里的一条念白。
+ *
+ * ★ 只带**显示用**的字段（actionId / 动作名 / 动画名）：面板不解析念白内容，
+ *   触发一律交给调用方（它手里才有 `touchController` 与打断闸门）。
+ */
+export type DebugEventItem = {
+  /** 动作表 ID（`CfgSoulSpineActionTable.Id`）—— **触发的唯一凭据** */
+  actionId: number;
+  /** 官方动作名（仅显示） */
+  label?: string;
+  /** 该条对应的动画名（仅显示） */
+  animation?: string;
+};
+
 export type SettingsPanelOptions = {
-  /** 骨架里可用的动画名（用于序列的候选按钮） */
+  /** 骨架里可用的动画名（用于序列的候选按钮 + 调试面板「触发动作」） */
   animations: string[];
+  /**
+   * 调试面板「触发事件」的候选条目（= 全部念白）。
+   *
+   * ★ 不传 / 空数组 ⇒ 面板**不建**这一组（没有念白的壁纸不该摆一排永远空着的方块，
+   *   与「壁纸独立设置」页同一口径）。
+   */
+  events?: readonly DebugEventItem[];
   /** 当前生效值 */
   view: SettingsView;
   /**
@@ -117,6 +139,18 @@ export type SettingsPanelOptions = {
   onOpenChange?: (open: boolean) => void;
   /** 调试面板展开/收起变化时回调（用于把 `debugPanelOpen` 也持久化） */
   onDebugOpenChange?: (open: boolean) => void;
+  /**
+   * 调试面板「触发动作」：播**指定动画名**（不带台词/语音）。
+   *
+   * @returns 是否真的播了 —— 面板据此回显 ✓ / ×，不猜。
+   */
+  onPlayAnimation?: (name: string) => boolean;
+  /**
+   * 调试面板「触发事件」：按 actionId 播**一整条念白**（动作+字幕+语音，走完整闸门）。
+   *
+   * @returns 是否真的播了（被打断规则挡下 = `false`）
+   */
+  onTriggerEvent?: (actionId: number) => boolean;
 };
 
 export type SettingsPanel = {
@@ -1907,6 +1941,121 @@ export const createSettingsPanel = (
     '把整屏热区边界画出来（含缩放与命中数）'
   );
   rowTarget = prevRowTarget;
+
+  /* ── 调试触发分组：动作 / 事件（**不滚动**，见下） ───────────────────
+   * ★ WE 网页壁纸**不转发滚轮** ⇒ 任何 `overflow:auto` 的容器都点不滚。
+   *   所以两组 chips 直接堆在面板里、面板整体向下长（position:fixed 只定 top，
+   *   高度随内容撑开）。chips 刻意做小（font 10 / padding 2·6 / gap 4）以塞更多条目。
+   * 反馈：点一下瞬时把方块染绿/红（✓/✗）600ms 后复原（不写持久态，纯视觉确认）。
+   */
+  const TRIGGER_CHIP = [
+    'pointer-events:auto',
+    'display:inline-flex',
+    'align-items:center',
+    'justify-content:center',
+    'padding:' + uiPx(2) + ' ' + uiPx(6),
+    'border-radius:' + uiPx(6),
+    'border:' + uiPx(1) + ' solid rgba(255,255,255,0.18)',
+    'background:rgba(255,255,255,0.05)',
+    'color:rgba(238,241,246,0.82)',
+    'font-size:' + fpx(10),
+    'font-family:inherit',
+    'cursor:pointer',
+    'white-space:nowrap',
+    'line-height:1.4',
+  ].join(';');
+
+  /** 渲染一组触发 chips（标题 + 说明 + 换行方块）。items 为空 ⇒ 整组不建。 */
+  const makeChipGroup = (
+    titleText: string,
+    tip: string,
+    /** chip id 前缀（如 `wb-debug-anim-`）；便于测试与用户定位单个方块 */
+    idPrefix: string,
+    items: { key: string; text: string; hint?: string }[],
+    onClick: (it: { key: string; text: string; hint?: string }) => boolean
+  ) => {
+    if (!items.length) {
+      return;
+    }
+    const wrap = createEl('div', 'margin-top:' + uiPx(10), debugPanel);
+    const h = createEl(
+      'div',
+      'font-size:' + fpx(11) + ';font-weight:600;opacity:.9',
+      wrap
+    );
+    h.textContent = titleText;
+    const t = createEl(
+      'div',
+      'font-size:' +
+        fpx(10) +
+        ';opacity:.5;margin:' +
+        uiPx(2) +
+        ' 0 ' +
+        uiPx(4) +
+        ';line-height:1.4',
+      wrap
+    );
+    t.textContent = tip;
+    const box = createEl(
+      'div',
+      'display:flex;flex-wrap:wrap;gap:' + uiPx(4) + ';pointer-events:auto',
+      wrap
+    );
+    items.forEach((it) => {
+      const chip = createEl('button', TRIGGER_CHIP, box);
+      chip.id = idPrefix + it.key;
+      chip.textContent = it.text;
+      if (it.hint) {
+        chip.title = it.hint;
+      }
+      chip.addEventListener('click', () => {
+        let ok = false;
+        try {
+          ok = onClick(it);
+        } catch (_e) {
+          ok = false;
+        }
+        chip.style.borderColor = ok ? '#46c46a' : '#e25555';
+        chip.style.background = ok
+          ? 'rgba(70,196,106,0.22)'
+          : 'rgba(226,85,85,0.22)';
+        chip.style.color = ok ? '#d6f5de' : '#f7d6d6';
+        window.setTimeout(() => {
+          chip.style.borderColor = '';
+          chip.style.background = '';
+          chip.style.color = '';
+        }, 600);
+      });
+    });
+  };
+
+  // 动作组：全部骨架动画（只播动画，不带台词/语音；走与点击同路径、不过闸门）
+  makeChipGroup(
+    '触发动作（仅动画）',
+    '点一下直接播该动画，不出台词、不带语音',
+    'wb-debug-anim-',
+    (options.animations || []).map((n) => ({ key: n, text: n })),
+    (it) => (options.onPlayAnimation ? options.onPlayAnimation(it.key) : false)
+  );
+
+  // 事件组：全部念白（动作+字幕+语音，走完整闸门）；无念白 ⇒ 整组不建
+  if (options.events && options.events.length > 0) {
+    makeChipGroup(
+      '触发事件（动作+字幕+语音）',
+      '点一下按 actionId 播整条念白（含打断闸门）',
+      'wb-debug-ev-',
+      options.events.map((e) => ({
+        key: String(e.actionId),
+        text: String(e.actionId),
+        hint: [e.label, e.animation ? '动画:' + e.animation : '']
+          .filter(Boolean)
+          .join(' ｜ '),
+      })),
+      (it) =>
+        options.onTriggerEvent ? options.onTriggerEvent(Number(it.key)) : false
+    );
+  }
+
   const debugFoot = createEl(
     'div',
     'display:flex;gap:' + uiPx(8) + ';margin-top:' + uiPx(12),

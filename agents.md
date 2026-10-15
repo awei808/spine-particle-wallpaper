@@ -33,7 +33,8 @@ src/
   pointerTrail.ts   Cursor trail (deliberately separate from scene particles)
   settingsPanel.ts  Built-in settings panel (6 tabs — the last one, "壁纸独立设置", is
                     config-gated: only built when config.wallpaperSettings declares items)
-                    + the separate debug panel (entry button right below the gear)
+                    + the separate debug panel (entry button right below the gear, with
+                    trigger chips for every animation / dialogue entry)
   settingsStore.ts  Settings read/write + overrides
   uiScale.ts        Panel scaling
   archive.ts        Archive panel

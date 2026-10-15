@@ -1642,6 +1642,33 @@ const main = async () => {
         onDebugOpenChange: (open) => {
           writeOverrides({ debugPanelOpen: open });
         },
+        /**
+         * 调试面板「触发动作」：播**指定动画名**（不带台词/语音）。
+         * 走与真实点击同路径、不过闸门 —— 排查时"正在播也能强行换一条"。
+         */
+        onPlayAnimation: (name: string) =>
+          touchController ? touchController.playAnimation(name) : false,
+        /**
+         * 调试面板「触发事件」：按 actionId 播**一整条念白**（动作+字幕+语音，
+         * 走完整打断闸门）。找不到该 actionId ⇒ 返回 false（面板据此回显 ✗）。
+         */
+        onTriggerEvent: (actionId: number) => {
+          if (!touchController) {
+            return false;
+          }
+          const entry =
+            dialogues.find((it) => it.actionId === actionId) ?? null;
+          return touchController.trigger(entry, 'touch');
+        },
+        /**
+         * 调试面板「触发事件」的候选 = 全部念白。无念白 ⇒ 不传（面板不建该组）。
+         * 只带显示用字段，触发一律交给上面的 `onTriggerEvent`（它才有闸门）。
+         */
+        events: dialogues.map((d) => ({
+          actionId: d.actionId,
+          label: d.label,
+          animation: d.animation,
+        })),
       });
 
       if (PROBE_OPTS.enabled) {
