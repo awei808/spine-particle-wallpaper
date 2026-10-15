@@ -1965,7 +1965,9 @@ export const createSettingsPanel = (
    * ★ WE 网页壁纸**不转发滚轮** ⇒ 任何 `overflow:auto` 的容器都点不滚。
    *   所以两组 chips 直接堆在面板里、面板整体向下长（position:fixed 只定 top，
    *   高度随内容撑开）。chips 刻意做小（font 10 / padding 2·6 / gap 4）以塞更多条目。
-   * 反馈：点一下瞬时把方块染绿/红（✓/✗）600ms 后复原（不写持久态，纯视觉确认）。
+   * 反馈：点一下**瞬时变白**、保持 3s，再**淡化**回原色（见 click 里的 transition
+   * 手法：点击时把过渡压到 .12s ⇒ 白得干脆；3s 后清掉内联样式 ⇒ 回落走基础样式
+   * 的 .6s ⇒ 淡回原色）。纯视觉确认，不写持久态。
    */
   const TRIGGER_CHIP = [
     'pointer-events:auto',
@@ -1982,7 +1984,29 @@ export const createSettingsPanel = (
     'cursor:pointer',
     'white-space:nowrap',
     'line-height:1.4',
+    // 淡化回原色用的过渡（变白那一瞬会被变白态的 .12s 覆盖掉，
+    // 从而做出"白得干脆、淡得缓慢"的不对称手感）
+    'transition:background-color .6s ease,color .6s ease,border-color .6s ease',
   ].join(';');
+  /**
+   * 变白态 = **基础声明块 + 追加覆盖色**（后写的赢）。
+   *
+   * ★★ 为什么整块存起来、而不是运行时只改 `style.background`：
+   * 这些 chip 的样式是**整条内联声明块**（`createEl` 走 `style.cssText = ...`），
+   * 基础色就写在这一块里。若运行时用 `chip.style.background = ''` 去"还原"，
+   * CSSOM 会把 background 这条**从内联块里删掉** ⇒ 基础色也没了（没有别的 CSS 规则
+   * 顶着）⇒ 落到浏览器默认按钮脸 `rgb(240,240,240)` + 黑字（实测踩过，见
+   * `55_验证_调试面板.js` 的 9.x）。所以还原一律是"把整块换回基础串"。
+   */
+  const TRIGGER_CHIP_FLASH =
+    TRIGGER_CHIP +
+    ';' +
+    [
+      'background:#ffffff',
+      'color:#14181f', // 白底必须配深色字，否则字看不见
+      'border-color:#ffffff',
+      'transition:background-color .12s ease,color .12s ease,border-color .12s ease',
+    ].join(';');
 
   /** 渲染一组触发 chips（标题 + 说明 + 换行方块）。items 为空 ⇒ 整组不建。 */
   const makeChipGroup = (
@@ -2027,23 +2051,30 @@ export const createSettingsPanel = (
       if (it.hint) {
         chip.title = it.hint;
       }
+      /** 本 chip 的"变白"倒计时；0 = 没在计时。连点则重置（重新白 3s） */
+      let flashTimer = 0;
       chip.addEventListener('click', () => {
-        let ok = false;
         try {
-          ok = onClick(it);
+          onClick(it);
         } catch (_e) {
-          ok = false;
+          /* 视觉反馈照给：点没点上，画面也得有反应 */
         }
-        chip.style.borderColor = ok ? '#46c46a' : '#e25555';
-        chip.style.background = ok
-          ? 'rgba(70,196,106,0.22)'
-          : 'rgba(226,85,85,0.22)';
-        chip.style.color = ok ? '#d6f5de' : '#f7d6d6';
-        window.setTimeout(() => {
-          chip.style.borderColor = '';
-          chip.style.background = '';
-          chip.style.color = '';
-        }, 600);
+        /* ── 变白 3s → 淡化回原色 ─────────────────────────────
+         * 变白态用**整块** `TRIGGER_CHIP_FLASH`（基础块 + 覆盖色），还原时整块换回
+         * `TRIGGER_CHIP` —— 绝不能逐条 `style.X = ''`：基础色就写在同一条内联块里，
+         * 置空等于把它也删掉（详见 TRIGGER_CHIP_FLASH 的注释）。
+         * 过渡的不对称靠"块里的 transition 谁在后面"实现：
+         *   变白 → 块尾是 .12s ⇒ 白得干脆；
+         *   还原 → 块尾是基础 .6s ⇒ 淡回原色。
+         */
+        chip.style.cssText = TRIGGER_CHIP_FLASH;
+        if (flashTimer) {
+          window.clearTimeout(flashTimer);
+        }
+        flashTimer = window.setTimeout(() => {
+          chip.style.cssText = TRIGGER_CHIP;
+          flashTimer = 0;
+        }, 3000);
       });
     });
   };
