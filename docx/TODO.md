@@ -170,7 +170,7 @@
 
 - ✅ **P0 修锥形**：2026-10-16 完成（方位角 + `arc` + `m_Scale`），见 §2.0。
 - ✅ **P1 补形状族**：2026-10-16 完成（Sphere / Hemisphere / Edge / `m_Position`·`m_Rotation` 全形状化
-  + ConeVolume 轴向几何修正），见 §2.7。
+  + ConeVolume 轴向几何修正），**当晚三站观感验收通过**，见 §2.7。
 - ⬜ **P2** 按速度与力（Velocity z/orbital/radial、Force、ColorBySpeed、SizeBySpeed…）
 - ⬜ **P3** 渲染侧（renderMode 5 种、alignment/pivot/sortingFudge）
 - ⬜ **P4** UV / Noise 细节（rowMode、noise sizeAmount/scrollSpeed/octaves）
@@ -205,7 +205,8 @@
 
 > 报告：`_work_形状族普查/REPORT_P1形状族_2026-10-16.md`（含全包普查、逐颗改前/改后对照）。
 > 回归：`_regress/71_回归_形状族补充.ts`（21 断言）+ `_regress/70_` 更新（24 断言）。
-> **未部署 WE、未发布**（与 P0 同：先落源码 + 回归，观感复核与部署另起）。
+> ✅ **观感验收已通过**（2026-10-16 23:27，三站实测，见本节末尾）。
+> ⬜ **仍未部署 WE、未发布**（与 P0 同：先落源码 + 回归 + 验收，部署另起）。
 
 **全包普查（41996 个 `ParticleSystem`，`art_prefabs.ab` + `14_effect`）给出的形状族用量**：
 `Box` 3603 / `Cone` 2957 / **`Sphere` 1163** / `ConeVolume` 581 / **`Hemisphere` 535** /
@@ -269,3 +270,18 @@
 （这几个在 Sphere/Box 上确有非零值，属 Shape 模块的"方向修饰"族，归 P2 或单独一批）。
 Edge 的方向取"本地 +X 转 90°"，用的是本引擎既有的"屏幕内平面朝向"口径（`nodeRotZ`）；
 若要更严格需数据层额外下发**本地 +Y 的投影**（`emitUp`），与 §2.6 第 2 条同源。
+
+#### ✅ 观感验收通过（2026-10-16 23:27，用户在上面的三站里逐项看过）
+
+三个本地预览站都装了 P1 的 bundle（`dist/bundle.js`，md5 `629093f6…`），服务脚本 = 通用件
+`_work_芙丽希娅_蝶语吟花/25_本地服务器.py`（`25_ … 8897 --dir <proj>`）/ S8 的 `20_本地预览服务器.py`：
+
+| 站 | 工程目录 | 端口 | 验收结论 |
+|---|---|---|---|
+| S9 | `12_探针_去灰线`（**不是** `10_wallpaper_engine` —— 后者是旧快照） | 8897 | `niao` 新截锥几何的出生分布**可接受** |
+| S8 | `_work_星语心恋/step2_web` | 8898 | 零变化确认（touch1 特效正常） |
+| S6 | `_work_芙丽希娅_蝶语吟花/step2_web` | 8899 | `fx_chat_lizi_san` 径向散射 OK、`yuan_glow` 无异样 |
+
+⇒ **P1 判定完成**（含 §2.7 表格里那两处"观感会变"的记录）。
+⬜ **仍未部署 WE、未发布**：下次走部署（S9 用 `_work_工坊更新/10_部署bundle到WE工程.py`、
+S8 用 `_work_星语心恋/19_部署step2到WE.py`）时会把 P1 一并带上；届时需按惯例在 WE 里重载并复核。
