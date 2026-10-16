@@ -427,6 +427,8 @@ S8 用 `_work_星语心恋/19_部署step2到WE.py`）时会把 P1 一并带上�
 * `10_wallpaper_engine/_构建_配置生成.py` 新增两张表 `PARTICLE_RENDERER` / `PARTICLE_MESH`（单一真源）
   ＋ 在 `out.append(rec)` 前下发 `rec['renderer']`。
 * `10_wallpaper_engine/_补P3渲染侧.py`：把 `renderer` 段补进**现有** config（可重放）。
+  ⚠️ **缺省目标只有 `12_探针_去灰线/assets/config.json`**（S9 的**部署工程**）；
+  `10_wallpaper_engine/` 只是生成脚本所在的**工作目录**，不作为部署目标、其 config 已恢复原状。
   ★ **为什么不整跑生成链**：那份脚本早就领先于现有 config —— P0/P1/P2 的数据层改动
   （`shape.radiusThickness`、`uv.frameOverTime`、`fitAspect`）**从未下发过**，整跑会顺带改动它们。
   已实测确认：本脚本对 config 的 diff **只有 `renderer` 一个字段**（8 条）。
