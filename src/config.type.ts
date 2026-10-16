@@ -1910,12 +1910,19 @@ export type ParticleMeshConfig = MeshConfig & {
     enabled: boolean;
     /**
      * Unity `ParticleSystemShapeType`（数值口径与 S9 已定案的 4/8/10 同表）：
-     *   **4 = Cone（底面圆面）** / **5 = Box（盒体体积）** / **8 = ConeVolume** /
-     *   **10 = Circle（+ arcMode 3 = BurstSpread）**
+     *   **4 = Cone（底面圆盘）** / **5 = Box（盒体体积）** / **8 = ConeVolume（锥体体积）** /
+     *   **10 = Circle**。
+     *
+     * ★ 4 / 8 / 10 三者共用一套"方位角 + 半径"的采样口径（2026-10-16）：位置都取在
+     *   **XY 平面内**、方位角范围由 `arc` 限定、半径由 `radiusThickness` 定；锥形额外
+     *   按 `emitDir` 作**轴向位移**（仅 `8`）与**方向发散**（见 `ParticleAnimator.spawn()`）。
      */
     type: number;
+    /** 锥在顶点处的张角（度）：0 = 圆柱、90 = 平盘（只对 Cone / ConeVolume 有意义） */
     angle: number;
+    /** 形状半径（**`m_Scale` 未折算的原值**；实际半径 = radius × boxX/boxY） */
     radius: number;
+    /** 锥长：仅 ConeVolume(8) 参与几何（Cone(4)=Base 的出生点在底面圆盘上，不用它） */
     length: number;
     /**
      * ── 以下 5 项来自 `ShapeModule.m_Scale` / `m_Position` / `m_Rotation`（2026-10-12 新增）──
@@ -1928,7 +1935,15 @@ export type ParticleMeshConfig = MeshConfig & {
      * "Scale: Change the size of the emitter shape" ⇒ 这里当**各轴缩放**用，
      * 即 `p = (cosθ·ρ·boxX, sinθ·ρ·boxY)` ⇒ 非等比时发射区是**椭圆**
      * （`yuan_glow` = (1.5, 0.5)）。缺省/非正数 ⇒ 1（正圆）。
-     * ⚠ 同一字段在两种 shape 下语义不同（全长 vs 缩放），因为都源自 `m_Scale`。
+     *
+     * **Cone（`4`）/ ConeVolume（`8`）**（2026-10-16 起）：与 Circle 同口径的**各轴缩放**
+     * —— 半径 = `radius × (boxX, boxY)`。这是 `m_Scale` 的原始语义（官方 tooltip
+     * "Scale the emission shape"），也是"半径取 √|sx·sy|、非等比只能等比近似"那段
+     * **数据层折算被撤销**的原因（`190_生成S8动作特效.py`：S8 特效现下发 `radius = 7`
+     * + `boxX/boxY = 150`，由引擎乘出 1050；旧写法是在数据层预先乘好）。
+     * 缺省 / 非正数 ⇒ 1（旧 config 无此字段 ⇒ 零回归）。
+     * ⚠ 同一字段在三种 shape 下语义不同（Box = 全长；Circle / Cone = 各轴缩放），
+     * 因为都源自 `m_Scale`。
      */
     boxX?: number;
     boxY?: number;
@@ -1941,19 +1956,30 @@ export type ParticleMeshConfig = MeshConfig & {
      * Unity `ShapeModule.radiusThickness`：发射粒子的体积比例。
      *   **0 = 只从外表面**发射、**1 = 从整个体积**发射。
      *
+     * ★ 分布口径（2026-10-16 定案，见 `docx/TODO.md` §2.1）：`ρ = R·(1 − th + th·√u)`，
+     *   `u = rand()` ⇒ **面积均匀**（`th = 1` 时圆盘内单位面积粒子数相同）。
+     *   Circle 的随机分支与 Cone / ConeVolume 分支**已经是同一个式子**
+     *   （`ParticleAnimator.ts` 两处），故本轮"修锥形"**不需要**再统一口径。
+     *   ⚠ 不采用 Cocos / feng3d 的线性口径（`ρ ∈ [R(1−th), R]`）：Unity 手册对该字段的
+     *     表述是 "proportion of the **volume**"，对圆盘而言"体积"= 面积 ⇒ √u 更贴合字面。
+     *
      * 实测：qiqiu / niao（Cone / ConeVolume）= **1.0**；
      *   chexiang ×2（Circle + `arcMode = 3` BurstSpread）= **0.0**
      *   ⇒ 10 颗轿厢落在**圆周**上（均布分支本来就按圆周写死，恰好一致）；
      *   yuan_glow（Circle + `arcMode = 0` Random）= **0.8**
-     *   ⇒ 半径在 [0.2R, R] 内按面积比例随机（2026-10-13 起 Circle 随机分支才用它）。
+     *   ⇒ 半径在 [0.2R, R] 内按面积比例随机（2026-10-13 起 Circle 随机分支才用它）；
+     *   S8 特效 `fx_touch1_glow / _glow_1`（Cone + `arcMode = 0`）= **0.8 / 0.7**。
      * 缺省 1（兼容不带该字段的旧 config）。
      */
     radiusThickness?: number;
+    /** 方位角张角（度）：Cone / ConeVolume 与 Circle **共用**（2026-10-16 起锥形也消费它） */
     arc: number;
     /**
      * Unity `ParticleSystemShapeMultiModeValue`：
      *   **0 = Random** / 1 = Loop / 2 = Ping-Pong / **3 = BurstSpread（沿弧均布）**。
-     * ★ type=10 的两条分支就按它分流（2026-10-13；旧实现无视它、一律均布）。
+     * ★ `type = 10`（Circle）与 `type = 4/8`（Cone / ConeVolume）**共用这一套**
+     *   （2026-10-13 Circle、2026-10-16 Cone 起）：两条分支都按它分流 ——
+     *   `3` ⇒ 沿弧均布（相位取本批次发射序号）、其余 ⇒ 弧内随机取角。
      */
     arcMode: number;
   };

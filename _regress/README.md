@@ -33,6 +33,7 @@ npx ts-node --transpile-only _regress/<脚本名>.ts [参数...]
 | `67_回归_触摸反馈与问候模式.ts` | `argv[2]` = bundle（其余用例自带数据，不需要 config） | `WK_BUNDLE` | `dist/bundle.js` |
 | `68_回归_触摸反馈三模式.ts` | `argv[2]` = `.skel` 路径 | `WK_SKEL` | `assets/character.skel` |
 | `69_回归_事件族注册表.ts` | `argv[2]` = bundle（用例自带数据，不需要 config） | `WK_BUNDLE` | `dist/bundle.js` |
+| `70_回归_锥形形状采样.ts` | `argv[2]` = `config.json`（须含锥形 type 4/8） | `WK_CONFIG` | `public/assets/config.json` |
 
 例：
 

@@ -1220,21 +1220,49 @@ export class ParticleAnimator {
       /**
        * Cone(4) / ConeVolume(8)：锥形发射器。
        *
-       * ★ 2026-09-20 重写。旧实现有两个硬伤：
-       *   ① 位置取的是**随机极角的圆盘**（Volume）或**随机方向的线段**（Cone），
-       *      完全没有把 `emitDir`（本地 +Z 投影 = 锥轴）当轴来用 ⇒ 发射区与"锥"没有几何关系；
-       *   ② `radius`（qiqiu 3.5 ≈ 105 px、niao 1.5 ≈ 45 px）**根本没参与** ⇒ 粒子挤在一条轴线上。
+       * ★ 历史：2026-09-20 重写过一次（把 `radius` 接进几何、收口"`Length` 只在 Volume 参与"）；
+       *   **2026-10-16 再重写一次**修"一条线"（方位角 / `arc` / `m_Scale`）。
        *
-       * 官方语义（Manual / PartSysShapeModule，2026-09-19 核实，逐字）：
+       * ★★★ 2026-10-16 重写（本轮 P0「修锥形」；旧实现的三个硬伤）：
+       *
+       *   ① **没有方位角** ⇒ 粒子排成一条线。旧代码把 `ρ` 只作用在
+       *      "垂直于锥轴的一条线"上（`p = 轴·t + 法向·(±ρ)`）⇒ 所有粒子落在那条线上。
+       *      S8 动作特效（`FX_Asuna_S8_Background_touch1`，`emitDir = [0,1]`）的观感
+       *      "一条水平的线"就是这个 bug 的可见形态（锥轴朝上 ⇒ 退化线是水平的）。
+       *   ② **不吃 `arc`**：`arc` 过去只在 Circle 分支被消费 ⇒ 230° 的扇形被当成整圆。
+       *   ③ **不吃 `ShapeModule.m_Scale`**：Box 拿它当盒体全长、Circle 拿它当各轴缩放，
+       *      锥形则完全忽略。S8 本特效 `radius = 7` 而 `m_Scale = (150,150,150)`
+       *      ⇒ 半径差 150 倍（过去只能在**数据层**折算，见 `190_生成S8动作特效.py`）。
+       *
+       * 官方语义（Manual / PartSysShapeModule）：
        *   Angle            = 锥在**顶点处**的张角（0 = 圆柱、90 = 平盘）
-       *   Radius           = 圆形部分的半径
-       *   Radius Thickness = 发射粒子的体积比例（0 = 只从外表面、1 = 整个体积）
+       *   Radius           = 底面圆的半径；`Radius Thickness` = 发射的体积比例
        *   Length           = 锥长（UI 上仅当 `Emit from: Volume` 时可编辑）
+       *   Scale            = "Change the size of the emitter shape" ⇒ 形状尺寸的乘子
        *   "The particles diverge in proportion to their distance from the cone's center line."
-       *     ⇒ **发散量由位置决定**（离中心线越远、偏离轴向越大），
-       *       而不是像旧实现那样"方向在锥角内随机取"。
        *
-       * ⚠️ 已收口（2026-09-20，依据官方 Manual + 解包数据自证，详见 06 号审计文档 §P0-b）：
+       * ★ 三方实现交叉证实的几何（`docx/RESEARCH_粒子系统复刻参考.md` §4.1/§4.3）：
+       *   Cocos `shape-module.ts#coneEmit()` / feng3d `ParticleSystemShapeCone.ts` /
+       *   LayaAir `ConeShape.ts` 三者一致 —— **底面是 XY 平面内的圆盘（或 `arc` 扇形）**，
+       *   锥轴沿 ±Z（只在 `ConeVolume` 里沿轴再取一段位移）。
+       *   本引擎是 2D 平面渲染 ⇒ 底面圆盘**就是屏幕平面上的圆盘/扇形**：
+       *   取方位角 `φ`（由 `arc` 定范围）+ 半径 `ρ`（由 `radiusThickness` 定大小），
+       *   再把 `m_Scale` 按**各轴**乘在采样点上（非等比 ⇒ 发射区是椭圆）。
+       *
+       * ★ 方位角起点与 `arc` 语义**与 Circle 分支逐条同口径**（两者共用一套 arc/arcMode）：
+       *   `arcMode = 3`（BurstSpread）⇒ 沿弧均布、相位取本批次发射序号；
+       *   其余（0 = Random 等）⇒ 弧内随机。起点都叠加节点旋角 `nodeRotZ`
+       *   （= 发射器本地 +X 在屏幕上的朝向）。
+       *
+       * ★ 方向发散**沿用本引擎既有的 2D 口径**（`docx/TODO.md` §2.2 的定案）：
+       *   `spread = (ρ/R)·(angle/2)`，即"相对锥轴的**平面**张角"，Unity 方向里的 z
+       *   分量被丢弃（2D 下无意义）。锥轴仍取 `emitDir`；哪一侧由该粒子的方位角决定
+       *   （`φ` 落在锥轴哪一侧就偏向哪一侧 —— 与"离中心线越远、偏离越大"呼应）。
+       *   ⚠️ 不改成"方向 = 纯径向（`v_xy ∝ pos·tan(angle/2)`）"的另一套口径：那会把
+       *     `startSpeed` 缩掉一个 `tan(angle/2)`，S6 已验收的 `fx_touch2_huaban_2`
+       *     （`startSpeed = 8`、`angle = 5°`）会整支变样（速度掉到 1/23）。
+       *
+       * ⚠️ 已收口（2026-09-20，官方 Manual + 解包数据自证，见 06 号审计文档 §P0-b）：
        *   `Length` **只在 `Emit from: Volume` 下参与几何**（官方逐字：
        *   "This property is available only when Emit from: is Volume"）。
        *   ⇒ `qiqiu` 是 Cone(4)=Base，`length=5.0` 是 Unity 默认值残留（与 chexiang 这个
@@ -1246,33 +1274,50 @@ export class ParticleAnimator {
       const R = (sh.radius || 0) * s * u; // 底面半径（世界单位）
       // Length = 锥长，仅 ConeVolume(8) 使用；Cone(4)/Base 下不参与几何
       const H = (sh.length || 0) * s * u;
-      // 锥轴 = emitDir；径向 = 锥轴在 XY 平面内的法向
+      // 锥轴 = emitDir（本地 +Z 投影到 XY 并归一化）—— 只用于「轴向位移」与「方向发散」
       const axX = Math.cos(dirAngle);
       const axY = Math.sin(dirAngle);
-      const rxX = -axY;
-      const rxY = axX;
       // Radius Thickness：0 = 只从外表面、1 = 整个体积内均匀
+      // （与 Circle 随机分支同一口径：th=1 ⇒ ρ = R·√u 面积均匀；th=0 ⇒ ρ ≡ R 只在圆周）
       const th = Math.min(1, Math.max(0, sh.radiusThickness ?? 1));
       const rhoMag = R * (1 - th + th * Math.sqrt(r.next()));
-      const sgn = r.next() < 0.5 ? -1 : 1;
+      /**
+       * 方位角 `φ`（XY 平面内，弧度）：`arcMode = 3` 沿弧均布、其余弧内随机，
+       * 起点叠加节点旋角（与 Circle / Box 的 `ang` 同口径）。
+       * 缺省 `arc` 按 360°（旧 config 不带该字段时的历史行为）。
+       */
+      const arcRad = (sh.arc ?? 360) * DEG2RAD;
+      const phi =
+        c.nodeRotZ * DEG2RAD +
+        (sh.arcMode === 3
+          ? (this.emittedInBatch / Math.max(1, this.batchCount)) * Math.PI * 2
+          : r.next() * arcRad);
+      /**
+       * `m_Scale` 的**各轴缩放**（config 的 `boxX/boxY`；与 Circle 分支同口径）。
+       * 非正数视为 1 —— 否则会把发射区压成一条线（旧 config 无此字段 ⇒ 0 ⇒ 1，零回归）。
+       */
+      const scX = sh.boxX && sh.boxX > 0 ? sh.boxX : 1;
+      const scY = sh.boxY && sh.boxY > 0 ? sh.boxY : 1;
 
       let t: number;
       let rho: number;
-      if (sh.type === 8) {
+      if (sh.type === 8 && H > 0) {
         // ConeVolume：锥体**体积**内均匀 —— 截面积 ∝ t² ⇒ pdf(t) ∝ t² ⇒ t = H·u^(1/3)
+        // 且该处的锥面半径 ∝ 沿轴距离 ⇒ ρ 同步按 t/H 收放
         t = H * Math.pow(r.next(), 1 / 3);
-        rho = H > 0 ? rhoMag * sgn * (t / H) : rhoMag * sgn;
+        rho = rhoMag * (t / H);
       } else {
         // Cone（Base）：出生点只在**底面那张圆面**上 ⇒ 沿锥轴**没有**位移。
         // （旧实现在这里写了 `t = H`，等于把 Base 当成了 Volume，属于误用 length。）
         t = 0;
-        rho = rhoMag * sgn;
+        rho = rhoMag;
       }
-      p.x = axX * t + rxX * rho;
-      p.y = axY * t + rxY * rho;
+      p.x = axX * t + Math.cos(phi) * rho * scX;
+      p.y = axY * t + Math.sin(phi) * rho * scY;
 
-      // 发散 ∝ 距中心线的距离：`发散角 = (angle/2) · (ρ / R)`，ρ 的符号决定偏向哪一侧
-      const spread = (R > 1e-9 ? rho / R : 0) * ((sh.angle || 0) / 2) * DEG2RAD;
+      // 发散 ∝ 距中心线的距离：`发散角 = (angle/2) · (ρ / R)`，侧向 = 该粒子方位角所在侧
+      const side = Math.sin(phi - dirAngle) >= 0 ? 1 : -1;
+      const spread = (R > 1e-9 ? rho / R : 0) * ((sh.angle || 0) / 2) * DEG2RAD * side;
       const a = dirAngle + spread;
       const spd = spawnValue(c.startSpeed, r) * s * u * spdMul;
       p.vx = Math.cos(a) * spd;
