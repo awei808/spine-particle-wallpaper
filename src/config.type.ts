@@ -1909,48 +1909,79 @@ export type ParticleMeshConfig = MeshConfig & {
   shape: {
     enabled: boolean;
     /**
-     * Unity `ParticleSystemShapeType`（数值口径与 S9 已定案的 4/8/10 同表）：
-     *   **4 = Cone（底面圆盘）** / **5 = Box（盒体体积）** / **8 = ConeVolume（锥体体积）** /
-     *   **10 = Circle**。
+     * Unity `ParticleSystemShapeType`（2021.3 枚举，已核对官方
+     * `Modules/ParticleSystem/Managed/ParticleSystemEnums.cs`）。
      *
-     * ★ 4 / 8 / 10 三者共用一套"方位角 + 半径"的采样口径（2026-10-16）：位置都取在
-     *   **XY 平面内**、方位角范围由 `arc` 限定、半径由 `radiusThickness` 定；锥形额外
-     *   按 `emitDir` 作**轴向位移**（仅 `8`）与**方向发散**（见 `ParticleAnimator.spawn()`）。
+     * **已实现**：
+     *   `0 Sphere` / `2 Hemisphere`（+ obsolete 变体 `1 SphereShell` / `3 HemisphereShell`）
+     *     —— 与 `10 Circle` 合流成"**圆盘族**"：三者属性集相同（Unity 手册
+     *     *"Sphere, Hemisphere, and Circle have the same properties."*），且正交投影下
+     *     半球与整球的 `(x,y)` 分布一致 ⇒ 2D 下位置口径完全相同；**方向 = 径向**
+     *     （手册 *"a Sphere emits particles outward in all directions"*）。
+     *   `4 Cone`（+ `7 ConeShell`）/ `8 ConeVolume`（+ `9 ConeVolumeShell`）：底面圆盘 + 轴向位移，
+     *     方向为"锥轴 ± (ρ/R)·(angle/2)"（`docx/TODO.md` §2.2/§2.6 的定案）。
+     *   `5 Box`：盒体体积内均匀，方向 = `emitDir`（本地 +Z）。
+     *   `10 Circle`（+ `11 CircleEdge`）：圆盘，方向 = 径向（平面内）。
+     *   `12 SingleSidedEdge`：线段（沿本地 X、半长 = `radius`），方向 = 本地 +Y。
+     *
+     * **未实现**（落到"锥形兜底"，即被当成圆盘；全包普查给出的启用支数）：
+     *   `17 Donut`(56) / `16 BoxEdge`(73) / `15 BoxShell`(32) / `18 Rectangle`(19) /
+     *   `6 Mesh`(18) / `13-14 MeshRenderer/SkinnedMeshRenderer`(0) / `19-20 Sprite*`(2)
+     *   —— 见 `ParticleAnimator.spawn()` 末尾的兜底分支注释与 `docx/TODO.md` §2.5。
+     *
+     * ★ 全形状共用一套采样口径：位置取在**发射器本地平面内**（`φ` 由 `arc` 限定、
+     *   `ρ` 由 `radiusThickness` 定），再按 `m_Scale` / `m_Rotation` / `m_Position`
+     *   施加 Unity 的 `TRS` 变换（先缩放、再旋转、最后平移）。
      */
     type: number;
     /** 锥在顶点处的张角（度）：0 = 圆柱、90 = 平盘（只对 Cone / ConeVolume 有意义） */
     angle: number;
-    /** 形状半径（**`m_Scale` 未折算的原值**；实际半径 = radius × boxX/boxY） */
+    /**
+     * 形状半径（**`m_Scale` 未折算的原值**；实际半径 = radius × boxX/boxY）。
+     * `SingleSidedEdge(12)` 下是线段的**半长**（全长 `2·radius`）。
+     */
     radius: number;
-    /** 锥长：仅 ConeVolume(8) 参与几何（Cone(4)=Base 的出生点在底面圆盘上，不用它） */
+    /**
+     * 锥长：仅 `ConeVolume(8)` 参与几何（`Cone(4)`=Base 的出生点在**近盘**上，不用它）。
+     *
+     * ★★ 2026-10-16（P1）：锥是**从近盘向远处张开**的截锥 —— 近盘（半径 = `radius`）在
+     *   发射器原点、远盘（半径 = `radius + length·tan(angle)`）在轴向 `length` 处。
+     *   依据是 Unity 官方 gizmo 源码 `ConeFrustrumHandle.cs` 的注释与
+     *   `farRadius = |range·tan(angle)| + nearRadius`；旧实现当成"顶点在发射器"的反向锥。
+     */
     length: number;
     /**
      * ── 以下 5 项来自 `ShapeModule.m_Scale` / `m_Position` / `m_Rotation`（2026-10-12 新增）──
      * 单位与 `radius` 同为**发射器本地量**（引擎里再乘 `localScale × unitScale`）。
      *
-     * **Box（`type = 5`）**：`boxX/boxY` = 盒体在 x/y 方向的**全长**（粒子在这个范围里均匀取点）。
-     * 缺省 0 ⇒ 退化成"点发射"，与旧行为一致（旧 config 无此字段 ⇒ 零影响）。
+     * **`m_Scale` 各轴缩放（2026-10-16 起对全部形状生效）**：官方 tooltip
+     * "Scale the emission shape" ⇒ 采样点被逐轴放大（`docx/RESEARCH…` §4.2）。
+     * 施加顺序严格按 Unity 的 `TRS`（`ShapeModuleUI.OnShapeToolGUI`）：
+     * **先各轴缩放 → 再绕 Z 旋转 → 最后加平移**（旧写法把节点旋角折进方位角，
+     * 等价于"缩放最外层"，仅在等比时与 `TRS` 同意）。
+     * ⚠ 缺省 / 非正数 ⇒ 1（0 会把发射区压成一条线/一个点 ⇒ 沿用既有守卫）。
      *
-     * **Circle（`type = 10`）且 `arcMode ≠ 3`**（2026-10-13）：官方语义是
-     * "Scale: Change the size of the emitter shape" ⇒ 这里当**各轴缩放**用，
-     * 即 `p = (cosθ·ρ·boxX, sinθ·ρ·boxY)` ⇒ 非等比时发射区是**椭圆**
-     * （`yuan_glow` = (1.5, 0.5)）。缺省/非正数 ⇒ 1（正圆）。
+     * **例外：Box（`type = 5`）**：`boxX/boxY` 是盒体的 x/y **全长**（粒子在这个范围里
+     * 均匀取点）。缺省 0 ⇒ 退化成"点发射"，与旧行为一致。
      *
-     * **Cone（`4`）/ ConeVolume（`8`）**（2026-10-16 起）：与 Circle 同口径的**各轴缩放**
-     * —— 半径 = `radius × (boxX, boxY)`。这是 `m_Scale` 的原始语义（官方 tooltip
-     * "Scale the emission shape"），也是"半径取 √|sx·sy|、非等比只能等比近似"那段
-     * **数据层折算被撤销**的原因（`190_生成S8动作特效.py`：S8 特效现下发 `radius = 7`
-     * + `boxX/boxY = 150`，由引擎乘出 1050；旧写法是在数据层预先乘好）。
-     * 缺省 / 非正数 ⇒ 1（旧 config 无此字段 ⇒ 零回归）。
-     * ⚠ 同一字段在三种 shape 下语义不同（Box = 全长；Circle / Cone = 各轴缩放），
-     * 因为都源自 `m_Scale`。
+     * **Cone（`4`）/ ConeVolume（`8`）**：半径 = `radius × (boxX, boxY)`
+     * （`190_生成S8动作特效.py` 现下发 `radius = 7` + `boxX/boxY = 150`，由引擎乘出 1050；
+     * 旧写法是在数据层预先乘好 —— 那段"数据层折算"已撤销，否则会乘两次）。
      */
     boxX?: number;
     boxY?: number;
-    /** 盒心相对发射器的偏移（同 `m_Scale` 口径换算；仅 Box 使用） */
+    /**
+     * `m_Position`：形状相对发射器的平移（**最后**叠加，不随 `rotZ` 旋转）。
+     * ★ 2026-10-16 起对**全部**形状生效（此前只有 Box 消费它）。
+     */
     offsetX?: number;
     offsetY?: number;
-    /** `m_Rotation.z`（度）：盒体自身的额外朝向；叠加节点旋角 `nodeRotZ`（仅 Box 使用） */
+    /**
+     * `m_Rotation.z`（度）：形状自身的额外旋角，与节点在屏幕内的旋角 `nodeRotZ`
+     * **同轴相加**成 `rot`。`rot` 同时决定：① 采样点绕原点的旋转；② 径向/朝向类方向的基准；
+     * ③ 写进运行期的"本地→世界旋角"（供 `VelocityModule` 的 x/y 折算，与 Box 同口径）。
+     * ★ 2026-10-16 起对**全部**形状生效（此前只有 Box 消费它）。
+     */
     rotZ?: number;
     /**
      * Unity `ShapeModule.radiusThickness`：发射粒子的体积比例。
@@ -1972,14 +2003,15 @@ export type ParticleMeshConfig = MeshConfig & {
      * 缺省 1（兼容不带该字段的旧 config）。
      */
     radiusThickness?: number;
-    /** 方位角张角（度）：Cone / ConeVolume 与 Circle **共用**（2026-10-16 起锥形也消费它） */
+    /** 方位角张角（度）：**圆盘族（0/2/10）与锥形（4/8）共用**（2026-10-16 起锥形也消费它） */
     arc: number;
     /**
      * Unity `ParticleSystemShapeMultiModeValue`：
      *   **0 = Random** / 1 = Loop / 2 = Ping-Pong / **3 = BurstSpread（沿弧均布）**。
-     * ★ `type = 10`（Circle）与 `type = 4/8`（Cone / ConeVolume）**共用这一套**
-     *   （2026-10-13 Circle、2026-10-16 Cone 起）：两条分支都按它分流 ——
-     *   `3` ⇒ 沿弧均布（相位取本批次发射序号）、其余 ⇒ 弧内随机取角。
+     * ★ 圆盘族（`0/2/10`）与锥形（`4/8`）**共用这一套**（2026-10-13 Circle、2026-10-16 Cone 起）：
+     *   各分支都按它分流 —— `3` ⇒ 沿弧均布（相位取本批次发射序号；圆盘族的这条支路沿用
+     *   既有实现"直接落在圆周上、不看 `radiusThickness`"，因为 `chexiang` 摩天轮靠它）、
+     *   其余（含 1/2 = Loop/PingPong，引擎按 Random 处理）⇒ 弧内随机取角。
      */
     arcMode: number;
   };

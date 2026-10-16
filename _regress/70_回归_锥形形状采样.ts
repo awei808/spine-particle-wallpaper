@@ -129,6 +129,11 @@ const angDiff = (a: number, b: number) => {
   while (d <= -Math.PI) d += 2 * Math.PI;
   return d;
 };
+/** 绕 Z 轴旋转二维向量（弧度）—— 与引擎 `rotVec` 同式，本脚本独立实现以免自证 */
+const rotVec2 = (x: number, y: number, rot: number) => ({
+  x: x * Math.cos(rot) - y * Math.sin(rot),
+  y: x * Math.sin(rot) + y * Math.cos(rot),
+});
 
 /* ── 载入 config ────────────────────────────────────────────────────────── */
 function main() {
@@ -312,13 +317,59 @@ function main() {
   console.log('[6] `m_Scale`（boxX/boxY）各轴缩放');
   const SX = 200;
   const SY = 50;
-  const SE = sample(base, { arc: 360, arcMode: 0, radiusThickness: 1, boxX: SX, boxY: SY }, 4000);
-  const norm = SE.map((p) => Math.hypot(p.x / (R * SX), p.y / (R * SY)));
-  console.log(
-    `   归一化半径 min=${min(norm).toFixed(4)} max=${max(norm).toFixed(4)}  期望 ∈ [0, 1]`
+  /**
+   * ★ 2026-10-16 修正（P1「position/rotation 偏移」）：`m_Scale` 与 `m_Rotation` 的施加顺序。
+   *
+   * Unity `ShapeModuleUI.OnShapeToolGUI` 的发射矩阵是
+   * `Matrix4x4.TRS(position, Quaternion.Euler(rotation), scale)` ⇒ **T·R·S**，
+   * 即"**先各轴缩放、再旋转**"（Cocos `constructMat()` + `transformMat4` 同）。
+   * 旧实现的等价形式是"把节点旋角折进方位角再逐轴缩放" = `S·R`（缩放最外层），
+   * 仅在等比 `m_Scale` 时才与 `R·S` 等价 —— 所以旧断言"归一化半径 ≤ 1"其实**钉的是错的顺序**
+   * （它隐含假设椭圆与坐标轴对齐）。本支改为：
+   *   · 合角 `rot = rotZ + nodeRotZ` 抵消到 0 ⇒ 椭圆与轴对齐（归一化半径 ≤ 1）；
+   *   · 合角 ≠ 0 ⇒ 椭圆被整体旋转 `rot`：**把采样点先转回 −rot 再做归一化**必须 ≤ 1，
+   *     而"不转回"的归一化必须出现 > 1（这条能分辨 R·S 与 S·R）。
+   * 三个产物里只有 S6 `yuan_glow`（1.5, 0.5）是非等比，其 `rotZ = 0`、`nodeRotZ = −0.0`
+   * ⇒ 两种顺序同值，零影响。
+   */
+  const rotDeg0 = base.nodeRotZ || 0;
+  const SE0 = sample(
+    base,
+    { arc: 360, arcMode: 0, radiusThickness: 1, boxX: SX, boxY: SY, rotZ: -rotDeg0 },
+    4000
   );
-  chk('非等比 ⇒ 采样点全在椭圆内（归一化半径 ≤ 1）', max(norm) <= 1 + 1e-6);
-  chk('两轴都用到缩放（x 端展到 R·boxX、y 端展到 R·boxY）', max(norm) > 0.99 && min(norm) < 0.05);
+  const normAligned = SE0.map((p) => Math.hypot(p.x / (R * SX), p.y / (R * SY)));
+  console.log(
+    `   合角 0：归一化半径 min=${min(normAligned).toFixed(4)} max=${max(normAligned).toFixed(4)}  期望 ∈ [0, 1]`
+  );
+  chk('合角 0 ⇒ 采样点全在椭圆内（归一化半径 ≤ 1）', max(normAligned) <= 1 + 1e-6);
+  chk(
+    '两轴都用到缩放（x 端展到 R·boxX、y 端展到 R·boxY）',
+    max(normAligned) > 0.99 && min(normAligned) < 0.05
+  );
+
+  const ROT_EXTRA = 40; // 额外旋角（度）
+  const rotTot = (rotDeg0 + ROT_EXTRA) * DEG;
+  const SE = sample(
+    base,
+    { arc: 360, arcMode: 0, radiusThickness: 1, boxX: SX, boxY: SY, rotZ: ROT_EXTRA },
+    4000
+  );
+  // TRS 顺序（R·S）：把采样点转回 −rot 后，椭圆应与轴对齐 ⇒ 归一化半径 ≤ 1
+  const normBack = SE.map((p) => {
+    const b = rotVec2(p.x, p.y, -rotTot);
+    return Math.hypot(b.x / (R * SX), b.y / (R * SY));
+  });
+  // S·R 顺序会得到的量：直接归一化（不平移旋转）——用于"能分辨两种顺序"的反证
+  const normRaw = SE.map((p) => Math.hypot(p.x / (R * SX), p.y / (R * SY)));
+  console.log(
+    `   合角 ${(rotDeg0 + ROT_EXTRA).toFixed(2)}°：转回后 max=${max(normBack).toFixed(4)}（应 ≤ 1）` +
+      `；不转回 max=${max(normRaw).toFixed(4)}（> 1 ⇒ 椭圆确实被旋转 = R·S 顺序）`
+  );
+  chk(
+    '`m_Scale` 与 `m_Rotation` 的顺序 = Unity `TRS`（先缩放后旋转，R·S）',
+    max(normBack) <= 1 + 1e-6 && max(normRaw) > 1.05
+  );
   const SD2 = sample(base, { arc: 360, arcMode: 0, radiusThickness: 1, boxX: 0, boxY: 0 }, 2000);
   const rho2 = SD2.map((p) => Math.hypot(p.x, p.y));
   chk(
@@ -327,48 +378,126 @@ function main() {
     `max ρ/R = ${(max(rho2) / R).toFixed(6)}`
   );
 
-  /* ── ⑦ ConeVolume 的轴向位移 ────────────────────────────────────────── */
+  /* ── ⑦ ConeVolume 的轴向几何 ────────────────────────────────────────── */
   console.log('');
   if (volBase) {
     const vh = (volBase.shape.length || 0) * volBase.localScale * volBase.unitScale;
     const vR = volBase.shape.radius * volBase.localScale * volBase.unitScale;
     const vDir = Math.atan2(volBase.emitDir[1], volBase.emitDir[0]);
+    const vAng = (volBase.shape.angle || 0) * DEG;
+    const vK = Math.tan(vAng); // 每单位轴向长度，截面半径的增量
+    const vRf = vR + vK * vh;
+    console.log(
+      `   ConeVolume(${volBase.name})：R=${vR.toFixed(3)}  H=${vh.toFixed(3)}  angle=${(vAng / DEG).toFixed(3)}°` +
+        `  ⇒ 远盘半径 = R + H·tan(angle) = ${vRf.toFixed(3)}（**张开**，不是收成一点）`
+    );
+
     /**
-     * ★ 轴向位移的**干净读法**：把 `radius` 置 0 ⇒ 平面偏移项整体消失，`p` 就是纯
-     *   轴向位移，可直接投影读出 `t`。
-     *   ⚠️ 不能直接在 `radius ≠ 0` 的采样点上取 `p·axis` 当 t：新口径的方位角是**完整的
-     *   XY 平面角**（与锥轴**没有**正交约束）⇒ 平面偏移在轴上也有分量，投影会被污染
-     *   （实测 `niao` 会算出 1018 > H=930）。
+     * ★★ 2026-10-16 重写本段断言：锥的**轴向几何**被修正了（P1「ConeVolume(8) 的轴向」）。
+     * 旧断言（"t = H·u^(1/3)、ρ ∝ t/H、平面偏移 ≤ R"）钉的是**错口径** ——
+     * 它把锥当成"顶点在发射器"的反向锥。权威依据是 Unity 官方 gizmo 源码
+     * `ConeFrustrumHandle.cs` 的注释：*"radius is **near-radius at start of cone frustrum**"*、
+     * `farRadius = |range·tan(angle)| + nearRadius` ⇒ **近盘 = `radius` 在原点、沿轴张开**。
+     * （feng3d `ParticleSystemShapeCone.ts` 同向。）详见 `ParticleAnimator.spawn()` 该分支注释。
+     *
+     * 新的可判据（与施加顺序无关、用"到轴线的距离"这个旋转不变量）：
+     *   · 取 `radiusThickness = 0`（只从锥面发射）⇒ 到轴线的距离 = `rad(t) = R + k·t`
+     *     ⇒ 该距离的下确界 ≈ `R`（t→0 处的近盘）、上确界 ≈ `R + k·H`；
+     *     **旧口径下下确界会是 0**（顶点）⇒ 这条能分辨新旧。
+     *   · `radius = 0` 且 `angle = 0`（半径 0 的"圆柱" = 纯轴线）⇒ 平面偏移恒 0，
+     *     此时 `p·轴` 就是纯轴向位移 `t`，可断言 `t = H·u`（均匀）与 `t ∈ [0, H]`。
+     *   · 体积内取点的 t 分布：`pdf ∝ rad(t)²` ⇒ 均值 = ∫t·rad²/∫rad²（闭式解析，非照抄实现）。
      */
     const SZ = sample(
       volBase,
-      { arc: 360, arcMode: 0, radiusThickness: 1, radius: 0, boxX: 0, boxY: 0 },
+      { arc: 360, arcMode: 0, radiusThickness: 0, radius: 0, angle: 0, boxX: 0, boxY: 0 },
       4000
     );
     const tz = SZ.map((p) => p.x * Math.cos(vDir) + p.y * Math.sin(vDir));
     const tzN = SZ.map((p) => Math.abs(-p.x * Math.sin(vDir) + p.y * Math.cos(vDir)));
     console.log(
-      `   ConeVolume(${volBase.name})：H=${vh.toFixed(3)}  radius=0 ⇒` +
-        ` t∈[${min(tz).toFixed(4)}, ${max(tz).toFixed(4)}]  均值=${(mean(tz) / vh).toFixed(4)}H`
+      `   radius=0, angle=0（纯轴线）⇒ t∈[${min(tz).toFixed(4)}, ${max(tz).toFixed(4)}]` +
+        `  均值=${(mean(tz) / vh).toFixed(4)}H`
     );
     chk('ConeVolume：轴向位移 t ∈ [0, H]', min(tz) > -1e-6 && max(tz) <= vh + 1e-6);
     chk(
-      'ConeVolume：t = H·u^(1/3)（max ≈ H、均值 ≈ 0.75H）',
-      Math.abs(max(tz) - vh) / vh < 0.02 && Math.abs(mean(tz) / vh - 0.75) < 0.03
+      'ConeVolume：angle = 0 ⇒ t = H·u（圆柱，沿轴均匀）',
+      Math.abs(max(tz) - vh) / vh < 0.02 && Math.abs(mean(tz) / vh - 0.5) < 0.02
     );
-    chk('ConeVolume：radius = 0 ⇒ 平面偏移为 0（只剩轴向位移）', max(tzN) < 1e-9);
+    chk('ConeVolume：radius = 0 且 angle = 0 ⇒ 平面偏移为 0（只剩轴向位移）', max(tzN) < 1e-9);
 
-    const SEV = sample(
+    // 锥面采样：**把轴向位移与侧向偏移彻底分开**再逐条比对
+    //
+    // ★ 为什么要这么绕：本引擎的 2D 化把"锥的底面圆盘"直接当成**屏幕平面内的圆盘**
+    //   （见 `ParticleAnimator.spawn()` 锥形分支的注释）⇒ 侧向偏移向量 `ρ·(cosφ, sinφ)`
+    //   与锥轴**同在屏幕平面内**，于是 `p·轴` 会被侧向分量污染、"到轴线的距离"更是无意义
+    //   （它只等于 `ρ·|sin(φ−轴角)|`）。
+    //   ⇒ 干净的读法：把 `arc` 压到 ~0（⇒ φ ≡ 0，侧向方向固定 = `rot`）并令
+    //     `rot = 轴角 + 90°`（侧向与轴**正交**）⇒ 此时
+    //       `t = p·轴`、`ρ = |p − (p·轴)·轴|`，两者都可逐颗精确读出。
+    const perp = vDir + Math.PI / 2;
+    const rotZPerp = perp / DEG - (volBase.nodeRotZ || 0);
+    const SA = sample(
       volBase,
-      { arc: 360, arcMode: 0, radiusThickness: 1, boxX: 1, boxY: 1 },
-      4000
+      { arc: 1e-6, arcMode: 0, radiusThickness: 0, boxX: 1, boxY: 1, rotZ: rotZPerp },
+      6000
     );
-    /** 平面偏移在锥轴法向上的投影（无轴向位移、无缩放 ⇒ 就是 ρ·|sin(φ−dirAngle)| ≤ R） */
-    const rad = SEV.map((p) => Math.abs(-p.x * Math.sin(vDir) + p.y * Math.cos(vDir)));
+    const tA = SA.map((p) => p.x * Math.cos(vDir) + p.y * Math.sin(vDir));
+    const rhoA = SA.map((p) => Math.abs(-p.x * Math.sin(vDir) + p.y * Math.cos(vDir)));
+    const devA = SA.map((p, i) => Math.abs(rhoA[i] - (vR + vK * tA[i])));
     console.log(
-      `   ConeVolume(${volBase.name})：R=${vR.toFixed(3)}  平面偏移的法向投影 max=${max(rad).toFixed(4)}`
+      `   正交化后（arc≈0、thickness=0）⇒ t∈[${min(tA).toFixed(3)}, ${max(tA).toFixed(3)}]` +
+        `  ρ∈[${min(rhoA).toFixed(3)}, ${max(rhoA).toFixed(3)}]`
     );
-    chk('ConeVolume：平面偏移 ≤ R（体积内均匀）', max(rad) <= vR + 1e-6);
+    chk('ConeVolume：t ∈ [0, H]（正交化后逐颗可读）', min(tA) > -1e-6 && max(tA) <= vh + 1e-6);
+    chk(
+      'ConeVolume：逐颗满足 ρ = R + t·tan(angle)（近盘半径 R、沿轴张开）',
+      max(devA) < 1e-6 * Math.max(1, vRf),
+      `max |ρ − (R + k·t)| = ${max(devA).toExponential(3)}`
+    );
+    chk(
+      'ConeVolume：近盘下确界 ≈ R（旧口径会掉到 0）',
+      min(rhoA) >= vR * 0.999 && min(rhoA) <= vR * 1.02,
+      `min ρ = ${min(rhoA).toFixed(3)} / R = ${vR.toFixed(3)}`
+    );
+    chk(
+      'ConeVolume：远盘上确界 ≈ R + H·tan(angle)',
+      max(rhoA) <= vRf * 1.001 && max(rhoA) >= vRf * 0.98,
+      `max ρ = ${max(rhoA).toFixed(3)} / Rf = ${vRf.toFixed(3)}`
+    );
+    // thickness = 1 ⇒ ρ = rad(t)·√u（面积均匀），上界仍是 rad(t)
+    const SB = sample(
+      volBase,
+      { arc: 1e-6, arcMode: 0, radiusThickness: 1, boxX: 1, boxY: 1, rotZ: rotZPerp },
+      6000
+    );
+    const tB = SB.map((p) => p.x * Math.cos(vDir) + p.y * Math.sin(vDir));
+    const rhoB = SB.map((p) => Math.abs(-p.x * Math.sin(vDir) + p.y * Math.cos(vDir)));
+    const overB = SB.map((_p, i) => rhoB[i] - (vR + vK * tB[i]));
+    console.log(`   thickness = 1 ⇒ max(ρ − rad(t)) = ${max(overB).toFixed(6)}（应 ≤ 0）`);
+    chk('ConeVolume：thickness = 1 ⇒ ρ ≤ rad(t)（截面内铺开）', max(overB) <= 1e-6 * Math.max(1, vRf));
+
+    // 体积内取点：pdf(t) ∝ rad(t)² 的解析均值
+    const SV = sample(volBase, { arc: 360, arcMode: 0, radiusThickness: 1, boxX: 1, boxY: 1 }, 20000);
+    const tv = SV.map((p) => p.x * Math.cos(vDir) + p.y * Math.sin(vDir));
+    /** 解析：`∫₀ᴴ t·(R+kt)²dt / ∫₀ᴴ (R+kt)²dt`（梯形中点积分；**不照抄实现**） */
+    const integ = (fn: (t: number) => number) => {
+      const N = 20000;
+      let s = 0;
+      for (let i = 0; i < N; i++) s += fn(((i + 0.5) * vh) / N);
+      return (s * vh) / N;
+    };
+    const tMeanTheory =
+      integ((t) => t * Math.pow(vR + vK * t, 2)) / integ((t) => Math.pow(vR + vK * t, 2));
+    console.log(
+      `   体积内均匀 ⇒ t 均值 实测=${(mean(tv) / vh).toFixed(4)}H / 解析=${(tMeanTheory / vh).toFixed(4)}H`
+    );
+    chk(
+      'ConeVolume：体积内取点 t 的均值 = 解析值（pdf ∝ 截面半径²）',
+      Math.abs(mean(tv) - tMeanTheory) / vh < 0.02,
+      `|Δ| = ${(Math.abs(mean(tv) - tMeanTheory) / vh).toFixed(4)}H`
+    );
+
     // Cone（Base）不该有轴向位移
     const tsCone = S.map((p) => p.x * Math.cos(dirAngle) + p.y * Math.sin(dirAngle));
     console.log(

@@ -52,7 +52,7 @@ CustomData / Renderer（+ Burst、顶层 ParticleSystem）。
 |---|---|---|---|---|
 | Main（life/speed/size/rotation/color/gravity…） | ✅ 大部分（缺 rotation3D / flipRotation / randomizeRotationDirection / cullingMode / ringBufferMode / emitterVelocityMode） | ✅ | ✅ | ✅ |
 | Emission + Burst | ✅ | ✅ | ✅ | ✅ |
-| **Shape** | ⚠️ **部分且锥形错**：Box/Circle 对；Cone 缺方位角与 arc；无 Sphere/Hemisphere/Edge/Mesh/Sprite；`position/rotation` 未接 | ✅ 6 形状 | ✅ Box/Circle/Cone/Sphere/Hemisphere（+ Edge/Volume 语义） | ✅ 5 形状 |
+| **Shape** | ✅ Box / Circle / Sphere / Hemisphere / Edge / Cone / ConeVolume（2026-10-16 P1 补齐，含 `m_Position`/`m_Rotation`/`m_Scale` 的 `TRS` 施加）；⚠️ 仍缺 Donut / Rectangle / BoxShell / BoxEdge / Mesh / Sprite*（落到锥形兜底，见 `TODO.md` §2.7） | ✅ 6 形状 | ✅ Box/Circle/Cone/Sphere/Hemisphere（+ Edge/Volume 语义） | ✅ 5 形状 |
 | Velocity over Lifetime | ⚠️ 仅 x/y + speedModifier（缺 z/orbital/radial/space） | ✅ | ✅ | ✅ |
 | Limit Velocity over Lifetime | ⚠️ 仅 magnitude（缺 separateAxis/inWorldSpace 与 per-axis、drag） | ✅ | ✅ | ❌ |
 | Force over Lifetime | ❌ | ✅ | ✅ | ❌ |
@@ -154,6 +154,57 @@ p   = emitDir·t + (cos phi, sin phi) · ρ · (boxX, boxY)                     
   而 **Cocos 只实现了前 3 档（缺 BurstSpread）** —— S9 的 `chexiang` 恰好用的就是
   BurstSpread（`arcMode=3`，轿厢 16° 相位错开）⇒ 这一档要靠 feng3d / Unity 手册，别抄 Cocos。
 
+### 4.4 ★★ Sphere / Hemisphere / Circle 的**位置口径相同、方向 = 径向**（P1 依据）
+
+- **位置**：Unity 手册 Shape 模块页逐字 *"**Sphere, Hemisphere, and Circle have the same
+  properties.**"*（Radius / Radius Thickness / Arc），`ShapeModuleUI.cs` 里 Sphere|Hemisphere 与
+  Circle 的字段列表也逐字一致。并且正交投影下半球 `{ρ ≤ R, z ≥ 0}` 的 `(x,y)` 区域**就是整个
+  圆盘**（每根与 z 平行的直线上，半球与整球的截面长度只差一个常数因子）⇒ **2D 下三者的位置
+  分布不可分辨**。
+- **方向**：手册 *"The choice of shape affects the region from which particles can be launched,
+  **but also the initial direction of the particles. For example, a Sphere emits particles outward
+  in all directions**"*；形状表里另有 *"Hemisphere — Uniform emission in all directions on one side
+  of a plane"*、*"Circle — Emits particles uniformly from the center or edge of a circle.
+  **The particles move only in the plane of the circle.**"*
+  三方实现一致按**径向**写：Cocos `sphereEmit/hemisphereEmit/circleEmit` 都是
+  `Vec3.normalize(dir, pos)`；feng3d `ParticleSystemShapeCircle.ts` 写 `dir = (cos a, sin a, 0)`。
+  ⚠️ 注意「Spherize Direction」是**另一个**滑块（把方向往"从中心朝外"混合）；手册说它在
+  Hemisphere/Circle 上取 1 时"与 Sphere 相同" —— 本游戏全包普查里该字段 **Sphere 1163 / 
+  Hemisphere 535 条全为 0**，故本轮按"基础方向即径向"实现，不引入该混合项。
+
+### 4.5 ★ SingleSidedEdge = 线段沿本地 X、方向沿本地 +Y（P1 依据）
+
+- 手册形状表逐字：*"**Edge** — Emits particles from a line segment. The particles move in the
+  emitter object's **upward (Y) direction**."*
+- `ShapeModuleUI.cs`：`case ParticleSystemShapeType.SingleSidedEdge: m_Radius.OnInspectorGUI(...)`
+  —— 该形状**唯一**可编辑属性是 `radius`（以 `MinMaxCurve` 形式，Mode 决定取角方式）。
+- **feng3d** `ParticleSystemShapeEdge.ts`（注释标注原 `ParticleSystemShapeSingleSidedEdge.calcParticlePosDir`）：
+  ```ts
+  const arc = 360 * module.radius;
+  radiusAngle = Math.random() * arc;      // Random 档
+  radiusAngle = radiusAngle / arc;        // ⇒ t ∈ [0,1)
+  vec3From(0, 1, 0, dir);                 // 方向 = 本地 +Y
+  vec3From(module.radius * (radiusAngle * 2 - 1), 0, 0, position);   // x ∈ [−R, +R]
+  ```
+  ⇒ **半长 = `radius`**（全长 `2·radius`），在 `[−R, +R]` 上均匀取点。
+
+### 4.6 ★★ Cone / ConeVolume 的轴向：**近盘在原点、沿轴张开**（P1 依据）
+
+Unity 官方 gizmo 源码 `Editor/Mono/Handles/ConeFrustrumHandle.cs` 头注释逐字：
+
+> `// 'radius' is near-radius at start of cone frustrum (far-radius is derived from 'angle' and near-radius)`
+> `// 'angle' is cone angle from near disc of conefrustrum (if near-radius is 0 then angle is the half angle of view frustrum)`
+> `// 'range' is height of conefrustrum`
+
+代码里 `farRadius = Mathf.Min(1000f, Mathf.Abs(range * Mathf.Tan(angle)) + nearRadius)`，
+且绘制时把**近盘画在 `position`**、远盘画在 `position + forward * range` ⇒
+**近盘（半径 = `radius`）在发射器原点、远盘（半径 = `radius + Length·tan(angle)`）在轴向
+`Length` 处**，锥体沿 +Z（本引擎的 `emitDir`）**张开**。
+**feng3d** `ParticleSystemShapeCone.ts` 同向：
+`bottomPos = basePos·radius·rate`（`z = 0`）、`topPos = basePos·(radius + length·tan(angle))·rate; topPos.z = length`。
+⚠️ **Cocos 的 `coneEmit` 是另一套**（底面在 `z=0`，但方向 `dir.z = −cos(angle)·radius` 朝 −Z、"Volume" 沿
+`dir` 推 `length·rand()/(−dir.z)`）—— 它的**张开方向与 Unity 相反**，别拿它当锥的规格。
+
 ---
 
 ## 5. 可直接读的关键文件（取文件命令已备）
@@ -218,7 +269,11 @@ gh api repos/Unity-Technologies/UnityCsReference/contents/Modules/ParticleSystem
 1. **P0 修锥形** ✅ **2026-10-16 已完成**：方位角 + `arc` + `m_Scale` 乘子（本轮"水平线"问题的根因）。
    `radiusThickness` 分布口径的"顺带统一"复查结论：**无需改动**（两处本来就是同一式子，见 §6.1）。
    落地与验证见 `docx/TODO.md` §2.0。
-2. **P1 补形状族**：Sphere / Hemisphere / ConeVolume(8) 的轴向、Edge、`position/rotation` 偏移。
+2. **P1 补形状族** ✅ **2026-10-16 已完成**：Sphere / Hemisphere（+ obsolete 的 shell 变体）与 Circle
+   合流成"圆盘族"、方向 = 径向；`SingleSidedEdge`（+ `CircleEdge`）线段 + 本地 +Y 方向；
+   `m_Scale` / `m_Position` / `m_Rotation` 提升为**全形状通用**并按 Unity `TRS` 顺序施加；
+   `ConeVolume` 的轴向几何修正为"近盘在原点、沿轴张开"的截锥。
+   落地与验证见 `docx/TODO.md` §2.7；本节 §4.4/§4.5 收录新增的三条权威依据。
 3. **P2 补"按速度"与力**：Velocity 的 z/orbital/radial、Force、ColorBySpeed、SizeBySpeed、
    RotationBySpeed、InheritVelocity（feng3d 有全套公式）。
 4. **P3 补渲染侧**：renderMode 5 种（Billboard/Stretched/Horizontal/Vertical/Mesh）、

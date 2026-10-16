@@ -169,7 +169,8 @@
 沿用 `RESEARCH_粒子系统复刻参考.md` §8 的 P0~P5 排期（P5 即 SubEmitters），此处不重复。
 
 - ✅ **P0 修锥形**：2026-10-16 完成（方位角 + `arc` + `m_Scale`），见 §2.0。
-- ⬜ **P1** 补形状族（Sphere / Hemisphere / Edge / `position`/`rotation` 偏移）
+- ✅ **P1 补形状族**：2026-10-16 完成（Sphere / Hemisphere / Edge / `m_Position`·`m_Rotation` 全形状化
+  + ConeVolume 轴向几何修正），见 §2.7。
 - ⬜ **P2** 按速度与力（Velocity z/orbital/radial、Force、ColorBySpeed、SizeBySpeed…）
 - ⬜ **P3** 渲染侧（renderMode 5 种、alignment/pivot/sortingFudge）
 - ⬜ **P4** UV / Noise 细节（rowMode、noise sizeAmount/scrollSpeed/octaves）
@@ -199,3 +200,72 @@
      （这样"单位四元数"与"`(-90,0,0)`"两类挂点可共用一套代码）。
 3. **`radiusThickness` 的**密度**口径官方未定义**（只定义支撑区间 `[R(1−t), R]`）：
    cocos = 线性、LayaAir = √u、本项目 = √u ⇒ **维持 √u**（见 §2.1）。
+
+### 2.7 ✅ P1「补形状族」已落地（2026-10-16）
+
+> 报告：`_work_形状族普查/REPORT_P1形状族_2026-10-16.md`（含全包普查、逐颗改前/改后对照）。
+> 回归：`_regress/71_回归_形状族补充.ts`（21 断言）+ `_regress/70_` 更新（24 断言）。
+> **未部署 WE、未发布**（与 P0 同：先落源码 + 回归，观感复核与部署另起）。
+
+**全包普查（41996 个 `ParticleSystem`，`art_prefabs.ab` + `14_effect`）给出的形状族用量**：
+`Box` 3603 / `Cone` 2957 / **`Sphere` 1163** / `ConeVolume` 581 / **`Hemisphere` 535** /
+`Circle` 526 / `BoxEdge` 73 / **`SingleSidedEdge` 59** / `Donut` 56 / `BoxShell` 32 /
+`Rectangle` 19 / `Mesh` 18 / `SpriteRenderer` 2（**启用**支数）。
+⇒ 本轮的四个缺口正好是"第 3、第 5、第 7 大形状族 + 轴几何"，`radiusMode` 全为 Random、
+`radiusSpread` 全为 0（Edge 只需实现 Random 即覆盖 59/59）。
+
+#### 做了什么（`src/animator/ParticleAnimator.ts`）
+
+1. **圆盘族归一**：`Sphere(0)` / `Hemisphere(2)`（+ obsolete 的 `SphereShell(1)` / `HemisphereShell(3)`）
+   与 `Circle(10)` **共用一支**。依据：Unity 手册 *"Sphere, Hemisphere, and Circle have the same
+   properties."*；且半球 `{ρ ≤ R, z ≥ 0}` 的正交投影**就是整个圆盘**（`(x,y)` 分布与整球同）
+   ⇒ 2D 下三者位置口径相同。
+   ⚠️ 之前它们落到**锥形兜底**：位置碰巧同式，但会多吃一份"锥形 `angle/2` 方向发散"
+   （`angle` 对球/半球根本不在 UI 里，是序列化残留）。
+2. **方向 = 径向**（圆盘族 + `Circle`）：手册逐字 *"a Sphere emits particles **outward in all
+   directions**"*、*"Circle … move **only in the plane of the circle**"*；Cocos
+   `Vec3.normalize(dir, pos)` / feng3d `dir = (cos a, sin a, 0)` 同口径（单位方向 ⇒ **速度量级不变**）。
+   ⚠️ 顺带补上了旧 `Circle` 分支**从未消费 `startSpeed`** 的漏（它以前只靠 `VelocityModule` 给速度）。
+3. **`SingleSidedEdge(12)` / `CircleEdge(11)`**：线段沿**本地 X**（半长 = `radius`，在 `[−R, +R]` 均匀）、
+   方向沿**本地 +Y**（手册 *"The particles move in the emitter object's **upward (Y) direction**."*；
+   几何同 feng3d `ParticleSystemShapeEdge.ts`）。`CircleEdge` 折叠为 `Circle`（官方标注 obsolete）。
+4. **`m_Scale` / `m_Position` / `m_Rotation` 从"仅 Box"提升为全形状通用**，顺序严格按 Unity
+   `ShapeModuleUI.OnShapeToolGUI` 的 `TRS`（`emitterMatrix = TRS(position, Euler(rotation), scale)`）
+   ⇒ **先各轴缩放 → 再旋转 → 最后平移**（旧写法把 `nodeRotZ` 折进方位角 = "缩放最外层"，
+   仅在等比时等价）。`rot` = `m_Rotation.z + nodeRotZ`，同时写进 `Particle.localRot`（供 `VelocityModule`
+   的本地 x/y 折算，与 Box 同口径）。
+5. **`ConeVolume(8)` 的轴向几何修正**：锥是**近盘（半径 = `radius`）在原点、沿轴张开到
+   `radius + length·tan(angle)`** 的截锥，体积内按截面面积取点（`pdf ∝ rad(t)²`，闭式反解）。
+   依据：Unity 官方 gizmo 源码 `ConeFrustrumHandle.cs` 的头注释（*"'radius' is **near-radius at
+   start of cone frustrum**"*）+ `farRadius = |range·tan(angle)| + nearRadius`；feng3d 同向。
+   ❌ 旧实现当成"顶点在发射器、底面在 `length` 处"的**反向锥**（`ρ ∝ t/H`），是把
+   *"锥面半径 ∝ 沿轴距离"* 套在了一个顶点位置弄错的锥上。
+
+#### 对三个产物的**实际影响**（`git stash` 停靠旧源码 + 同种子各采样 3000 颗逐颗对照）
+
+| 产物 | 记录 | 结果 |
+|---|---|---|
+| S9 | `qiqiu`/`yun`/`niao` 之外的 7 支 | **逐位零变化** |
+| S9 | **`niao`**(ConeVolume) | ★ **几何改变**：`mean|Δp| = 455 px`（max 1239）；半径分位 `p50 984→850`、`p90 1211→1275`；速度方向直方图 L1 = 0.56（速度量级不变） |
+| S6 | **`fx_chat_lizi_san`**(Hemisphere) | ★ **仅方向改变**（锥形 ±45° 扇 → 径向散射）；位置、速度量级逐位不变；方向直方图 L1 = 1.31 |
+| S6 | `yuan_glow`(Circle) | 位置**重新随机**（分布不变：半径分位 208.7/426.6/707.5 → 210.5/421.0/714.8）。原因：`Circle` 这次才首次消费 `startSpeed` ⇒ 每颗粒子多耗 1 个随机数。该组 `startSpeed ≡ 0` ⇒ **观感不变** |
+| S8 | 全部 3 支 | **逐位零变化** |
+| S6 | 其余 Box/Sphere/Cone 记录 | **逐位零变化** |
+
+⇒ 需要**人工复核观感**的只有 2 支：S9 `niao`、S6 `fx_chat_lizi_san`。
+
+#### 仍未实现（已知缺口，落到锥形兜底 = 被当成圆盘）
+
+`17 Donut`(56) / `16 BoxEdge`(73) / `15 BoxShell`(32) / `18 Rectangle`(19) / `6 Mesh`(18) /
+`20 SpriteRenderer`(2)。它们各有自己的几何（Donut 要 `donutRadius`、BoxEdge/BoxShell 要按盒体 +
+`boxThickness`、Mesh/Sprite 要网格数据），**不顺手塞进 Box/圆盘** —— 那只会把"明确的未实现"
+变成"看起来像实现了"。`_regress/71_` 的 [7] 已**钉住现状**（位置仍与锥形兜底逐位相同）。
+
+#### 数据层未下发的字段（非引擎缺口，留档）
+
+`radius` 的 MinMaxCurve 模式（全包普查里 `radiusMode` 恒 0 = Random、`radiusSpread` 恒 0）、
+`m_Scale.z` / `m_Position.z`（2D 下 z 无意义）、`arcSpread`、
+`randomDirectionAmount` / `sphericalDirectionAmount` / `randomPositionAmount` / `alignToDirection`
+（这几个在 Sphere/Box 上确有非零值，属 Shape 模块的"方向修饰"族，归 P2 或单独一批）。
+Edge 的方向取"本地 +X 转 90°"，用的是本引擎既有的"屏幕内平面朝向"口径（`nodeRotZ`）；
+若要更严格需数据层额外下发**本地 +Y 的投影**（`emitUp`），与 §2.6 第 2 条同源。

@@ -485,6 +485,65 @@ function rotVec(x: number, y: number, rot: number): { x: number; y: number } {
 }
 
 /**
+ * 形状类型**归一化**：把 Unity 里已废弃的"外壳 / 边缘"变体折叠到基类型。
+ *
+ * 官方在枚举里逐个标注了 *"… is deprecated and does nothing. Please use
+ * ShapeModule.radiusThickness instead, to control edge emission."*
+ * （`UnityCsReference/Modules/ParticleSystem/Managed/ParticleSystemEnums.cs`）——
+ * 即这些值在运行时**与基类型完全同义**，旧值只是序列化残留：
+ *
+ *   `1 SphereShell` → `0 Sphere`、`3 HemisphereShell` → `2 Hemisphere`、
+ *   `7 ConeShell` → `4 Cone`、`9 ConeVolumeShell` → `8 ConeVolume`、
+ *   `11 CircleEdge` → `10 Circle`（"edge" 语义由 `radiusThickness = 0` 表达）。
+ *
+ * ⚠️ 全包普查（`_work_形状族普查/`，41996 个 ParticleSystem）确认本游戏**一次都没用到**
+ * 这 5 个值 ⇒ 折叠与否对现有产物零影响，纯粹是让类型分发闭合。
+ */
+function normShapeType(t: number): number {
+  switch (t) {
+    case 1:
+      return 0;
+    case 3:
+      return 2;
+    case 7:
+      return 4;
+    case 9:
+      return 8;
+    case 11:
+      return 10;
+    default:
+      return t;
+  }
+}
+
+/**
+ * 形状采样点（**本地**、已按 `m_Scale` 各轴缩放前的量）→ 世界偏移。
+ *
+ * ★ 依 Unity `ShapeModuleUI.OnShapeToolGUI` 的发射矩阵
+ *   `emitterMatrix = Matrix4x4.TRS(shape.position, Quaternion.Euler(shape.rotation), scale)`
+ *   ⇒ **先各轴缩放 → 再绕 Z 旋转 → 最后加平移**（TRS 顺序）。
+ *   与 Cocos `ShapeModule.constructMat()` + `Vec3.transformMat4(p.position, p.position, mat)`
+ *   逐字同口径（`cocos/particle/emitter/shape-module.ts`），feng3d / LayaAir 同。
+ *
+ * @param px py  形状本地采样点（**未**乘 `m_Scale`、**未**乘 `localScale × unitScale` 的量已由调用方折算）
+ * @param scX scY `m_Scale` 的 x/y 分量（调用方保证 > 0）
+ * @param rot     `(m_Rotation.z + nodeRotZ)`，弧度
+ * @param offX offY `m_Position` 的 x/y 分量（**已**折算成世界单位）
+ */
+function shapeXform(
+  px: number,
+  py: number,
+  scX: number,
+  scY: number,
+  rot: number,
+  offX: number,
+  offY: number
+): { x: number; y: number } {
+  const r = rotVec(px * scX, py * scY, rot);
+  return { x: r.x + offX, y: r.y + offY };
+}
+
+/**
  * alpha 渐变求值（ColorModule.gradient 的 alphaKeys: [[t, a], ...]）。
  * 注意 t 小于首个关键帧时取**首个关键帧的值**（Unity 的渐变外推语义），
  * star 的首个 alpha 键在 t=0.1029 —— 若当成"从 0 开始"会让星点开头多淡入一次。
@@ -1134,21 +1193,75 @@ export class ParticleAnimator {
     // speedModifier 按官方措辞"倍率乘在粒子速度上"实现为初始速度的乘子
     const spdMul =
       c.velocity && c.velocity.enabled ? c.velocity.speedModifier : 1;
-    if (sh && sh.enabled && sh.type === 10) {
+    /**
+     * 形状类型（已把 obsolete 的 shell/edge 变体折叠到基类型，见 `normShapeType`）。
+     * 缺省 −1 ⇒ 走"无形状"分支（与 `!sh` 同一条路）。
+     */
+    const st = sh && sh.enabled ? normShapeType(sh.type) : -1;
+    /**
+     * ── `m_Scale` / `m_Position` / `m_Rotation` 的通用折算（2026-10-16，P1「position/rotation 偏移」）──
+     *
+     * `m_Scale` 的 x/y 分量（config 的 `boxX/boxY`）：**各轴缩放**，官方 tooltip
+     * "Scale the emission shape" ⇒ 取样点被它逐轴放大（`docx/RESEARCH…` §4.2）。
+     * ⚠️ 非正数**视为 1**：0 会把发射区压成一条线/一个点（既有 Circle / Cone 口径，
+     * 见 `_regress/70…` [6]），故沿用；缺省（旧 config 无此字段）同样 ⇒ 1，零回归。
+     * ⚠️ Box(`type = 5`) 是**例外**：它的 `boxX/boxY` 是盒体**全长**，在它自己的分支里消费。
+     *
+     * `m_Position`（`offsetX/offsetY`）：形状相对发射器的平移，**最后**叠加（TRS 顺序）。
+     * `m_Rotation.z`（`rotZ`）：形状自身的额外旋角，与节点在屏幕内的旋角 `nodeRotZ` **同轴相加**
+     *   （两者都是绕本地 Z）。合角 `rot` 同时决定：① 采样点绕原点的旋转；② 径向/朝向类
+     *   方向的基准；③ 存进 `p.localRot` 供 `VelocityModule` 的 x/y 折算（与 Box 同口径）。
+     */
+    const scX = sh && sh.boxX && sh.boxX > 0 ? sh.boxX : 1;
+    const scY = sh && sh.boxY && sh.boxY > 0 ? sh.boxY : 1;
+    const offX = ((sh && sh.offsetX) || 0) * s * u;
+    const offY = ((sh && sh.offsetY) || 0) * s * u;
+    const rot = (((sh && sh.rotZ) || 0) + c.nodeRotZ) * DEG2RAD;
+    if (st === 10 || st === 0 || st === 2) {
       /**
-       * type=10 Circle：位置的取值方式**由 `arcMode` 决定**，不是一律均布。
-       * Unity `ParticleSystemShapeMultiModeValue`：0 = Random / 1 = Loop /
-       * 2 = Ping-Pong / **3 = BurstSpread**。
+       * ── 圆盘族：`Circle(10)` / `Sphere(0)` / `Hemisphere(2)`（+ 已折叠的 shell 变体）──
        *
-       *   · `arcMode = 3`（BurstSpread）⇒ 粒子沿弧**均布**，相位由**本批次的发射序号**
-       *     决定，再叠加节点自身的 Z 轴旋角（chexiang 0.04° / chexiang(1) 16.04°
-       *     → 两组轿厢正好错开 16.00°）。官方原文（Shape 模块手册）：
-       *     "Burst Spread mode distributes particle generation evenly around the shape…
-       *      **best used with burst emissions**."
-       *   · 其余（**0 = Random** 等）⇒ 在**弧内随机**取角；半径由 `radiusThickness`
-       *     决定（0 = 只从圆周、1 = 铺满圆面、其间按面积比例）。官方原文：
-       *     "Radius Thickness: The proportion of the volume that emits particles.
-       *      A value of 0 emits particles from the outer surface… 1 … the entire volume."
+       * ★★ 为什么三者在 2D 里共用一支（2026-10-16，P1「补形状族」）：
+       *
+       *   ① **属性集本来就相同** —— Unity 手册原文 *"Sphere, Hemisphere, and Circle have the
+       *      same properties."*（Radius / Radius Thickness / Arc…）。`ShapeModuleUI.cs` 里
+       *      这两支 case 的字段列表也逐字一致。
+       *   ② **正交投影下位置分布完全相同** —— 半球 `{ρ ≤ R, z ≥ 0}` 投影到 XY 面仍是
+       *      半径 R 的**整圆盘**（`(x,y)` 的投影区域与整球一致）；均匀球面/半球面/圆盘的
+       *      投影密度也都取 `radiusThickness` 的支撑区间 `[R(1−t), R]`。⇒ 位置口径**无差别**，
+       *      差别只在"方向"（下条），而 2D 下 z 分量被丢弃 ⇒ 连方向也一致。
+       *      （本引擎的 ρ 口径见 `docx/TODO.md` §2.1：`ρ = R(1 − t + t·√u)`。）
+       *   ③ 因此当年"Sphere / Hemisphere 落到锥形兜底分支"是**纯粹的错路**：位置碰巧同式，
+       *      但会额外吃到锥形的 `angle/2` 方向发散（`angle` 对球/半球根本不在 UI 里，
+       *      是序列化残留）与锥形的轴向位移。全包普查：`Sphere` 启用 1163 支、`Hemisphere` 535 支
+       *      （第 3 / 第 5 大形状族），误伤的规模不小。
+       *
+       * ★ 方向 = **径向**（本地方位角 φ 所在方向）：
+       *   Unity 手册逐字 *"a Sphere emits particles **outward in all directions**"*、
+       *   *"Hemisphere — Uniform emission in all directions on one side of a plane"*、
+       *   *"Circle — The particles move **only in the plane of the circle**"*；
+       *   三方实现一致：Cocos `sphereEmit/hemisphereEmit/circleEmit` 都写
+       *   `Vec3.normalize(dir, pos)`、feng3d `ParticleSystemShapeCircle` 写
+       *   `dir = (cos a, sin a, 0)`（**单位**方向，不带半径 ⇒ `startSpeed` 量级不变）。
+       *   ⚠️ 与 `docx/TODO.md` §2.6 保留的"锥形 `emitDir ± (ρ/R)·(angle/2)`"口径**不冲突**：
+       *     那条只针对 Cone/ConeVolume（`qiqiu` / `niao` / S6 `huaban_2` 已验收）；本支是
+       *     新增形状的**首次**实现，且三个产物里圆盘族的 `startSpeed` **全为 0**
+       *     （`chexiang` / `yuan_glow` / `fx_chat_*` 逐条核过）⇒ 对已发布产物零影响。
+       *
+       * ★ 位置取值仍**由 `arcMode` 分流**（不是一律均布）：
+       *   Unity `ParticleSystemShapeMultiModeValue`：0 = Random / 1 = Loop /
+       *   2 = Ping-Pong / **3 = BurstSpread**。
+       *   · `arcMode = 3`（BurstSpread）⇒ 粒子沿弧**均布**，相位取**本批次发射序号**
+       *     （chexiang 0.04° / chexiang(1) 16.04° → 两组轿厢正好错开 16.00°）。官方原文
+       *     *"Burst Spread mode distributes particle generation evenly around the shape…
+       *      best used with burst emissions."*
+       *     ⚠️ 本支**沿用**既有实现"均布时不看 `radiusThickness`、直接落在圆周上"
+       *     （`chexiang` 的 config 没带 `radiusThickness` ⇒ 引擎缺省 1，若改成按厚度铺开
+       *      **摩天轮 10 节轿厢就会散进圆面**、已验收画面被破坏）⇒ 刻意保留，见 `docx/TODO.md`。
+       *   · 其余（**0 = Random** 等）⇒ 在**弧内随机**取角；半径由 `radiusThickness` 决定
+       *     （0 = 只从外缘、1 = 铺满）。官方原文 *"Radius Thickness: The proportion of the
+       *     volume that emits particles. A value of 0 emits particles from the outer surface…
+       *     1 … the entire volume."*
        *
        * ★★ 2026-10-13 修正（蝶语吟花 `yuan_glow`「超亮光圈」的根因）：
        *   旧实现**无视 `arcMode`**、type=10 一律走 BurstSpread 均布，而相位取自
@@ -1158,34 +1271,71 @@ export class ParticleAnimator {
        *   位置固定、常亮的巨大光斑。而 `yuan_glow` 的实际参数是 `arcMode = 0`（Random），
        *   游戏里应是「画面左右随机位置闪烁的几个淡光圈」。
        *
-       * `m_Scale`（config 里的 `boxX/boxY`；官方 "Scale: Change the size of the emitter
-       * shape used for spawning particles"）对 Circle 是**发射器的各轴缩放** ⇒ 可把圆形
+       * `m_Scale`（config 里的 `boxX/boxY`）对圆盘族是**发射器的各轴缩放** ⇒ 可把圆形
        * 发射区拉成椭圆（`yuan_glow` 是 (1.5, 0.5)：x 半径 839 / y 半径 280 世界单位，
        * 横向正好铺满整幅画面，与实录取景吻合）。缺省 1 ⇒ 正圆。
        */
       const rad = (sh.radius || 0) * s * u;
+      let phi: number;
+      let rho: number;
       if (sh.arcMode === 3) {
-        const ang =
-          (this.emittedInBatch / Math.max(1, this.batchCount)) * Math.PI * 2 +
-          c.nodeRotZ * DEG2RAD;
-        p.x = Math.cos(ang) * rad;
-        p.y = Math.sin(ang) * rad;
+        phi = (this.emittedInBatch / Math.max(1, this.batchCount)) * (sh.arc ?? 360) * DEG2RAD;
+        rho = rad;
       } else {
         // Radius Thickness：0 = 外表面、1 = 整个体积；其间按面积比例
         // （与锥形分支同一口径：th=1 ⇒ ρ = R·√u 面积均匀；th=0 ⇒ ρ ≡ R 只在圆周）
         const th10 = Math.min(1, Math.max(0, sh.radiusThickness ?? 1));
-        const rho = rad * (1 - th10 + th10 * Math.sqrt(r.next()));
-        const arcRad = (sh.arc ?? 360) * DEG2RAD;
-        // 弧内随机（官方 "Random: Unity generates particles randomly around the arc"）；
-        // 起点叠加节点旋角，与 Box / 均布分支同口径
-        const ang = c.nodeRotZ * DEG2RAD + r.next() * arcRad;
-        // `m_Scale` 各轴缩放；非正数视为 1（否则会把发射区压成一条线）
-        const scX = sh.boxX && sh.boxX > 0 ? sh.boxX : 1;
-        const scY = sh.boxY && sh.boxY > 0 ? sh.boxY : 1;
-        p.x = Math.cos(ang) * rho * scX;
-        p.y = Math.sin(ang) * rho * scY;
+        rho = rad * (1 - th10 + th10 * Math.sqrt(r.next()));
+        // 弧内随机（官方 "Random: Unity generates particles randomly around the arc"）
+        phi = r.next() * (sh.arc ?? 360) * DEG2RAD;
       }
-    } else if (sh && sh.enabled && sh.type === 5) {
+      const wp = shapeXform(Math.cos(phi) * rho, Math.sin(phi) * rho, scX, scY, rot, offX, offY);
+      p.x = wp.x;
+      p.y = wp.y;
+      // 径向方向（本地 φ → 世界 = φ + rot）；速度量级不因形状变化
+      p.localRot = rot;
+      const a10 = phi + rot;
+      const spd10 = spawnValue(c.startSpeed, r) * s * u * spdMul;
+      p.vx = Math.cos(a10) * spd10;
+      p.vy = Math.sin(a10) * spd10;
+    } else if (st === 12) {
+      /**
+       * ── SingleSidedEdge(12)：线段发射器（P1 新增）──
+       *
+       * 官方语义（Manual / ShapeModule）：*"Edge — Emits particles from a line segment.
+       * The particles move in the emitter object's **upward (Y) direction**."*
+       * ⇒ 线段沿**本地 X**、出射方向沿**本地 +Y**（与 Box 的"forward(Z)"不同轴）。
+       *
+       * 几何（feng3d `ParticleSystemShapeEdge.ts`，注释标注原
+       * `ParticleSystemShapeSingleSidedEdge.calcParticlePosDir`）：
+       *   `arc = 360·radius`；Random ⇒ `radiusAngle = rand()·arc`；
+       *   `radiusAngle /= arc` ⇒ `position.x = radius·(2·t − 1)`、`position.y = 0`、`dir = (0,1,0)`。
+       *   ⇒ 线段**半长 = `radius`**（全长 `2·radius`），在 `[−R, +R]` 上均匀取点。
+       *   `ShapeModuleUI.cs` 里 SingleSidedEdge 唯一可编辑的属性就是 `radius`
+       *   （以 `MinMaxCurve` 形式给出，"Radius Mode" 决定取角方式）。
+       *
+       * ⚠️ 留档（本轮不做，均为**数据层未下发**导致、非引擎缺口）：
+       *   · `radius` 的 MinMaxCurve 模式（Random Between Two Constants / Curve…）——
+       *     config 只带一个标量；全包普查里 `radiusMode`（MultiModeValue）**恒为 0 = Random**、
+       *     `radiusSpread` 恒为 0 ⇒ 只实现 Random 即覆盖全部 59 支。
+       *   · `m_Scale.z` / `m_Position.z` 同理不下发（2D 下 z 无意义）。
+       * ⚠️ 方向取"本地 +X 转 90°"用的是本引擎既有的"屏幕内平面朝向"口径
+       *   （`nodeRotZ` = 本地 +X 在屏幕上的朝向，见圆盘族与本文件 `emitDir` 的说明）——
+       *   与 §2.6 一样，是对"发射器平面只在屏幕内旋转"的 2D 化近似；若要更严格，
+       *   需数据层额外下发"本地 +Y 的投影"（`emitUp`，见报告"后续"一节）。
+       */
+      const R12 = (sh.radius || 0) * s * u;
+      const x12 = R12 * (r.next() * 2 - 1);
+      const wp = shapeXform(x12, 0, scX, scY, rot, offX, offY);
+      p.x = wp.x;
+      p.y = wp.y;
+      p.localRot = rot;
+      // 本地 +Y ⇒ 屏幕角 = rot + 90°
+      const a12 = rot + Math.PI / 2;
+      const spd12 = spawnValue(c.startSpeed, r) * s * u * spdMul;
+      p.vx = Math.cos(a12) * spd12;
+      p.vy = Math.sin(a12) * spd12;
+    } else if (st === 5) {
       /**
        * Box(5)：**盒体内均匀发射**。
        *
@@ -1203,20 +1353,22 @@ export class ParticleAnimator {
        * ★ 本地量按 `localScale`(s) 与 `unitScale`(u) 折算，与锥形的 `radius` 同口径。
        * ★ 节点自身旋角不在这里直接算朝向，而是存进 `p.localRot`：位置偏移当场转，
        *   速度模块（`VelocityModule`）在 update 里用同一角度转（见 `Particle.localRot`）。
+       * ★ 2026-10-16 起：`m_Rotation.z` / `m_Position` 的折算**上提到分支外**（`rot` / `offX` / `offY`），
+       *   与新增的圆盘族 / 线段族共用一套口径 —— 本支的算式逐位不变（`rot = rotZ + nodeRotZ`、
+       *   偏移最后叠加），只是不再就地重复声明。
        */
-      const rot = ((sh.rotZ ?? 0) + c.nodeRotZ) * DEG2RAD;
       const bx = (sh.boxX ?? 0) * s * u;
       const by = (sh.boxY ?? 0) * s * u;
       const ox = (r.next() - 0.5) * bx;
       const oy = (r.next() - 0.5) * by;
       const off = rotVec(ox, oy, rot);
-      p.x = (sh.offsetX ?? 0) * s * u + off.x;
-      p.y = (sh.offsetY ?? 0) * s * u + off.y;
+      p.x = offX + off.x;
+      p.y = offY + off.y;
       p.localRot = rot;
       const spd = spawnValue(c.startSpeed, r) * s * u * spdMul;
       p.vx = Math.cos(dirAngle + rot) * spd;
       p.vy = Math.sin(dirAngle + rot) * spd;
-    } else if (sh && sh.enabled) {
+    } else if (st === 4 || st === 8) {
       /**
        * Cone(4) / ConeVolume(8)：锥形发射器。
        *
@@ -1249,10 +1401,13 @@ export class ParticleAnimator {
        *   取方位角 `φ`（由 `arc` 定范围）+ 半径 `ρ`（由 `radiusThickness` 定大小），
        *   再把 `m_Scale` 按**各轴**乘在采样点上（非等比 ⇒ 发射区是椭圆）。
        *
-       * ★ 方位角起点与 `arc` 语义**与 Circle 分支逐条同口径**（两者共用一套 arc/arcMode）：
+       * ★ 方位角与 `arc` 语义**与圆盘族（Circle/Sphere/Hemisphere）逐条同口径**
+       *   （三者共用一套 arc/arcMode）：
        *   `arcMode = 3`（BurstSpread）⇒ 沿弧均布、相位取本批次发射序号；
-       *   其余（0 = Random 等）⇒ 弧内随机。起点都叠加节点旋角 `nodeRotZ`
-       *   （= 发射器本地 +X 在屏幕上的朝向）。
+       *   其余（0 = Random 等）⇒ 弧内随机。
+       *   ★ 2026-10-16：`φ` 改为**本地**方位角，`nodeRotZ` 与 `m_Rotation.z` 的旋转统一由
+       *   `shapeXform()` 施加（先缩放、再旋转 ⇒ 与 Unity 的 `TRS` 一致；仅在等比 `m_Scale`
+       *   下与"折进方位角"的旧写法等价）。
        *
        * ★ 方向发散**沿用本引擎既有的 2D 口径**（`docx/TODO.md` §2.2 的定案）：
        *   `spread = (ρ/R)·(angle/2)`，即"相对锥轴的**平面**张角"，Unity 方向里的 z
@@ -1271,7 +1426,7 @@ export class ParticleAnimator {
        *   ⇒ **不要用 `radius / tan(angle/2)` 去求"出生点的轴向位移"**：那算的是锥的几何高度，
        *      在 Unity 语义里它不是位移量（Base 的出生点就在原点平面），用它会把出生点推出画面。
        */
-      const R = (sh.radius || 0) * s * u; // 底面半径（世界单位）
+      const R = (sh.radius || 0) * s * u; // **近盘**半径（世界单位）
       // Length = 锥长，仅 ConeVolume(8) 使用；Cone(4)/Base 下不参与几何
       const H = (sh.length || 0) * s * u;
       // 锥轴 = emitDir（本地 +Z 投影到 XY 并归一化）—— 只用于「轴向位移」与「方向发散」
@@ -1280,48 +1435,117 @@ export class ParticleAnimator {
       // Radius Thickness：0 = 只从外表面、1 = 整个体积内均匀
       // （与 Circle 随机分支同一口径：th=1 ⇒ ρ = R·√u 面积均匀；th=0 ⇒ ρ ≡ R 只在圆周）
       const th = Math.min(1, Math.max(0, sh.radiusThickness ?? 1));
-      const rhoMag = R * (1 - th + th * Math.sqrt(r.next()));
       /**
-       * 方位角 `φ`（XY 平面内，弧度）：`arcMode = 3` 沿弧均布、其余弧内随机，
-       * 起点叠加节点旋角（与 Circle / Box 的 `ang` 同口径）。
-       * 缺省 `arc` 按 360°（旧 config 不带该字段时的历史行为）。
+       * ★★★ 2026-10-16（P1「ConeVolume(8) 的轴向」）：锥是**从近盘向远处张开**的截锥。
+       *
+       * 权威依据 —— Unity 官方 gizmo 源码 `Editor/Mono/Handles/ConeFrustrumHandle.cs` 的
+       * 头注释逐字：
+       *   *"'radius' is **near-radius at start of cone frustrum** (far-radius is derived from
+       *     'angle' and near-radius)"*
+       *   *"'angle' is cone angle from near disc of conefrustrum"*
+       *   *"'range' is height of conefrustrum"*
+       * 并且代码里 `farRadius = Mathf.Min(1000f, Mathf.Abs(range * Mathf.Tan(angle)) + nearRadius)`、
+       * 绘制时把**小盘画在 `position`**、大盘画在 `position + forward * range` ⇒
+       * **近盘（半径 = `radius`）在发射器原点、远盘（半径 = `radius + Length·tan(angle)`）
+       *   在轴向 `Length` 处**，锥体沿 +Z（= 本引擎的 `emitDir`）**张开**。
+       * feng3d `ParticleSystemShapeCone.ts` 同向：`bottomPos = basePos·radius·rate`（z = 0）、
+       * `topPos = basePos·(radius + length·tan(angle))·rate; topPos.z = length`。
+       *
+       * ⚠️ 旧实现（2026-09-20 版）把"锥面半径 ∝ 沿轴距离"理解成 **`ρ ∝ t/H`**，
+       *    等于把锥当成"顶点在发射器、底面在 `Length` 处"的**反向锥** ——
+       *    实际是"近盘已有 `radius`、再往外张开"的截锥。两者在 `t = 0` 处差别最大
+       *    （旧：半径 0 的一点；正：半径 `radius` 的整盘）。
+       *    连带影响与实测见 `docx/TODO.md` §2.5 / 本轮报告（S9 `niao` 一支）。
+       *
+       * 体积内均匀取点：截面积 `A(t) = π·rad(t)²`、`rad(t) = R + k·t`（`k = tan(angle)`）
+       * ⇒ 密度 ∝ `rad(t)²` ⇒ 反解闭式
+       *     `t = ( (R³ + u·(Rf³ − R³))^(1/3) − R ) / k`
+       * （`u = rand()`；`k → 0`（angle = 0，圆柱）时退化为 `t = H·u`）。
+       * 该截面的半径上限 = `rad(t)`，再由 `radiusThickness` 在其支撑区间内取 ρ。
+       *
+       * ★ **rng 抽签顺序**（有意保持）：`t`（仅 Volume）→ `ρ` → `φ`。
+       *   ⇒ **Cone(4)=Base 的抽签序列与旧实现逐位相同**（旧版也是"先 ρ 后 φ"、Base 不抽 t），
+       *   且与圆盘族／兜底分支的 `ρ → φ` 顺序一致 ⇒ 三条分支在同一 `arc/thickness/radius`
+       *   下产出**逐位相同**的位置（`_regress/71_` 的 [7] 钉住）。改顺序会让所有锥形系统
+       *   的随机序列整体漂移（观感不变、但所有"逐位回归"断言失效）。
        */
-      const arcRad = (sh.arc ?? 360) * DEG2RAD;
-      const phi =
-        c.nodeRotZ * DEG2RAD +
-        (sh.arcMode === 3
-          ? (this.emittedInBatch / Math.max(1, this.batchCount)) * Math.PI * 2
-          : r.next() * arcRad);
-      /**
-       * `m_Scale` 的**各轴缩放**（config 的 `boxX/boxY`；与 Circle 分支同口径）。
-       * 非正数视为 1 —— 否则会把发射区压成一条线（旧 config 无此字段 ⇒ 0 ⇒ 1，零回归）。
-       */
-      const scX = sh.boxX && sh.boxX > 0 ? sh.boxX : 1;
-      const scY = sh.boxY && sh.boxY > 0 ? sh.boxY : 1;
-
-      let t: number;
-      let rho: number;
-      if (sh.type === 8 && H > 0) {
-        // ConeVolume：锥体**体积**内均匀 —— 截面积 ∝ t² ⇒ pdf(t) ∝ t² ⇒ t = H·u^(1/3)
-        // 且该处的锥面半径 ∝ 沿轴距离 ⇒ ρ 同步按 t/H 收放
-        t = H * Math.pow(r.next(), 1 / 3);
-        rho = rhoMag * (t / H);
+      const angRad = Math.min(89.99, Math.max(0, sh.angle || 0)) * DEG2RAD;
+      const kAx = Math.tan(angRad);
+      let t = 0;
+      let rhoMax = R; // 该轴向位置处截面的半径上限
+      if (st === 8 && H > 0) {
+        const rf = R + kAx * H;
+        if (kAx > 1e-9 && rf > R) {
+          const r3 = R * R * R;
+          t = (Math.cbrt(r3 + r.next() * (rf * rf * rf - r3)) - R) / kAx;
+        } else {
+          t = H * r.next();
+        }
+        rhoMax = R + kAx * t;
       } else {
-        // Cone（Base）：出生点只在**底面那张圆面**上 ⇒ 沿锥轴**没有**位移。
+        // Cone（Base）：出生点只在**近盘那张圆面**上 ⇒ 沿锥轴**没有**位移。
         // （旧实现在这里写了 `t = H`，等于把 Base 当成了 Volume，属于误用 length。）
         t = 0;
-        rho = rhoMag;
+        rhoMax = R;
       }
-      p.x = axX * t + Math.cos(phi) * rho * scX;
-      p.y = axY * t + Math.sin(phi) * rho * scY;
+      const rho = rhoMax * (1 - th + th * Math.sqrt(r.next()));
+      /**
+       * 方位角 `φ`（锥的**底面内**的方位角，弧度）：`arcMode = 3` 沿弧均布、其余弧内随机。
+       * 缺省 `arc` 按 360°（旧 config 不带该字段时的历史行为）。
+       * ★ 2026-10-16：这里取的是**本地**方位角，`nodeRotZ` 与 `m_Rotation.z` 的旋转改由
+       *   `shapeXform()` 统一施加（先缩放、再旋转，与 Unity 的 `TRS` 顺序一致）；
+       *   旧写法把 `nodeRotZ` 直接折进方位角，仅在 `m_Scale` 等比时才等价。
+       */
+      const phi =
+        sh.arcMode === 3
+          ? (this.emittedInBatch / Math.max(1, this.batchCount)) * (sh.arc ?? 360) * DEG2RAD
+          : r.next() * (sh.arc ?? 360) * DEG2RAD;
+      const wp = shapeXform(Math.cos(phi) * rho, Math.sin(phi) * rho, scX, scY, rot, offX, offY);
+      // 轴向位移沿 `emitDir`（绕 Z 的旋转不改变本地 +Z 的投影）⇒ 在变换之外单独叠加
+      p.x = axX * t + wp.x;
+      p.y = axY * t + wp.y;
+      p.localRot = rot;
 
       // 发散 ∝ 距中心线的距离：`发散角 = (angle/2) · (ρ / R)`，侧向 = 该粒子方位角所在侧
-      const side = Math.sin(phi - dirAngle) >= 0 ? 1 : -1;
+      // ⚠️ 归一化仍用**近盘**半径 `R`（`docx/TODO.md` §2.6 的口径，未改）：对 ConeVolume 而言
+      //    更自然的归一化是"该截面的半径"`rhoMax`，留待大更新一并定案（只影响 `startSpeed ≠ 0`
+      //    的锥形系统，当前产物里仅 S9 `niao`）。
+      // ★ 侧别必须在**世界角**里判：`φ` 是本地角 ⇒ 加回 `rot` 才是屏幕角
+      //   （`docx/TODO.md` §2.6 的"绕 emitDir 张开"口径逐位不变；本工程三个产物的锥形
+      //   `rotZ` 全为 0/缺省 ⇒ 与旧写法同值）。
+      const side = Math.sin(phi + rot - dirAngle) >= 0 ? 1 : -1;
       const spread = (R > 1e-9 ? rho / R : 0) * ((sh.angle || 0) / 2) * DEG2RAD * side;
       const a = dirAngle + spread;
       const spd = spawnValue(c.startSpeed, r) * s * u * spdMul;
       p.vx = Math.cos(a) * spd;
       p.vy = Math.sin(a) * spd;
+    } else if (sh && sh.enabled) {
+      /**
+       * ⚠️ **锥形兜底**：除 0/2/5/10/12（上面各有专支）之外的**任何**启用形状都落到这里 ——
+       * 按 `radius` 走"近盘圆盘 + `angle` 方向发散"，与 Cone(Base) 完全同式。
+       *
+       * 正确性只对 **4 Cone / 8 ConeVolume** 成立；下列形状（全包普查给出的启用支数）
+       * **尚未实现**、会被当成圆盘，属**已知缺口**（`docx/TODO.md` §2.5 的后续批次）：
+       *   `17 Donut`(56) / `16 BoxEdge`(73) / `15 BoxShell`(32) / `18 Rectangle`(19) /
+       *   `6 Mesh`(18) / `20 SpriteRenderer`(2)。
+       * 之所以不在这里顺手改路由：它们各有自己的几何（Donut 还要 `donutRadius`、
+       * Rectangle/BoxEdge 要按盒体处理、Mesh/Sprite 要网格数据），须逐支取证后单独做，
+       * 顺手塞进 Box/圆盘只会把一个明确的"未实现"变成"看起来像实现了"。
+       */
+      const R = (sh.radius || 0) * s * u;
+      const th = Math.min(1, Math.max(0, sh.radiusThickness ?? 1));
+      const rho = R * (1 - th + th * Math.sqrt(r.next()));
+      const phi =
+        sh.arcMode === 3
+          ? (this.emittedInBatch / Math.max(1, this.batchCount)) * (sh.arc ?? 360) * DEG2RAD
+          : r.next() * (sh.arc ?? 360) * DEG2RAD;
+      const wp = shapeXform(Math.cos(phi) * rho, Math.sin(phi) * rho, scX, scY, rot, offX, offY);
+      p.x = wp.x;
+      p.y = wp.y;
+      p.localRot = rot;
+      const spd = spawnValue(c.startSpeed, r) * s * u * spdMul;
+      p.vx = Math.cos(dirAngle) * spd;
+      p.vy = Math.sin(dirAngle) * spd;
     } else {
       const spd = spawnValue(c.startSpeed, r) * s * u * spdMul;
       p.vx = Math.cos(dirAngle) * spd;
