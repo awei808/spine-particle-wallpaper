@@ -113,6 +113,21 @@ p  = (cos az, sin az) * ρ
 **有一条"零引擎改动"的临时路**：数据层把这类锥形直接下发成 `shape.type=10`（Circle），
 即可立刻拿到正确的圆盘/扇形。但真正的修复仍应做在引擎锥形分支（它还要负责 `angle` 的方向发散）。
 
+#### ★★ 2026-10-16 已实施（P0）
+
+按上面的修法落在引擎（**未走数据层权宜路** —— 权宜路会让"方向发散"永久缺失）：
+`ParticleAnimator.ts` 锥形分支现为
+
+```ts
+phi = nodeRotZ + (arcMode === 3 ? (emittedInBatch/batchCount)*2π : rand()*arc)   // 方位角
+ρ   = R * (1 − te + te·√u)                                                        // radiusThickness
+p   = emitDir·t + (cos phi, sin phi) · ρ · (boxX, boxY)                           // t 仅 ConeVolume
+```
+
+并**移交了两处旧权宜**：① S8 的 `radius` 预乘 150 已撤（改由引擎乘 `m_Scale`）；
+② `arc = 230°` 不再是"整圆近似"。验证：`_regress/70_回归_锥形形状采样.ts`
+（S9 18/18、S8 13/13）+ 同参数截图/粒子真值对比（见 `docx/TODO.md` §2.0 的表）。
+
 ### 4.2 `ShapeModule.scale` 会乘到形状采样点上（⇒ **半径 = radius × scale**）
 - **Cocos** `shape-module.ts`：`constructMat()` = `Mat4.fromRTS(quat, position, scale)`，
   `emit()` 里 `transformMat4(p.position, p.position, this.mat)` ⇒ 采样点（含半径）被 scale 缩放。
@@ -124,9 +139,11 @@ p  = (cos az, sin az) * ρ
   `alisa_s3_background_chat/lizi_suizhi01` R=50 + Scale=(1.5,1,1)、
   `aurora_s5_background_touch1/yinpu_q` **R=242 + Scale=(0.5,1,1)**（若"Scale 就是尺寸"则此条荒谬）。
 
-⇒ S8 本特效真值 `7 × 150 = 1050`（目前已在**数据层**折算，见 `190_生成S8动作特效.py`）。
-**引擎自身仍未支持该乘子**，建议本轮一并补上（Box 已有 `boxX/boxY`；Circle 用它当各轴缩放；
-**Cone 现在完全忽略**）。
+⇒ S8 本特效真值 `7 × 150 = 1050`。
+**★ 2026-10-16 起引擎已支持该乘子**（`boxX/boxY` 各轴缩放，Cone / ConeVolume 与 Circle 同口径）；
+`190_生成S8动作特效.py` 里那层**数据层预乘已撤销**（现下发 `radius=7` + `boxX/boxY=150`），
+否则会乘两次（`7×150×150`）。S6 唯一一支锥形 `fx_touch2_huaban_2`（`m_Scale=(3,3)`）
+此前被整条忽略 ⇒ 本轮起半径 `1.3 → 3.9`，观感变化待实测复核。
 
 ### 4.3 Cone 的 `arc / arcMode / arcSpread` 与 Circle 共用同一套
 - **Cocos**：`arc` 的可见性判据是 `shape ∈ {Cone, Circle}`，`generateArcAngle()` 对两者通用
@@ -161,12 +178,18 @@ gh api repos/Unity-Technologies/UnityCsReference/contents/Modules/ParticleSystem
 
 ## 6. 明确待定 / 存疑（实施前需定案）
 
-1. **`radiusThickness` 的半径分布**：三份实现不一致 —— Cocos / feng3d = **线性**
-   `ρ ∈ [R(1−th), R]`；LayaAir 内圆 = **√u（面积均匀）**；**本引擎 Circle 分支现用 √u**。
-   Unity 手册只说 "proportion of the **volume**"。对一个圆盘，"volume"=面积 ⇒ √u 更符合字面，
-   但 Cocos/feng3d 做线性。⇒ **要么找一个 Unity 实录帧量分布，要么保持引擎现状（√u）并留档**。
-2. **`angle` 的方向发散**：Cocos/feng3d 都是"方向 = 底面点 → 锥面点"（含 z 分量）。
-   我们是 2D 平面渲染，z 分量无意义 ⇒ 建议只取屏幕内径向分量并归一化，需定一个"忠实但可解释"的口径。
+1. **`radiusThickness` 的半径分布** —— ✅ **已定案（2026-10-16）：保持 √u（面积均匀）**。
+   三份实现不一致 —— Cocos / feng3d = **线性** `ρ ∈ [R(1−th), R]`；LayaAir 内圆 = **√u**；
+   **本引擎两处分支（Circle 随机 / Cone）本来就都是 √u** ⇒ 本轮"统一口径"这项工作**无需做**
+   （复查结论见 `docx/TODO.md` §2.1）。理由：Unity 手册对该字段的表述是
+   "proportion of the **volume**"，对圆盘而言"体积"= 面积 ⇒ √u 更贴合字面。
+   留档：若将来拿到 Unity 实录帧的分布统计与此不符，再改。
+2. **`angle` 的方向发散** —— ✅ **已定案（2026-10-16）**：Unity 的方向含 z 分量（锥轴 = ±Z），
+   2D 平面渲染下**丢弃 z、只留平面分量**。实现上**保留本引擎既有的 2D 口径**
+   `方向角 = 锥轴角 ± (ρ/R)·(angle/2)`（`startSpeed` 保持原量级）。
+   ⚠️ 特意**不采用**"方向 = 纯径向（`v_xy ∝ pos·tan(angle/2)`）"的写法：那会把速度缩掉
+   `tan(angle/2)`，S6 已验收的 `fx_touch2_huaban_2`（`startSpeed = 8`、`angle = 5°`）
+   会整支变样（速度掉到 1/23）。详见 `ParticleAnimator.ts` 锥形分支的注释。
 3. **SubEmitters**：feng3d 有模块但实现程度未核；Unity 的 sub-emitter 会实例化**另一个**
    particle system（我们 config 是扁平 mesh 列表）⇒ 若要做，需先设计 config 结构。
 4. **Collision / Trigger / Lights / ExternalForces / LifetimeByEmitterSpeed**：开源界无实现可抄，
@@ -192,8 +215,9 @@ gh api repos/Unity-Technologies/UnityCsReference/contents/Modules/ParticleSystem
 
 ## 8. 建议的实施顺序（供后续排期，不含本次改动）
 
-1. **P0 修锥形**：方位角 + `arc` + `m_Scale` 乘子（本轮"水平线"问题的根因）。
-   评估是否顺带统一 `radiusThickness` 分布口径。
+1. **P0 修锥形** ✅ **2026-10-16 已完成**：方位角 + `arc` + `m_Scale` 乘子（本轮"水平线"问题的根因）。
+   `radiusThickness` 分布口径的"顺带统一"复查结论：**无需改动**（两处本来就是同一式子，见 §6.1）。
+   落地与验证见 `docx/TODO.md` §2.0。
 2. **P1 补形状族**：Sphere / Hemisphere / ConeVolume(8) 的轴向、Edge、`position/rotation` 偏移。
 3. **P2 补"按速度"与力**：Velocity 的 z/orbital/radial、Force、ColorBySpeed、SizeBySpeed、
    RotationBySpeed、InheritVelocity（feng3d 有全套公式）。
