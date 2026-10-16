@@ -1,0 +1,204 @@
+# Unity 内置粒子系统（Shuriken）复刻参考：仓库 / 教程 / 规格清单
+
+> 调研日期 2026-10-16 · 目的：为「**整个粒子系统更新**」找可对照的权威实现与规格。
+> 触发原因：S8 动作特效（`FX_Asuna_S8_Background_touch1`）复刻后观感是"**一条水平的线**"，
+> 与游戏原版不符 —— 已定位为引擎锥形分支缺少方位角采样（详见 §4）。
+> 本文只做调研与结论，**不含代码改动**。
+
+---
+
+## 1. 结论（先看这个）
+
+**没有任何单一仓库完整复刻 Unity 的 26 个粒子模块**（Collision / Trigger / Lights /
+ExternalForces / LifetimeByEmitterSpeed 在开源界**全都缺**，Unity 的 C++ 内核闭源）。
+按用途分三层，各取所需：
+
+| 用途 | 首选 | 理由 |
+|---|---|---|
+| **规格说明书**（字段语义 / 模块清单 / tooltip） | **`Unity-Technologies/UnityCsReference`** 的 `Modules/ParticleSystemEditor/ParticleSystemModules/*.cs` | Unity **官方编辑器源码**，26 个模块各一个 UI 文件，字段名/顺序/tooltip 全在；`ShapeModuleUI.cs` 还给出 gizmo 与字段的对应关系 |
+| **算法/公式源**（CPU 采样逻辑，可直接移植） | **`feng3d-labs/feng3d`** 的 `packages/particlesystem` | 模块名与 Unity **1:1**（17 个模块 + 6 形状 + SubEmitters），函数注释直接写「原 `ParticleSystemShapeCone.calcParticlePosDir`」，有 `shapeBranchMatrix.spec.ts` 等行为测试；MIT；2026-10 仍在推 |
+| **工程/渲染侧参考**（Billboard 5 模式 / CPU+GPU 渲染器 / Trail / culling / 文档） | **`cocos/cocos-engine`** 的 `cocos/particle` | TypeScript、活跃（9.8k★）、枚举与 Unity 同名（`ParticleRenderMode`/`ParticleEmitLocation`/`ParticleArcMode`…），渲染管线完整；缺 SubEmitters 与 BurstSpread |
+| **形状采样最简读本 + 完整 GLSL** | **`layabox/LayaAir`** 的 `src/layaAir/laya/particle/d3` | 老 Unity 口径但代码极干净（`shapes/ShapeUtils.ts`），且带 `shader/particleShuriKen.vs/fs`、`MathGradient.glsl`（我们的粒子 shader 可对照） |
+| 概念/流程教程 | Unity 官方手册逐模块 + 若干介绍文（见 §7） | 讲"粒子的一生"与模块职责，不涉及内部公式 |
+
+★ **对本次"水平线"问题，`feng3d` + `Cocos` 两份实现已经交叉证实了原版语义**（§4），
+做修复不需要再猜。
+
+---
+
+## 2. 候选总表
+
+| 仓库 | 语言 | 许可 | 星/活跃 | 一句话 |
+|---|---|---|---|---|
+| `Unity-Technologies/UnityCsReference` | C# | Unity 参考许可（只读用途） | — / 跟随 Unity 版本 | **官方字段与 UI 规格**（26 模块 UI） |
+| `feng3d-labs/feng3d` | TypeScript | MIT | 53★ / 2026-10-12 | **模块最全的内核级复刻**（含 SubEmitters） |
+| `cocos/cocos-engine` | TS+C++ | 仓库根 LICENSE（GitHub 判 NOASSERTION，用前自核） | 9860★ / 2026-10-08 | **引擎级完整实现**（CPU/GPU 渲染器、Trail） |
+| `layabox/LayaAir` | TypeScript | MIT | 2214★ / 2026-10-15 | 老 Shuriken 移植 + 完整粒子 GLSL |
+| `Alchemist0823/three.quarks` | TypeScript | MIT | 1053★ / 2026-05-21 | three.js 粒子引擎，README 称可导入 Unity Shuriken，**但导入器不在开源仓库里**（只有 README 一句）⇒ 不能当规格 |
+| `gleblebedev/Unity2Urho` | C# | — | — | Unity→Urho3D 导出器，`ParticleExporter.cs` 只做**粗映射**（Cone→"EmitterSize"），公式不足 |
+| `meta4d-me/m4m-engine`、`hikipuro/tea.js` | TypeScript | — | — | 另有 Shuriken 风格形状模块（`particles/enums/ParticleSystemShapeType`、`particles/modules/ShapeModule`），可作旁证 |
+
+---
+
+## 3. 模块覆盖矩阵（对照 Unity 官方 26 个模块）
+
+Unity 官方模块清单取自 `UnityCsReference/Modules/ParticleSystemEditor/ParticleSystemModules/`：
+Initial(Main) / Emission / Shape / Velocity / ClampVelocity(LimitVelocity) / Force / ExternalForces /
+InheritVelocity / LifetimeByEmitterSpeed / Color / ColorByVelocity / Size / SizeByVelocity /
+Rotation / RotationByVelocity / Noise / Collision / Trigger / Sub / Lights / Trail / UV /
+CustomData / Renderer（+ Burst、顶层 ParticleSystem）。
+
+| Unity 模块 | 本引擎（现状） | feng3d | Cocos | LayaAir |
+|---|---|---|---|---|
+| Main（life/speed/size/rotation/color/gravity…） | ✅ 大部分（缺 rotation3D / flipRotation / randomizeRotationDirection / cullingMode / ringBufferMode / emitterVelocityMode） | ✅ | ✅ | ✅ |
+| Emission + Burst | ✅ | ✅ | ✅ | ✅ |
+| **Shape** | ⚠️ **部分且锥形错**：Box/Circle 对；Cone 缺方位角与 arc；无 Sphere/Hemisphere/Edge/Mesh/Sprite；`position/rotation` 未接 | ✅ 6 形状 | ✅ Box/Circle/Cone/Sphere/Hemisphere（+ Edge/Volume 语义） | ✅ 5 形状 |
+| Velocity over Lifetime | ⚠️ 仅 x/y + speedModifier（缺 z/orbital/radial/space） | ✅ | ✅ | ✅ |
+| Limit Velocity over Lifetime | ⚠️ 仅 magnitude（缺 separateAxis/inWorldSpace 与 per-axis、drag） | ✅ | ✅ | ❌ |
+| Force over Lifetime | ❌ | ✅ | ✅ | ❌ |
+| External Forces | ❌ | ❌ | ❌ | ❌ |
+| Inherit Velocity | ❌ | ✅ | ❌ | ❌ |
+| Lifetime By Emitter Speed | ❌ | ❌ | ❌ | ❌ |
+| Color over Lifetime | ⚠️ **只有 alpha**（无 rgb 梯度） | ✅ | ✅ | ✅ |
+| Color by Speed | ❌ | ✅ | ❌ | ❌ |
+| Size over Lifetime | ✅（缺 separateAxes y/z） | ✅ | ✅ | ✅ |
+| Size by Speed | ❌ | ✅ | ❌ | ❌ |
+| Rotation over Lifetime | ✅ | ✅ | ✅ | ✅ |
+| Rotation by Speed | ❌ | ✅ | ❌ | ❌ |
+| **Noise** | ⚠️ strength/frequency/damping/quality/positionAmount（**缺 sizeAmount / scrollSpeed / octaves / separateAxes**） | ✅ | ✅ | ❌ |
+| Collision | ❌ | ❌ | ❌ | ❌ |
+| Trigger | ❌ | ❌ | ❌ | ❌ |
+| **Sub Emitters** | ❌ | ✅（模块文件齐备，实现程度待核） | ❌ | ❌ |
+| Lights | ❌ | ❌ | ❌ | ❌ |
+| **Trail** | ⚠️ 仅丝带（textureMode=Stretch），无宽/色 over trail 之外的模式 | ✅ 字段齐 | ✅ `ParticleTrailMode` | ❌ |
+| **UV / Texture Sheet Animation** | ⚠️ tiles/cycles/animationType/frameOverTime/drift/wrap（缺 rowMode/randomRow/speedRange/flipU,V/timeMode/fps/uvChannelMask） | ✅ | ✅ `texture-animation.ts` | ✅ |
+| CustomData | ⚠️ 仅 1 条曲线 + `_offon`（S9 扫光用） | ❌ | ❌ | ❌ |
+| **Renderer** | ⚠️ 只 billboard quad + `normal/add` 混合 + alphe（**无 renderMode 5 种 / alignment / pivot / sortingFudge / sortMode / mesh / soft particle**） | ✅ 字段齐 | ✅ 5 模式 + alignSpace + CPU/GPU | ⚠️ |
+| MinMaxCurve / MinMaxGradient 取值口径 | ✅（mode 0/1/2/3 + 端点外推 + 逐粒子抽签，见 `MEMORY_粒子口径.md`） | ✅ | ✅ | ⚠️ |
+
+---
+
+## 4. ★★ 已由第三方实现交叉证实的 3 条语义（直接影响本次修复）
+
+### 4.1 Cone 的底面是 **XY 平面内的圆盘**，锥轴是 ±Z —— 我们引擎算成"一维偏移"⇒ 一条线
+- **Cocos** `cocos/particle/emitter/shape-module.ts` → `coneEmit()`：
+  ```ts
+  randomPointBetweenCircleAtFixedAngle(pos, radius*(1-radiusThickness), radius, theta); // 二维圆盘/环带
+  Vec2.multiplyScalar(dir, pos, Math.sin(angle)); dir.z = -Math.cos(angle)*radius;
+  pos.z = 0;                                    // ← 底面在 XY 平面，锥轴 = -Z
+  ```
+  且 `ShapeModule.emit()` 最后 `Vec3.transformMat4(p.position, p.position, this.mat)`。
+- **feng3d** `packages/particlesystem/src/shapes/ParticleSystemShapeCone.ts`（注释：原 `ParticleSystemShapeCone.calcParticlePosDir`）：
+  ```ts
+  radiusAngle = random()*arc            // ← 方位角按 arc 采样
+  basePos = (cos, sin, 0)
+  bottomPos = basePos * radius * radiusRate      // ← 圆盘内取点
+  topPos    = basePos * (radius + length*tan(clamp(angle,0,87))) * radiusRate; topPos.z = length
+  position  = bottomPos                  // Base：就在底面圆盘上
+  ```
+- **LayaAir** `.../module/shape/ConeShape.ts`：`position.x/y = _randomPointInsideUnitCircle() * radius`（`ShapeUtils` 里方位角 `random()*2π`、半径 `√u`）。
+
+⇒ 我们引擎的 `type===4/8` 分支只有 `rho = ±rhoMag` 作用在**垂直于 emitDir 的一条线上**
+（`p.x = rxX*rho, p.y = rxY*rho`），**没有方位角** ⇒ 全部粒子落在 y≡0 的一条水平线上。
+**这就是"接近一条水平的线"的成因**（也解释了此前 `radius=7` 时"一根光面条"的观感）。
+
+修法（待你确认后实施）：把锥形分支改成"在 XY 平面按 `arc` 取方位角 φ、按 `radiusThickness`
+取半径 ρ"，即
+```ts
+az = arcMode===3 ? (emittedInBatch/batchCount)*2π : rand()*arc
+ρ  = R*(1-th+th*√u)   // 或按 Cocos/风3d 的线性 ρ∈[R(1-th), R]，见 §6 待定项
+p  = (cos az, sin az) * ρ
+```
+⚠️ 对 `angle=90`（扁平盘）+ `startSpeed=0` 的情形，**几何上等价于 Circle** ⇒
+**有一条"零引擎改动"的临时路**：数据层把这类锥形直接下发成 `shape.type=10`（Circle），
+即可立刻拿到正确的圆盘/扇形。但真正的修复仍应做在引擎锥形分支（它还要负责 `angle` 的方向发散）。
+
+### 4.2 `ShapeModule.scale` 会乘到形状采样点上（⇒ **半径 = radius × scale**）
+- **Cocos** `shape-module.ts`：`constructMat()` = `Mat4.fromRTS(quat, position, scale)`，
+  `emit()` 里 `transformMat4(p.position, p.position, this.mat)` ⇒ 采样点（含半径）被 scale 缩放。
+  字段 tooltip：`scale` = "**Emitter size scale**"。
+- **Unity 官方** `ShapeModuleUI.cs`：`s_Texts.scale = "Scale", "Scale the emission shape."`；
+  scene gizmo 直接 `Handles.TransformHandle(ref position, ref rotation, ref scale)`。
+- **语料实证**（本项目普查 `effect/fx_ui/*.prefab` 的 type=4/8）：
+  `aurora_s4_background_touch1/beike` **R=0.8 + Scale=(450,450,450)**、
+  `alisa_s3_background_chat/lizi_suizhi01` R=50 + Scale=(1.5,1,1)、
+  `aurora_s5_background_touch1/yinpu_q` **R=242 + Scale=(0.5,1,1)**（若"Scale 就是尺寸"则此条荒谬）。
+
+⇒ S8 本特效真值 `7 × 150 = 1050`（目前已在**数据层**折算，见 `190_生成S8动作特效.py`）。
+**引擎自身仍未支持该乘子**，建议本轮一并补上（Box 已有 `boxX/boxY`；Circle 用它当各轴缩放；
+**Cone 现在完全忽略**）。
+
+### 4.3 Cone 的 `arc / arcMode / arcSpread` 与 Circle 共用同一套
+- **Cocos**：`arc` 的可见性判据是 `shape ∈ {Cone, Circle}`，`generateArcAngle()` 对两者通用
+  （Random / Loop / Ping-Pong + arcSpread + arcSpeed）。
+- **feng3d**：`ParticleSystemShapeCone.ts` 与 `...Circle.ts` 的 arc 处理逐字相同。
+- ⇒ 本特效 `arc = 230°`（`mode=0` Random）必须实现；之前"按整圆近似"只是权宜。
+  ⚠️ 注意 `arcMode` 的**取值范围**：Unity = Random/**Loop/PingPong/BurstSpread**（4 档），
+  而 **Cocos 只实现了前 3 档（缺 BurstSpread）** —— S9 的 `chexiang` 恰好用的就是
+  BurstSpread（`arcMode=3`，轿厢 16° 相位错开）⇒ 这一档要靠 feng3d / Unity 手册，别抄 Cocos。
+
+---
+
+## 5. 可直接读的关键文件（取文件命令已备）
+
+```bash
+# 官方规格（26 模块 UI + tooltip + gizmo）
+gh api repos/Unity-Technologies/UnityCsReference/contents/Modules/ParticleSystemEditor/ParticleSystemModules/ShapeModuleUI.cs --jq .content | base64 -d
+gh api repos/Unity-Technologies/UnityCsReference/contents/Modules/ParticleSystem/ScriptBindings/ParticleSystemModules.bindings.cs --jq .content | base64 -d
+```
+| 内容 | 路径 |
+|---|---|
+| Shape 采样（Cone/Circle/Box/Sphere/Hemisphere + ShapeUtils） | `feng3d-labs/feng3d:packages/particlesystem/src/shapes/*` 、`layabox/LayaAir:src/layaAir/laya/particle/d3/module/shape/*` |
+| 形状模块与统一派发（含 position/rotation/**scale** 矩阵） | `cocos/cocos-engine:cocos/particle/emitter/shape-module.ts` |
+| 全部模块（含 SubEmitters / by-speed / InheritVelocity） | `feng3d-labs/feng3d:packages/particlesystem/src/modules/*` |
+| 渲染模式 / 对齐 / pivot | `feng3d.../modules/ParticleSystemRenderer.ts`、`cocos.../cocos/particle/enum.ts`（`ParticleRenderMode`/`ParticleAlignmentSpace`）、`cocos.../renderer/*` |
+| 贴图序列帧 | `cocos.../cocos/particle/animator/texture-animation.ts`、`feng3d.../modules/ParticleTextureSheetAnimationModule.ts` |
+| 噪声 | `cocos.../cocos/particle/noise-module.ts`、`feng3d.../modules/ParticleNoiseModule.ts` |
+| 丝带 | `cocos.../cocos/particle/renderer/trail.ts` |
+| 粒子 GLSL（vs/fs + 梯度取色） | `layabox/LayaAir:src/layaAir/laya/particle/d3/shader/*` |
+
+---
+
+## 6. 明确待定 / 存疑（实施前需定案）
+
+1. **`radiusThickness` 的半径分布**：三份实现不一致 —— Cocos / feng3d = **线性**
+   `ρ ∈ [R(1−th), R]`；LayaAir 内圆 = **√u（面积均匀）**；**本引擎 Circle 分支现用 √u**。
+   Unity 手册只说 "proportion of the **volume**"。对一个圆盘，"volume"=面积 ⇒ √u 更符合字面，
+   但 Cocos/feng3d 做线性。⇒ **要么找一个 Unity 实录帧量分布，要么保持引擎现状（√u）并留档**。
+2. **`angle` 的方向发散**：Cocos/feng3d 都是"方向 = 底面点 → 锥面点"（含 z 分量）。
+   我们是 2D 平面渲染，z 分量无意义 ⇒ 建议只取屏幕内径向分量并归一化，需定一个"忠实但可解释"的口径。
+3. **SubEmitters**：feng3d 有模块但实现程度未核；Unity 的 sub-emitter 会实例化**另一个**
+   particle system（我们 config 是扁平 mesh 列表）⇒ 若要做，需先设计 config 结构。
+4. **Collision / Trigger / Lights / ExternalForces / LifetimeByEmitterSpeed**：开源界无实现可抄，
+   且与现实壁纸（无物理场景）关系不大 ⇒ 建议明确"不复刻"，写进留档而不是偷偷略过。
+5. **`three.quarks` 的 Unity 导入器**：README 宣称支持，但仓库里搜不到相关代码
+   （可能只在它的编辑器/私有侧）⇒ 若要用它当参考，需先联系作者或找其导出侧代码。
+
+---
+
+## 7. 教程/原理类（讲得清"粒子的一生"，但无内部公式）
+
+- Unity 官方手册逐模块：`docs.unity3d.com/Manual/PartSysShapeModule.html`（含 Cone 的
+  Angle/Radius/Radius Thickness/Arc/Mode/Spread/Speed 与 "Scale: 改变发射器形状大小" 的逐字说明）
+- `docs.unity3d.com/Manual/ParticleSystemModules40.html`（**旧版**模块参考，Cone 的
+  "Base/Base Shell/Volume/Volume Shell" 四档 emitFrom 讲得比新版清楚 —— 对应我们的
+  `type = 4/7/8/9`）
+- 面向使用的入门教程（"按粒子一生的四个阶段记模块"）：
+  `uhiyama-lab.com/en/notes/unity/unity-particle-system-vfx-guide`、
+  `generalistprogrammer.com/tutorials/game-particle-effects-complete-vfx-programming-guide-2025`
+- 中文模块清单（含 SubEmitter/TextureSheet 的说明）：CSDN `Particle System Modules (Shuriken)`
+
+---
+
+## 8. 建议的实施顺序（供后续排期，不含本次改动）
+
+1. **P0 修锥形**：方位角 + `arc` + `m_Scale` 乘子（本轮"水平线"问题的根因）。
+   评估是否顺带统一 `radiusThickness` 分布口径。
+2. **P1 补形状族**：Sphere / Hemisphere / ConeVolume(8) 的轴向、Edge、`position/rotation` 偏移。
+3. **P2 补"按速度"与力**：Velocity 的 z/orbital/radial、Force、ColorBySpeed、SizeBySpeed、
+   RotationBySpeed、InheritVelocity（feng3d 有全套公式）。
+4. **P3 补渲染侧**：renderMode 5 种（Billboard/Stretched/Horizontal/Vertical/Mesh）、
+   alignment/pivot/sortingFudge（Cocos 的 `billboard` 与 renderer 目录可对照）。
+5. **P4 补 UV/Noise 细节**：rowMode/randomRow/speedRange/flip、noise 的 sizeAmount/scrollSpeed/octaves。
+6. **P5（可选）SubEmitters**：需先定 config 结构。
+7. **明确不复刻**：Collision / Trigger / Lights / ExternalForces / LifetimeByEmitterSpeed（留档说明）。
