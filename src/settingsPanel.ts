@@ -2079,10 +2079,12 @@ export const createSettingsPanel = (
     });
   };
 
-  // 动作组：全部骨架动画（只播动画，不带台词/语音；走与点击同路径、不过闸门）
+  // 动作组：全部骨架动画（不带台词/语音；走与点击同路径、不过闸门）
+  // ★ 2026-10-17：它会一并拉起该动画在 `config.actionEffects` 里绑定的额外粒子特效
+  //   —— 补之前"从面板点任何动作都看不到特效"，见 `index.ts` 的 `onPlayAnimation` 注释。
   makeChipGroup(
-    '触发动作（仅动画）',
-    '点一下直接播该动画，不出台词、不带语音',
+    '触发动作（动画 + 特效）',
+    '点一下直接播该动画，并拉起它绑定的额外粒子特效（不出台词、不带语音）',
     'wb-debug-anim-',
     (options.animations || []).map((n) => ({ key: n, text: n })),
     (it) => (options.onPlayAnimation ? options.onPlayAnimation(it.key) : false)

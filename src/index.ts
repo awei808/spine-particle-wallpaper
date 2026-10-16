@@ -1683,8 +1683,23 @@ const main = async () => {
          * 调试面板「触发动作」：播**指定动画名**（不带台词/语音）。
          * 走与真实点击同路径、不过闸门 —— 排查时"正在播也能强行换一条"。
          */
-        onPlayAnimation: (name: string) =>
-          touchController ? touchController.playAnimation(name) : false,
+        /**
+         * ★★ 2026-10-17 补 `playActionEffects`：本条通道原本**只播动画**，
+         *   于是「在调试面板点任何动作都看不到额外粒子特效」—— 因为特效的**唯一触发点**
+         *   是 `showDialogue`，而这里（与 `touchController.trigger` 不同）不经过它。
+         *   排查"某个动作到底绑没绑特效"时，这条捷径恰恰是最需要的 ⇒ 补上。
+         *
+         * 语义仍与真实播放一致：`playActionEffects` 只按 `actionEffects` 表拉起绑定的组，
+         * **没绑的动画自然什么都不做**（这正是它该有的行为，见 `playActionEffects` 的注释）。
+         */
+        onPlayAnimation: (name: string) => {
+          if (!touchController) {
+            return false;
+          }
+          const ok = touchController.playAnimation(name);
+          playActionEffects(name);
+          return ok;
+        },
         /**
          * 调试面板「触发事件」：按 actionId 播**一整条念白**（动作+字幕+语音，
          * 走完整打断闸门）。找不到该 actionId ⇒ 返回 false（面板据此回显 ✗）。
