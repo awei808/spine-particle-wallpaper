@@ -1806,11 +1806,138 @@ export type ParticleMeshConfig = MeshConfig & {
   /** RotationModule（rotationOverLifetime），单位弧度/秒 */
   rotationEnabled: boolean;
   rotationCurve: ParticleMinMax;
+  /**
+   * `VelocityModule`（Velocity over Lifetime）。
+   *
+   * ★ P2（2026-10-16）补齐 `z` / `orbital` / `orbitalOffset` / `radial` / `space`；
+   *   全部新字段**可选且缺省视为"关闭/零"** ⇒ 旧 config 逐位无影响。
+   *   语义依据见 `docx/RESEARCH_粒子系统复刻参考.md` §5（`_p2_` 那几条）。
+   */
   velocity: {
     enabled: boolean;
     x: ParticleMinMax;
     y: ParticleMinMax;
     speedModifier: number;
+    /**
+     * z 轴线性速度（prefab 单位/秒）。
+     *
+     * ⚠️ 本引擎是 **2D 渲染**：z **不参与渲染位置**（粒子恒在其 mesh 的 z 平面上），
+     *   所以 z 速度**唯一可见的作用**是进入"速度大小" `|v| = hypot(vx, vy, vz)`，
+     *   进而影响 `ColorBySpeed` / `SizeBySpeed` / `RotationBySpeed` 的取样位置。
+     *   （Unity 里 z 还会让粒子远离/靠近相机 ⇒ 透视缩放，本引擎没有这层，如实标注。）
+     */
+    z?: ParticleMinMax;
+    /**
+     * `inWorldSpace`：0 = Local（缺省）、1 = World。
+     *
+     * Local ⇒ x/y 是**发射器本地坐标**下的速度，要按节点旋角转回世界
+     * （既有行为，见 `Particle.localRot`）；World ⇒ 直接用、不转。
+     * ⚠️ 既有 config **没有这个字段** ⇒ 缺省 0 = Local = 现状。
+     */
+    space?: number;
+    /** 绕 X 轴的轨道角速度（**弧度/秒**） */
+    orbitalX?: ParticleMinMax;
+    /** 绕 Y 轴的轨道角速度（弧度/秒） */
+    orbitalY?: ParticleMinMax;
+    /** 绕 Z 轴的轨道角速度（弧度/秒）—— 2D 里**只有这一支**在屏幕内可见 */
+    orbitalZ?: ParticleMinMax;
+    /** 轨道中心的 x（prefab 单位，系统本地空间） */
+    orbitalOffsetX?: number;
+    orbitalOffsetY?: number;
+    orbitalOffsetZ?: number;
+    /** 远离（正）/ 朝向（负）轨道中心的**径向速度**（prefab 单位/秒） */
+    radial?: ParticleMinMax;
+  };
+  /**
+   * `ForceModule`（Force over Lifetime）—— **加速度**（prefab 单位/秒²，Unity 语义：
+   * "Particles can be accelerated by forces"，质量按 1 处理）。
+   *
+   * 与 `gravityModifier` 同口径地每帧 `v += a·dt`（半隐式欧拉），
+   * 且按 `scalingMode = Hierarchy` 乘 `localScale × unitScale`。
+   * 缺省 `undefined` / `enabled: false` ⇒ 整段短路。
+   */
+  force?: {
+    enabled: boolean;
+    x: ParticleMinMax;
+    y: ParticleMinMax;
+    z?: ParticleMinMax;
+    /** 0 = Local（缺省，按节点旋角折算到世界）、1 = World（不折算） */
+    space?: number;
+    /**
+     * `randomized`（Unity：Two Constants / Two Curves 档下**每帧**重抽一次）。
+     * ⚠️ 本引擎**未实现**逐帧重抽（仍按"出生抽一次"），如实标注：
+     *    它只在"随机两常量/双曲线"档下才有区别，本工程当前无系统启用。
+     */
+    randomized?: boolean;
+  };
+  /**
+   * `InheritVelocityModule`（Inherit Velocity）。
+   *
+   * ★★ 官方硬口径（ScriptReference 逐字）：*"The inherit velocity module only has an
+   *    effect if the Particle System is set to simulate in world space. If the system is
+   *    simulating in local space, this module is ignored."*
+   *   ⇒ 本引擎照此守卫：`simulationSpace !== 1` 时**整段不生效**。
+   *   本工程三个产物 `moveWithTransform` 全为 **0（Local）** ⇒ 该模块对现有产物零影响。
+   *
+   * `emitterVelocity`：发射器自身速度（**世界单位/秒**）。Unity 由 Rigidbody 速度
+   *   或"本帧 Transform 位移"算出；本引擎的粒子系统都是**静止的背景节点**，
+   *   没有这个量 ⇒ 由 config 显式给出（缺省 `[0,0]`）。
+   */
+  inheritVelocity?: {
+    enabled: boolean;
+    /** 0 = Initial（出生时加一次）、1 = Current（每帧跟随） */
+    mode?: number;
+    curve?: ParticleMinMax;
+    emitterVelocity?: [number, number];
+    /** `InitialModule.moveWithTransform`：0 = Local、1 = World。缺省 0 ⇒ 模块被忽略 */
+    simulationSpace?: number;
+  };
+  /**
+   * `ColorBySpeedModule`：颜色随**速度**变化。
+   *
+   * 公式（feng3d `ParticleColorBySpeedModule`，与官方"speed range 归一化"一致）：
+   *   `rate = clamp((|v| − range[0]) / (range[1] − range[0]), 0, 1)`
+   *   `color = gradient(rate)`，**逐通道乘进**粒子颜色（含 alpha）。
+   * ⚠️ `range` 是 **prefab 单位/秒**（引擎里先乘 `localScale × unitScale` 再比）。
+   */
+  colorBySpeed?: {
+    enabled: boolean;
+    /** 与 `startColorGradient` 同构（`[[t,[r,g,b]]]` / `[[t,a]]`） */
+    colorKeys?: Array<[number, number[]]>;
+    alphaKeys?: number[][];
+    minColorKeys?: Array<[number, number[]]>;
+    minAlphaKeys?: number[][];
+    mode?: number;
+    range?: [number, number];
+  };
+  /**
+   * `SizeBySpeedModule`：尺寸随速度变化（**倍率**，乘在 `sizeOverLifetime` 之外）。
+   *
+   * 公式同 ColorBySpeed 的 `rate`；`!separateAxes` ⇒ `y = z = x`（等比）。
+   * ⚠️ 序列化里**主曲线叫 `curve`（= x 轴）**，另有 `y` / `z`（见 `54_审计` 实测键名）。
+   */
+  sizeBySpeed?: {
+    enabled: boolean;
+    curve: ParticleMinMax;
+    y?: ParticleMinMax;
+    z?: ParticleMinMax;
+    separateAxes?: boolean;
+    range?: [number, number];
+  };
+  /**
+   * `RotationBySpeedModule`：自旋角速度随速度变化（**弧度/秒**）。
+   *
+   * 公式同上；⭐ 序列化里**主曲线 `curve` 是 z 轴**（`x` / `y` 是另外两轴，2D 下用不上）
+   *   —— 默认常量 **0.7854 = π/4**，与 feng3d 的 `Math.PI / 4` 默认值逐位吻合，互为佐证。
+   * 与 `rotationCurve` 同口径**取负号**（Unity 屏幕自转角反号，见 `spawn()` 处说明）。
+   */
+  rotationBySpeed?: {
+    enabled: boolean;
+    curve: ParticleMinMax;
+    x?: ParticleMinMax;
+    y?: ParticleMinMax;
+    separateAxes?: boolean;
+    range?: [number, number];
   };
   sizeModule: { enabled: boolean; curve: ParticleMinMax };
   /** 有效 alpha 随寿命的曲线（已按 Unity 语义折算过；见 alphaSource） */

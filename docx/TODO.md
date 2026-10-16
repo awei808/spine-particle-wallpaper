@@ -171,7 +171,8 @@
 - ✅ **P0 修锥形**：2026-10-16 完成（方位角 + `arc` + `m_Scale`），见 §2.0。
 - ✅ **P1 补形状族**：2026-10-16 完成（Sphere / Hemisphere / Edge / `m_Position`·`m_Rotation` 全形状化
   + ConeVolume 轴向几何修正），**当晚三站观感验收通过**，见 §2.7。
-- ⬜ **P2** 按速度与力（Velocity z/orbital/radial、Force、ColorBySpeed、SizeBySpeed…）
+- ✅ **P2 按速度与力**：2026-10-16 完成（Velocity z/orbital/radial/offset/space、Force、
+  ColorBySpeed、SizeBySpeed、RotationBySpeed、InheritVelocity），见 §2.8。
 - ⬜ **P3** 渲染侧（renderMode 5 种、alignment/pivot/sortingFudge）
 - ⬜ **P4** UV / Noise 细节（rowMode、noise sizeAmount/scrollSpeed/octaves）
 - ⬜ **P5** SubEmitters（需先定 config 结构）
@@ -285,3 +286,94 @@ Edge 的方向取"本地 +X 转 90°"，用的是本引擎既有的"屏幕内平
 ⇒ **P1 判定完成**（含 §2.7 表格里那两处"观感会变"的记录）。
 ⬜ **仍未部署 WE、未发布**：下次走部署（S9 用 `_work_工坊更新/10_部署bundle到WE工程.py`、
 S8 用 `_work_星语心恋/19_部署step2到WE.py`）时会把 P1 一并带上；届时需按惯例在 WE 里重载并复核。
+
+
+---
+
+### 2.8 ✅ P2「补按速度与力」已落地（2026-10-16）
+
+> 报告：`_work_按速度与力/REPORT_P2按速度与力_2026-10-16.md`（含全包普查 41996 个 ParticleSystem
+> 的模块分布 + 三个产物 prefab 的逐条取值）。
+> 依据：`docx/RESEARCH_粒子系统复刻参考.md` §4.7~§4.11（官方手册逐字 + feng3d + galacean PR #3049）。
+> 回归：`_regress/72_回归_按速度与力.ts`（**33 断言**，四个工程 config 全绿）。
+
+#### 落地了什么
+
+| 模块 | 实现要点 | 依据 |
+|---|---|---|
+| `VelocityModule.z` | 记进 `p.vz` / `p.z`，**不产生屏幕位移**（2D 渲染丢 z），只进入 `\|v\|` | 官方属性表 §4.7 |
+| `VelocityModule.orbitalX/Y/Z` | **弧度/秒**，绕 `orbitalOffset` 中心**旋转位置**（`rotEuler3` 四元数合成照搬 galacean） | §4.8 |
+| `VelocityModule.radial` | `rel += normalize(rel)·radial·dt`（远离为正、朝向为负） | §4.8 |
+| `VelocityModule.space` | 0 = Local（按节点旋角折算，缺省 = 现状）、1 = World | §4.7 |
+| `ForceModule` | **加速度**，`Δv = a·dt`，半隐式欧拉；`space` 两档 | §4.9 |
+| `ColorBySpeed` / `SizeBySpeed` / `RotationBySpeed` | 共用 `rate = clamp((\|v\|−r0)/(r1−r0),0,1)`；颜色**逐通道相乘**、尺寸是**倍率**、旋转是**弧度/秒且取负号** | §4.10 |
+| `InheritVelocity` | `Initial` 出生加一次 /`Current` 每帧跟随；★ **`simulationSpace ≠ World` 时整个忽略**（官方逐字守卫） | §4.11 |
+
+★ 全部新字段**可选且缺省关闭** ⇒ 旧 config 逐位无影响（`72_` 第 [1] 组钉住，含"关闭模块的残留值不生效"）。
+
+#### ★★ 对三个产物：**零观感变化**（已逐条取证，不是估计）
+
+`_work_按速度与力/02_三产物P2模块取值.py` 把 S9 / S8 / S6 三个背景 prefab + 三支动作特效 prefab
+下的**全部 39 个粒子节点**的 P2 字段全量打出来了，结论：
+
+| 产物 | 真正"启用且非零"的 P2 项 | 影响 |
+|---|---|---|
+| S9 背景（11 节点） | 无（`niao` 的 `VOL.z` 是 0 值曲线） | 0 |
+| S8 背景（2 节点） | `trail01` 的 `VOL.z = rand[0,1]` | **0** —— z 在 2D 下不入画，且该系统无 by-speed 模块 |
+| S8 动作特效（3 节点） | 无 | 0 |
+| S6 背景（14 节点） | 无 | 0 |
+| S6 动作特效 chat / touch2（9 节点） | 无（chat 的 `VOL.radial = rand[1,5]` 是**模块关闭时的残留值**） | 0 |
+
+⚠️ 全包普查里那些"非零"的 `SizeBySpeed.curve`(0→1) / `RotationBySpeed.curve`(π/4) /
+`ColorBySpeed.gradient` 是 **Unity 模板默认值**，出现在**每一个**粒子节点上，
+模块 `enabled` 一律为 `false` ⇒ 按本项目一贯判据"**enabled 才算数**"全部不算。
+
+另：三个产物的 `moveWithTransform` 全为 **0（Local）** ⇒ `InheritVelocity` 即便下发也不会生效。
+
+#### 全包普查（41996 个 ParticleSystem，`01_全包P2模块普查.py`）
+
+| 模块 | enabled | enabled 且非零 |
+|---|---|---|
+| Velocity.z | 4725 | 711 |
+| Velocity.orbital | 4725 | 1441 |
+| Velocity.orbitalOffset | 4725 | 169 |
+| Velocity.radial | 4725 | 1026 |
+| Velocity.space=World | 4725 | 101 |
+| Force | 189 | 171 |
+| InheritVelocity | 87 | 80 |
+| ColorBySpeed | 1 | 1 |
+| SizeBySpeed | 6 | 6 |
+| RotationBySpeed | 52 | 52 |
+
+模拟空间分布：**Local 41560 / World 436**。
+⇒ P2 对本工程**当前三个产物是纯能力建设**，但对"将来复刻别的皮肤/特效"是实打实的（尤其 Force 171 条）。
+
+#### ⬜ 未做 / 存疑（如实标注）
+
+1. **`ForceModule.randomized`（每帧重抽）未实现** —— 只在 Two Constants / Two Curves 档下有区别，
+   当前无系统启用（已在 `config.type.ts` 标注）。
+2. **`orbital` 是否该排除 gravity / FOL / drag / noise 的位移** —— galacean review 主张排除，
+   本引擎未采纳（整段位置一起转）。当前无差异（见 RESEARCH §4.8）。
+3. **z 不参与透视缩放** —— Unity 里 z 位移会让粒子远离/靠近相机 ⇒ 尺寸变化；本引擎画布 z 平面是常量。
+4. **数据层尚未下发 P2 字段**（`20_取粒子数据.py` / `21_生成配置.py` / `190_生成S8动作特效.py`）：
+   三个产物实测全零 ⇒ 本次**特意不改**三条生成链（避免无收益的回归风险）。
+   将来接入新皮肤时按下面这张表机械补即可（typetree → config）：
+
+   | typetree（顶层 `tt`） | config |
+   |---|---|
+   | `VelocityModule.z` / `.orbitalX` / `.orbitalY` / `.orbitalZ` / `.radial` | `velocity.z` / `.orbitalX` / `.orbitalY` / `.orbitalZ` / `.radial`（`mm()`） |
+   | `VelocityModule.orbitalOffsetX/Y/Z` | `velocity.orbitalOffsetX/Y/Z`（标量） |
+   | `VelocityModule.inWorldSpace` | `velocity.space`（0/1） |
+   | `ForceModule.x/y/z` + `.inWorldSpace` | `force.x/y/z` + `.space` |
+   | `InheritVelocityModule.m_Mode` / `.m_Curve` | `inheritVelocity.mode` / `.curve` |
+   | `tt.moveWithTransform` | `inheritVelocity.simulationSpace` |
+   | `ColourBySpeedModule.gradient` / `.range` | `colorBySpeed.*` + `.range` |
+   | `SizeBySpeedModule.curve` / `.y` / `.z` / `.separateAxes` / `.range` | `sizeBySpeed.*` |
+   | `RotationBySpeedModule.curve` / `.x` / `.y` / `.separateAxes` / `.range` | `rotationBySpeed.*` |
+
+   ⚠️ 下发前必须先看 `enabled` —— 模块关闭时这些字段是序列化残留（本项目第 1 条铁律）。
+
+#### ⬜ 仍未部署 WE、未发布
+
+与 P0 / P1 同：本次只落源码 + 回归 + 文档。下次部署会把 P0 / P1 / P2 **一并带上**，
+届时按惯例在 WE 里重载并复核（三个产物理论上零变化）。

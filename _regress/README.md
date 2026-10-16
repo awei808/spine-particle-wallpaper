@@ -35,6 +35,7 @@ npx ts-node --transpile-only _regress/<脚本名>.ts [参数...]
 | `69_回归_事件族注册表.ts` | `argv[2]` = bundle（用例自带数据，不需要 config） | `WK_BUNDLE` | `dist/bundle.js` |
 | `70_回归_锥形形状采样.ts` | `argv[2]` = `config.json`（须含锥形 type 4/8） | `WK_CONFIG` | `public/assets/config.json` |
 | `71_回归_形状族补充.ts` | `argv[2]` = `config.json`（任一含启用粒子组的工程即可，形状靠覆盖 `shape` 合成） | `WK_CONFIG` | `public/assets/config.json` |
+| `72_回归_按速度与力.ts` | 同上（P2 六个模块靠覆盖字段合成，不要求 config 真有） | `WK_CONFIG` | `public/assets/config.json` |
 
 例：
 
@@ -66,6 +67,7 @@ npx ts-node --transpile-only _regress/64_回归_触摸通道并池.ts
 | `68` | 触摸反馈四档在**叠加模式**下的真实播放行为（待播槽：排进去、自动接上、容量 1、dispose 不留定时器；`legacy` 的两半：触摸在演忽略、问候在演打断） |
 | `69` | **事件族注册表**（2026-10-15 改注册表制）—— 直接 import `src/dialogue` 的纯函数，覆盖：注册表归一（缺省单族 `normal` / 空注册表 / 非法项丢弃 / 去重保序 / 自定义族）、条目判族三段判据（显式 `phase` → `matchSuffix` → 缺省族）、挂件勾选归一与缺省（`touchPhases`）、`buildPool` 的族筛与孪生"收全命中"、`mergeKindPools` 的 `actionId\|phase` 去重；末段读 bundle 断言**产物里不再有写死的族名/族标签** |
 | `70` | **锥形（Cone / ConeVolume）形状采样** —— 方位角覆盖 `arc`、`ρ ∈ [R(1−t), R]`、`te` 两端点、单/多扇区、`m_Scale` 各轴缩放、方向发散幅度 ≤ `angle/2`；★ 2026-10-16 起含 **ConeVolume 的轴向几何**（近盘 = `radius` 在原点、沿轴张开 `+t·tan(angle)`，逐颗断言 `ρ = R + t·tan(angle)`）与 **`m_Scale`/`m_Rotation` 的 `TRS` 顺序** |
+| `72` | **P2「按速度与力」（2026-10-16）** —— `VelocityModule.z`（不产生屏幕位移、只进 `\|v\|`）、`ForceModule`（加速度、`Δv = a·dt`、Local/World 两种空间）、`orbitalX/Y/Z`（弧度/秒、绕 **orbitalOffset** 旋转位置，含"绕的是 offset 不是原点"）、`radial`（沿径向推/拉、取负朝中心收）、三个 by-speed 的同一条 `rate` 归一化（含上下界钳位）、`SizeBySpeed` 是倍率且不分轴时 `y = x`、`RotationBySpeed` 单位弧度/秒且**取负号**、`InheritVelocity` 在 **Local 下整个被忽略** + World 下 `Initial`/`Current` 两态与 `curve` 倍率；以及**零回归**：无 P2 字段 ≡ 有字段但全关（含"关闭模块的残留值不生效"） |
 | `71` | **形状族补充（P1，2026-10-16）** —— obsolete 变体折叠（`1→0/3→2/7→4/9→8/11→10`，逐位相同）、**圆盘族等价**（Sphere/Hemisphere 位置与 Circle 逐位相同）、**方向 = 径向**、`arc` 扇形与 BurstSpread、**Edge 的线段几何与本地 +Y 方向**、`m_Position`/`m_Rotation` 的形状通用性（平移不被旋转 + `rotZ` 与 `nodeRotZ` 同轴相加）、既有形状零回归与"未实现类型仍走锥形兜底"的现状钉扎 |
 
 > ⚠️ `65` 的 D 段有一条**早已失配**的断言（找面板文案「旧版「touch触发greet事件」开关打开的效果」，

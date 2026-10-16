@@ -53,18 +53,18 @@ CustomData / Renderer（+ Burst、顶层 ParticleSystem）。
 | Main（life/speed/size/rotation/color/gravity…） | ✅ 大部分（缺 rotation3D / flipRotation / randomizeRotationDirection / cullingMode / ringBufferMode / emitterVelocityMode） | ✅ | ✅ | ✅ |
 | Emission + Burst | ✅ | ✅ | ✅ | ✅ |
 | **Shape** | ✅ Box / Circle / Sphere / Hemisphere / Edge / Cone / ConeVolume（2026-10-16 P1 补齐，含 `m_Position`/`m_Rotation`/`m_Scale` 的 `TRS` 施加）；⚠️ 仍缺 Donut / Rectangle / BoxShell / BoxEdge / Mesh / Sprite*（落到锥形兜底，见 `TODO.md` §2.7） | ✅ 6 形状 | ✅ Box/Circle/Cone/Sphere/Hemisphere（+ Edge/Volume 语义） | ✅ 5 形状 |
-| Velocity over Lifetime | ⚠️ 仅 x/y + speedModifier（缺 z/orbital/radial/space） | ✅ | ✅ | ✅ |
+| Velocity over Lifetime | ✅ **P2 已补齐**（z / orbital XYZ / orbitalOffset / radial / space）；⚠️ z 在 2D 下不产生屏幕位移（只进 `\|v\|`） | ⚠️ 无 orbital/radial（只有 MinMaxCurveVector3） | ✅ | ✅ |
 | Limit Velocity over Lifetime | ⚠️ 仅 magnitude（缺 separateAxis/inWorldSpace 与 per-axis、drag） | ✅ | ✅ | ❌ |
-| Force over Lifetime | ❌ | ✅ | ✅ | ❌ |
+| Force over Lifetime | ✅ **P2**（加速度、`space` 两档；`randomized` 逐帧重抽未实现） | ✅ | ✅ | ❌ |
 | External Forces | ❌ | ❌ | ❌ | ❌ |
-| Inherit Velocity | ❌ | ✅ | ❌ | ❌ |
+| Inherit Velocity | ✅ **P2**（含官方硬守卫：Local 下整个忽略） | ✅ | ❌ | ❌ |
 | Lifetime By Emitter Speed | ❌ | ❌ | ❌ | ❌ |
 | Color over Lifetime | ⚠️ **只有 alpha**（无 rgb 梯度） | ✅ | ✅ | ✅ |
-| Color by Speed | ❌ | ✅ | ❌ | ❌ |
+| Color by Speed | ✅ **P2**（`rate` 归一化 + 逐通道相乘，含 alpha） | ✅ | ❌ | ❌ |
 | Size over Lifetime | ✅（缺 separateAxes y/z） | ✅ | ✅ | ✅ |
-| Size by Speed | ❌ | ✅ | ❌ | ❌ |
+| Size by Speed | ✅ **P2**（倍率；`separateAxes` 分轴） | ✅ | ❌ | ❌ |
 | Rotation over Lifetime | ✅ | ✅ | ✅ | ✅ |
-| Rotation by Speed | ❌ | ✅ | ❌ | ❌ |
+| Rotation by Speed | ✅ **P2**（弧度/秒；序列化 `curve` = z 轴） | ✅ | ❌ | ❌ |
 | **Noise** | ⚠️ strength/frequency/damping/quality/positionAmount（**缺 sizeAmount / scrollSpeed / octaves / separateAxes**） | ✅ | ✅ | ❌ |
 | Collision | ❌ | ❌ | ❌ | ❌ |
 | Trigger | ❌ | ❌ | ❌ | ❌ |
@@ -205,6 +205,99 @@ Unity 官方 gizmo 源码 `Editor/Mono/Handles/ConeFrustrumHandle.cs` 头注释�
 ⚠️ **Cocos 的 `coneEmit` 是另一套**（底面在 `z=0`，但方向 `dir.z = −cos(angle)·radius` 朝 −Z、"Volume" 沿
 `dir` 推 `length·rand()/(−dir.z)`）—— 它的**张开方向与 Unity 相反**，别拿它当锥的规格。
 
+### 4.7 ★ P2 依据：`Velocity over Lifetime` 官方属性表（逐字）
+
+`docs.unity3d.com/2020.3/Documentation/Manual/PartSysVelOverLifeModule.html`：
+
+| 属性 | 官方原文 |
+|---|---|
+| Linear X, Y, Z | *Linear velocity of particles in the X, Y and Z axes.* |
+| Space | *Specifies whether the **Linear X, Y, Z** axes refer to local or world space.* |
+| Orbital X, Y, Z | *Orbital velocity of particles around the X, Y and Z axes.* |
+| Offset X, Y, Z | *The position of the center of orbit, for orbiting particles.* |
+| Radial | *Radial velocity of particles away from/towards the center position.* |
+| Speed Modifier | *Applies a multiplier to the speed of particles, along/around their current direction of travel.* |
+
+Details 段逐字：*"To create effects with particles that spin around a center position, use the
+Orbital velocity values. Additionally, you can propel particles towards or away from a center
+position using the Radial velocity values. You can define a custom center of rotation for each
+particle by using the Offset value."*
+
+### 4.8 ★ P2 依据：orbital **是"绕 offset 中心旋转位置"**，单位是**弧度/秒**
+
+Unity 内部不公开，最硬的第三方依据 = **galacean/engine PR #3049**
+（`feat(particle): add orbital radial velocity over lifetime`，已合并，含 code review）。
+其 `VelocityOverLifetime.glsl` 里逐字：
+
+```glsl
+vec3 renderer_VOLOrbitalMaxConst; // radians/second around x,y,z
+```
+
+`ParticleFeedback.shader` 里的应用（节选）：
+
+```glsl
+vec3 rel;
+rel = position - renderer_VOLOffset;
+#if RADIAL
+    float relLen = length(rel);
+    if (relLen > 1e-5) { rel += (rel / relLen) * evaluateVOLRadial(attr, normalizedAge) * dt; }
+#endif
+#if ORBITAL
+    rel = rotationByEuler(rel, evaluateVOLOrbital(attr, normalizedAge) * dt);
+#endif
+position = renderer_VOLOffset + rel;
+```
+
+⇒ **旋转 / 推拉的对象是"位置相对轨道中心的矢量" `rel`**，且按 `ω·dt` 逐步旋转。
+`rotationByEuler` 的欧拉→四元数合成式（同仓 `ParticleCommon.glsl`）已逐行照搬进
+`ParticleAnimator.ts` 的 `rotEuler3()`。
+
+⚠️ **已知分歧（如实标注，本引擎未采纳）**：galacean 的 review 结论是
+gravity / FOL / drag / noise 的**当前帧位移不该被这一帧的公转扫着转**，应排除在旋转之外；
+本引擎采用更简单的"整段位置一起绕中心转"。两者只在"轨道与外力同时非零"时才有差别，
+本工程三个产物 orbital/radial 全为 0 ⇒ 当前无差异（`_regress/72_` 已钉住本引擎口径）。
+
+### 4.9 ★ P2 依据：`Force over Lifetime` 是**加速度**
+
+`docs.unity3d.com/560/…/PartSysForceOverLifeModule.html` 首句逐字：
+*"Particles can be **accelerated** by forces (such as wind or attraction) that are specified in
+this module."*；属性表 *"X, Y, Z — Force applied to each particle in the X, Y and Z axes."*
+⇒ 质量按 1 处理，`Δv = a·dt`。`Randomize` = Two Constants / Two Curves 档下**每帧**重抽
+（⚠️ 本引擎**未实现**逐帧重抽，见 `config.type.ts` 注释）。
+
+**feng3d** `ParticleForceOverLifetimeModule.ts` 亦走 `addParticleAcceleration`（加速度，非速度）。
+
+### 4.10 ★ P2 依据：三个 by-speed 共用**同一条** `rate` 归一化
+
+feng3d 的 `ParticleColorBySpeedModule` / `ParticleSizeBySpeedModule` /
+`ParticleRotationBySpeedModule` 三处**逐字同一个式子**：
+
+```ts
+const velocity = vec3Length(particle.velocity);
+const rate = mathUtilClamp((velocity - module.range.x) / (module.range.y - module.range.x), 0, 1);
+```
+
+- `ColorBySpeed`：`color4Multiply(particle.color, gradient(rate), particle.color)` ⇒ **逐通道相乘**（含 alpha）；
+- `SizeBySpeed`：`vec3Multiply(particle.size, size(rate), particle.size)` ⇒ **倍率**；
+  `!separateAxes` 时 `size.y = size.z = size.x`；
+- `RotationBySpeed`：`particle.angularVelocity += angularVelocity(rate)`，单位**弧度/秒**，
+  默认值 `Math.PI / 4` —— 与解包实测 `RotationBySpeedModule.curve` 的默认常量 **0.7853981** 逐位吻合，互为佐证。
+  `!separateAxes` 时 `v.x = v.y = 0`（只留 z）⇒ **序列化里主曲线 `curve` 就是 z 轴**
+  （`x` / `y` 是另外两轴）。而 `SizeBySpeedModule` 的 `curve` 是 **x 轴**（`y` / `z` 另列）——
+  由 `54_审计_MinMax与模块口径.txt` 的实测键名确认。
+
+### 4.11 ★★ P2 依据：`InheritVelocity` 在 **Local 下整个被忽略**
+
+`docs.unity3d.com/ScriptReference/ParticleSystem.InheritVelocityModule.html` 逐字：
+
+> *NOTE: The inherit velocity module only has an effect if the Particle System is set to
+> simulate in world space. **If the system is simulating in local space, this module is ignored.***
+
+feng3d `ParticleInheritVelocityModule.ts` 有同一个守卫
+（`if (main.simulationSpace === Local) return;`）。
+`Current` 与 `Initial` 的差别（官方）：*Initial — 出生时加一次；Current — 每帧都加，发射器减速则粒子也减速*。
+⇒ 本引擎把守卫折进 `ivOn`（`simulationSpace !== 1` 直接不生效）。
+
 ---
 
 ## 5. 可直接读的关键文件（取文件命令已备）
@@ -274,8 +367,9 @@ gh api repos/Unity-Technologies/UnityCsReference/contents/Modules/ParticleSystem
    `m_Scale` / `m_Position` / `m_Rotation` 提升为**全形状通用**并按 Unity `TRS` 顺序施加；
    `ConeVolume` 的轴向几何修正为"近盘在原点、沿轴张开"的截锥。
    落地与验证见 `docx/TODO.md` §2.7；本节 §4.4/§4.5 收录新增的三条权威依据。
-3. **P2 补"按速度"与力**：Velocity 的 z/orbital/radial、Force、ColorBySpeed、SizeBySpeed、
-   RotationBySpeed、InheritVelocity（feng3d 有全套公式）。
+3. **P2 补"按速度"与力** ✅ **2026-10-16 已完成**：Velocity 的 z/orbital/radial（+ offset/space）、
+   Force、ColorBySpeed、SizeBySpeed、RotationBySpeed、InheritVelocity。
+   依据见本节 §4.7~§4.11；落地与验证见 `docx/TODO.md` §2.8 与 `_regress/72_回归_按速度与力.ts`（33 断言）。
 4. **P3 补渲染侧**：renderMode 5 种（Billboard/Stretched/Horizontal/Vertical/Mesh）、
    alignment/pivot/sortingFudge（Cocos 的 `billboard` 与 renderer 目录可对照）。
 5. **P4 补 UV/Noise 细节**：rowMode/randomRow/speedRange/flip、noise 的 sizeAmount/scrollSpeed/octaves。

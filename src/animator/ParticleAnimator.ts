@@ -485,6 +485,87 @@ function rotVec(x: number, y: number, rot: number): { x: number; y: number } {
 }
 
 /**
+ * 绕 **X / Y / Z 三轴同时**旋转一个 3D 向量（欧拉角 → 四元数 → 旋转）。
+ *
+ * ★ 用于 `VelocityModule.orbitalX/Y/Z`（P2）。合成顺序**逐字照搬** galacean 的
+ *   `rotationByEuler()`（`packages/shader/.../ParticleCommon.glsl`，PR #3049）：
+ *
+ *     halfRoll = rz/2（Z）、halfPitch = rx/2（X）、halfYaw = ry/2（Y）
+ *     quaX = cosYaw·sinPitch·cosRoll + sinYaw·cosPitch·sinRoll
+ *     quaY = sinYaw·cosPitch·cosRoll − cosYaw·sinPitch·sinRoll
+ *     quaZ = cosYawPitch·sinRoll − sinYawPitch·cosRoll
+ *     quaW = cosYawPitch·cosRoll + sinYawPitch·sinRoll
+ *     v'   = v + 2·cross(q.xyz, cross(q.xyz, v) + q.w·v)
+ *
+ *   ⚠️ 为什么敢照搬、又不敢自称"Unity 原版"：Unity 的 Shuriken 内部不公开，
+ *   galacean 是**第三方实现且经过 code review 逐条核对过数学**，是本轮能拿到的最硬依据；
+ *   但欧拉→四元数的**轴序**是各家自定义，故此处只保证"与 galacean 一致 + 单轴退化正确"
+ *   （只给 `orbitalZ` 时严格等于绕 Z 转 `rz`，可逐位验证）。
+ *
+ * 结果写到 `out`（复用数组，避免每帧每粒子新建）。
+ */
+const EULER_OUT = [0, 0, 0];
+function rotEuler3(
+  vx: number,
+  vy: number,
+  vz: number,
+  rx: number,
+  ry: number,
+  rz: number,
+  out: number[] = EULER_OUT
+): number[] {
+  if (!rx && !ry && !rz) {
+    out[0] = vx;
+    out[1] = vy;
+    out[2] = vz;
+    return out;
+  }
+  const hr = rz * 0.5;
+  const hp = rx * 0.5;
+  const hy = ry * 0.5;
+  const sr = Math.sin(hr);
+  const cr = Math.cos(hr);
+  const sp = Math.sin(hp);
+  const cp = Math.cos(hp);
+  const sy = Math.sin(hy);
+  const cy = Math.cos(hy);
+  const cycp = cy * cp;
+  const sysp = sy * sp;
+  const qx = cy * sp * cr + sy * cp * sr;
+  const qy = sy * cp * cr - cy * sp * sr;
+  const qz = cycp * sr - sysp * cr;
+  const qw = cycp * cr + sysp * sr;
+  // v' = v + 2·cross(q.xyz, cross(q.xyz, v) + q.w·v)
+  const tx = qy * vz - qz * vy + qw * vx;
+  const ty = qz * vx - qx * vz + qw * vy;
+  const tz = qx * vy - qy * vx + qw * vz;
+  out[0] = vx + 2 * (qy * tz - qz * ty);
+  out[1] = vy + 2 * (qz * tx - qx * tz);
+  out[2] = vz + 2 * (qx * ty - qy * tx);
+  return out;
+}
+
+/**
+ * `MinMaxCurve` 的**「按速度」归一化系数**（P2 三个 by-speed 模块共用）。
+ *
+ *   `rate = clamp((|v| − range[0]) / (range[1] − range[0]), 0, 1)`
+ *
+ * 逐字照 feng3d `ParticleSizeBySpeedModule` / `ParticleColorBySpeedModule` /
+ * `ParticleRotationBySpeedModule` 三处**同一个式子**（`mathUtilClamp`）。
+ * ⚠️ `range` 已由构造时折算到**世界单位/秒**，`speed` 亦为世界单位/秒。
+ * ⚠️ `range[1] === range[0]` ⇒ 除以 0 ⇒ 退化为"速度低于下界取 0、否则取 1"
+ *    （Unity 里这个区间退化时表现未定义，这里给一个不产生 NaN 的确定行为）。
+ */
+function speedRate(speed: number, r0: number, r1: number): number {
+  const span = r1 - r0;
+  if (span <= 1e-9) {
+    return speed >= r1 ? 1 : 0;
+  }
+  const t = (speed - r0) / span;
+  return t < 0 ? 0 : t > 1 ? 1 : t;
+}
+
+/**
  * 形状类型**归一化**：把 Unity 里已废弃的"外壳 / 边缘"变体折叠到基类型。
  *
  * 官方在枚举里逐个标注了 *"… is deprecated and does nothing. Please use
@@ -767,6 +848,31 @@ type Particle = {
    *   所以真正受影响的只有 `hudie01 ×3`。
    */
   localRot: number;
+
+  /* ═══ P2「按速度与力」（2026-10-16）═════════════════════════════════════ */
+
+  /**
+   * z 坐标 / z 速度（世界单位）—— **只为「3D 演算、2D 渲染」服务**。
+   *
+   * ★ 为什么非有它不可：`VelocityModule.z`、`ForceModule.z`、以及 `orbitalX/Y`
+   *   （绕 X / Y 轴的轨道旋转）都是 3D 量 —— 绕 X 轴转会搅动 (y,z)、绕 Y 轴会搅动 (z,x)，
+   *   **不记 z 就算不对**。而渲染侧照旧**丢掉 z**（粒子恒在它所属 mesh 的 z 平面上），
+   *   与本工程一贯的"2D 分层渲染"一致。
+   *
+   * ⚠️ 已知近似：Unity 里 z 位移还会让粒子远离/靠近相机 ⇒ 透视缩放，
+   *   本引擎没有这层（画布 z 平面是常量），如实标注。
+   * 恒 0 ⇒ 旧 config 逐位无影响。
+   */
+  z: number;
+  vz: number;
+
+  /**
+   * 本帧**总速度大小**（世界单位/秒）= `|v| = hypot(vx + volX, vy + volY + gvy, vz + volZ)`。
+   *
+   * 供 `ColorBySpeed` / `SizeBySpeed` / `RotationBySpeed` 归一化取 `rate` 用。
+   * 由 `step()` **每帧写回**，`buildGeometry()` 只读（保证两者看到同一帧的值）。
+   */
+  spd: number;
 };
 
 /* ─────────────────────────── 主类 ─────────────────────────── */
@@ -795,6 +901,58 @@ export class ParticleAnimator {
    * `0` ⇒ 整套重力逻辑短路（其余 10 个系统逐位不变）。
    */
   private gravAccY = 0;
+
+  /* ══════════════════════════════════════════════════════════════════════════
+   * P2「按速度与力」—— 六个模块的**预计算开关**（2026-10-16）
+   *
+   * 全部**缺省为 false / 0** ⇒ 旧 config 走的是"整段短路"，逐位无影响。
+   * 预计算的目的只是把 `enabled && 字段存在` 这类判断从"每帧每粒子"挪到构造时。
+   * ══════════════════════════════════════════════════════════════════════════ */
+
+  /** `VelocityModule.z` 有值且模块启用（z 只在"速度大小"里起作用，见 config 注释） */
+  private volZOn = false;
+  /** `VelocityModule` 的 x/y 是否按**世界**空间给（false = Local，缺省 = 现状） */
+  private volWorld = false;
+  /** 轨道旋转（绕 X/Y/Z 的角速度）是否启用 */
+  private orbOn = false;
+  /** 径向速度是否启用 */
+  private radOn = false;
+  /** 轨道中心（**世界单位**） */
+  private orbOx = 0;
+  private orbOy = 0;
+  private orbOz = 0;
+  /** `ForceModule` 启用 */
+  private folOn = false;
+  /** `ForceModule` 的 x/y 是否按**世界**空间给 */
+  private folWorld = false;
+  /**
+   * `InheritVelocityModule` 启用。
+   *
+   * ★★ 官方硬口径：`simulationSpace !== World(1)` 时**该模块整个被忽略**
+   *   （ScriptReference 逐字："only has an effect if the Particle System is set to
+   *   simulate in world space"）⇒ 这里直接把守卫折进开关里。
+   */
+  private ivOn = false;
+  /** 0 = Initial（出生加一次）、1 = Current（每帧跟随） */
+  private ivMode = 0;
+  /** 发射器速度（**世界单位/秒**） */
+  private ivEvX = 0;
+  private ivEvY = 0;
+  /** `ColorBySpeedModule` 启用 */
+  private cbsOn = false;
+  /** 速度区间（**世界单位/秒**） */
+  private cbsR0 = 0;
+  private cbsR1 = 0;
+  /** `SizeBySpeedModule` 启用 / 分轴 */
+  private sbsOn = false;
+  private sbsSep = false;
+  private sbsR0 = 0;
+  private sbsR1 = 0;
+  /** `RotationBySpeedModule` 启用 */
+  private rbsOn = false;
+  private rbsR0 = 0;
+  private rbsR1 = 0;
+
   private mesh: THREE.Mesh;
   private geometry: THREE.BufferGeometry;
   private posAttr: THREE.BufferAttribute;
@@ -914,6 +1072,52 @@ export class ParticleAnimator {
           9.81 *
           (Number.isFinite(meshConfig.localScale) ? meshConfig.localScale : 1) *
           (Number.isFinite(meshConfig.unitScale) ? meshConfig.unitScale : 1);
+
+    /* ── P2「按速度与力」的开关预计算（缺省全关 ⇒ 旧 config 逐位无影响）──
+     *
+     * ⚠️ 速度类量（`radial` / `orbitalOffset` / `range`）都要乘
+     *    `localScale × unitScale` 折到**世界单位**，与 `velocity.x/y` 同口径。
+     */
+    const s2w =
+      (Number.isFinite(meshConfig.localScale) ? meshConfig.localScale : 1) *
+      (Number.isFinite(meshConfig.unitScale) ? meshConfig.unitScale : 1);
+    const vel = meshConfig.velocity;
+    const velOn = !!(vel && vel.enabled);
+    this.volZOn = velOn && !!vel!.z;
+    this.volWorld = velOn && vel!.space === 1;
+    const orbX = velOn ? vel!.orbitalX : undefined;
+    const orbY = velOn ? vel!.orbitalY : undefined;
+    const orbZ = velOn ? vel!.orbitalZ : undefined;
+    this.orbOn = !!(orbX || orbY || orbZ);
+    this.radOn = velOn && !!vel!.radial;
+    this.orbOx = ((vel && vel.orbitalOffsetX) || 0) * s2w;
+    this.orbOy = ((vel && vel.orbitalOffsetY) || 0) * s2w;
+    this.orbOz = ((vel && vel.orbitalOffsetZ) || 0) * s2w;
+    const fol = meshConfig.force;
+    this.folOn = !!(fol && fol.enabled);
+    this.folWorld = !!(fol && fol.space === 1);
+    const iv = meshConfig.inheritVelocity;
+    /**
+     * ★ `simulationSpace === 1`(World) 才算数 —— 官方逐字：Local 下该模块被忽略。
+     *   缺省（`undefined`）按 0 = Local ⇒ 不生效（与"旧 config 没这个模块"一致）。
+     */
+    this.ivOn = !!(iv && iv.enabled && iv.simulationSpace === 1);
+    this.ivMode = iv && iv.mode === 1 ? 1 : 0;
+    this.ivEvX = iv && iv.emitterVelocity ? iv.emitterVelocity[0] || 0 : 0;
+    this.ivEvY = iv && iv.emitterVelocity ? iv.emitterVelocity[1] || 0 : 0;
+    const cbs = meshConfig.colorBySpeed;
+    this.cbsOn = !!(cbs && cbs.enabled);
+    this.cbsR0 = (cbs && cbs.range ? cbs.range[0] : 0) * s2w;
+    this.cbsR1 = (cbs && cbs.range ? cbs.range[1] : 1) * s2w;
+    const sbs = meshConfig.sizeBySpeed;
+    this.sbsOn = !!(sbs && sbs.enabled);
+    this.sbsSep = !!(sbs && sbs.separateAxes);
+    this.sbsR0 = (sbs && sbs.range ? sbs.range[0] : 0) * s2w;
+    this.sbsR1 = (sbs && sbs.range ? sbs.range[1] : 1) * s2w;
+    const rbs = meshConfig.rotationBySpeed;
+    this.rbsOn = !!(rbs && rbs.enabled);
+    this.rbsR0 = (rbs && rbs.range ? rbs.range[0] : 0) * s2w;
+    this.rbsR1 = (rbs && rbs.range ? rbs.range[1] : 1) * s2w;
 
     const max = Math.max(1, Math.floor(meshConfig.maxNumParticles || 1));
 
@@ -1183,6 +1387,11 @@ export class ParticleAnimator {
       gvy: 0,
       /** 本地→世界 Z 旋角；只有盒形分支会覆写成非 0（见 Particle.localRot） */
       localRot: 0,
+      /** P2：z 坐标 / z 速度（只有开了 vol.z / force.z / orbitalX,Y 的系统才会非 0） */
+      z: 0,
+      vz: 0,
+      /** 由 step() 每帧写回（见 Particle.spd）；这里给出生瞬间的初值 */
+      spd: 0,
     };
     // ★ 复用 `vmix` 抽起始色（不额外 rng ⇒ 既有抽签序列零回归；见 pickStartColor）
     p.sc = pickStartColor(c, p.vmix);
@@ -1552,6 +1761,21 @@ export class ParticleAnimator {
       p.vy = Math.sin(dirAngle) * spd;
     }
 
+    /**
+     * ── InheritVelocity·Initial（P2）──
+     *
+     * 官方：`Initial` = 发射器速度只在**粒子出生那一刻**加一次，之后发射器怎么动都与它无关。
+     * 公式（feng3d）：`velocity += multiplier(t=0) × emitterVelocity`。
+     *
+     * ★ 只有 `simulationSpace = World` 才生效（守卫已折进 `this.ivOn`）。
+     * ★ `emitterVelocity` 已是**世界单位/秒**（由 config 直接给，见 config.type.ts）。
+     */
+    if (this.ivOn && this.ivMode === 0) {
+      const mul = lifeMul(c.inheritVelocity!.curve ?? { mode: 0, a: 1, b: 1 }, 0, p.vmix);
+      p.vx += mul * this.ivEvX;
+      p.vy += mul * this.ivEvY;
+    }
+
     // ── RotationModule（rotationOverLifetime），弧度/秒 ──
     // ★ 传 p.vmix：rotationCurve 若为"随机两常量"，每颗粒子的自旋速度也应各自抽签
     //   （`hualizi ×2` 就是 mode=3 ⇒ 旧实现让所有花按同一角速度转）。
@@ -1756,20 +1980,31 @@ export class ParticleAnimator {
        */
       let vvx = 0;
       let vvy = 0;
+      let vvz = 0;
       if (c.velocity && c.velocity.enabled) {
         /**
          * ★ `rotVec(..., p.localRot)`：`VelocityModule` 的 x/y 是**发射器本地坐标**
          *   下的速度（Simulation Space = Local），盒形系统若节点带旋角
          *   （`hudie01 ×3` = 30.69°）必须转回世界，否则蝴蝶会朝正右飞。
          *   `localRot === 0` 时 `rotVec` 直接原样返回 ⇒ 锥形/圆形系统零开销零变化。
+         *
+         * ★ P2：`space === 1`(World) ⇒ **不**做这个折算（官方 "Specifies whether the
+         *   Linear X, Y, Z axes refer to local or world space"）。缺省 0 = Local = 现状。
          */
         const rv = rotVec(
           lifeMulMix(c.velocity.x, pr, p.vmix) * s * u,
           lifeMulMix(c.velocity.y, pr, p.vmix) * s * u,
-          p.localRot
+          this.volWorld ? 0 : p.localRot
         );
         vvx = rv.x;
         vvy = rv.y;
+        /**
+         * ★ `z` 轴线性速度（P2）：2D 里**不产生屏幕位移**，只进入下面的 `p.spd`
+         *   （进而影响 ColorBySpeed / SizeBySpeed / RotationBySpeed 的取样）。
+         */
+        if (this.volZOn) {
+          vvz = lifeMulMix(c.velocity.z!, pr, p.vmix) * s * u;
+        }
       }
 
       /**
@@ -1801,9 +2036,99 @@ export class ParticleAnimator {
         p.gvy += this.gravAccY * dt;
       }
 
+      /**
+       * 4.26 ForceModule（Force over Lifetime，P2）—— **加速度**（官方："Particles can be
+       * accelerated by forces"），质量按 1 处理 ⇒ `Δv = a·dt`，与重力同为半隐式欧拉。
+       *
+       * 折算：`× localScale × unitScale`（`scalingMode = Hierarchy`，与 `velocity` 同口径）；
+       * `space = Local`（缺省）⇒ 再按节点旋角 `p.localRot` 转到世界。
+       * ★ `enabled: false` / 字段缺省 ⇒ 整段短路。
+       */
+      if (this.folOn) {
+        const fo = c.force!;
+        const fax = lifeMulMix(fo.x, pr, p.vmix) * s * u;
+        const fay = lifeMulMix(fo.y, pr, p.vmix) * s * u;
+        const rf = this.folWorld ? null : rotVec(fax, fay, p.localRot);
+        p.vx += (rf ? rf.x : fax) * dt;
+        p.vy += (rf ? rf.y : fay) * dt;
+        if (fo.z) {
+          p.vz += lifeMulMix(fo.z, pr, p.vmix) * s * u * dt;
+        }
+      }
+
+      /** 4.27 本帧总速度大小（P2，供三个 by-speed 模块取 `rate`） */
+      p.spd = Math.sqrt(
+        (p.vx + vvx) * (p.vx + vvx) +
+          (p.vy + vvy + p.gvy) * (p.vy + vvy + p.gvy) +
+          (p.vz + vvz) * (p.vz + vvz)
+      );
+
       // 4.3 积分位置：先改速度、再积分（与 Unity 的模块顺序一致）
       p.x += (p.vx + vvx) * dt;
       p.y += (p.vy + vvy + p.gvy) * dt;
+      p.z += (p.vz + vvz) * dt;
+
+      /**
+       * 4.28 轨道 / 径向（P2，`VelocityModule.orbitalX/Y/Z` + `radial` + `orbitalOffset*`）。
+       *
+       * 依据：Unity 手册 *"Orbital X, Y, Z — Orbital velocity of particles around the X, Y
+       * and Z axes"* / *"Offset — The position of the center of orbit"* / *"Radial — Radial
+       * velocity of particles away from/towards the center position"*；
+       * 具体算法（**旋转的是位置、且绕 offset 中心**）照 galacean `ParticleFeedback.shader`
+       * PR #3049 的 `rotationByEuler(rel, orbital·dt)` 与 `rel += normalize(rel)·radial·dt`。
+       *
+       * ⚠️ 已知分歧（如实标注，暂未采纳）：galacean 经 review 后把 gravity / FOL / drag /
+       *    noise 的位移**排除**在轨道旋转之外（只转"startVelocity + VOL linear"那一份），
+       *   理由是那些是独立的世界/外场力、不该被这一帧的公转扫着转。
+       *   本实现**整段位置一起绕中心转**（更简单自洽）。两者只在"轨道与外力同时非零"时
+       *   才有差别，本工程现有产物 orbital / radial 全为 0 ⇒ 当前无观感差异。
+       */
+      if (this.orbOn || this.radOn) {
+        let rx = p.x - this.orbOx;
+        let ry = p.y - this.orbOy;
+        let rz = p.z - this.orbOz;
+        if (this.radOn) {
+          const L = Math.sqrt(rx * rx + ry * ry + rz * rz);
+          if (L > 1e-5) {
+            const k = (lifeMulMix(c.velocity!.radial!, pr, p.vmix) * s * u * dt) / L;
+            rx += rx * k;
+            ry += ry * k;
+            rz += rz * k;
+          }
+        }
+        if (this.orbOn) {
+          const vo = c.velocity!;
+          const w = rotEuler3(
+            rx,
+            ry,
+            rz,
+            vo.orbitalX ? lifeMulMix(vo.orbitalX, pr, p.vmix) * dt : 0,
+            vo.orbitalY ? lifeMulMix(vo.orbitalY, pr, p.vmix) * dt : 0,
+            vo.orbitalZ ? lifeMulMix(vo.orbitalZ, pr, p.vmix) * dt : 0
+          );
+          rx = w[0];
+          ry = w[1];
+          rz = w[2];
+        }
+        p.x = this.orbOx + rx;
+        p.y = this.orbOy + ry;
+        p.z = this.orbOz + rz;
+      }
+
+      /**
+       * 4.29 InheritVelocity·Current（P2）：`Current` = 每帧把**发射器本帧的位移**
+       * 按倍率加给粒子（官方："if the emitter slows down, all particles will also slow
+       * down"）。`emitterVelocity` 是世界单位/秒 ⇒ 乘 `dt` 得本帧位移。
+       */
+      if (this.ivOn && this.ivMode === 1) {
+        const mul = lifeMul(
+          c.inheritVelocity!.curve ?? { mode: 0, a: 1, b: 1 },
+          pr,
+          p.vmix
+        );
+        p.x += mul * this.ivEvX * dt;
+        p.y += mul * this.ivEvY * dt;
+      }
 
       /**
        * 4.4 ClampVelocityModule（Limit Velocity Over Lifetime）。
@@ -1828,9 +2153,25 @@ export class ParticleAnimator {
         }
       }
 
-      // 4.5 自旋
-      if (p.spin !== 0) {
-        p.rot += p.spin * dt;
+      /**
+       * 4.5 自旋 = `rotationOverLifetime`（出生时定）**+** `rotationBySpeed`（P2，每帧按
+       *     当前速度取）。两者都是**弧度/秒**，直接相加。
+       *
+       * ★★ `rotationBySpeed` 同样**取负号**：与 `rotationCurve` 同一个口径 ——
+       *   Unity 的粒子自转角在屏幕上反号（见 `spawn()` 里 `rotDeg` 处 2026-10-13 的说明）。
+       * ⚠️ 序列化里主曲线 `curve` 是 **z 轴**（`x`/`y` 是另外两轴，2D 下用不上）
+       *   —— 默认常量 0.7854 = π/4 与 feng3d 的默认值逐位吻合，互为佐证。
+       */
+      let spin = p.spin;
+      if (this.rbsOn) {
+        spin -= lifeMulMix(
+          c.rotationBySpeed!.curve,
+          speedRate(p.spd, this.rbsR0, this.rbsR1),
+          p.vmix
+        );
+      }
+      if (spin !== 0) {
+        p.rot += spin * dt;
       }
 
       /**
@@ -1937,9 +2278,58 @@ export class ParticleAnimator {
       p.uvFrame = -1;
       const pr = p.age / p.life;
       // ★ 传 p.vmix：sizeModule 若为"随机两常量"，各粒子抽自己的尺寸倍率
-      const sm = useSize ? lifeMul(c.sizeModule.curve, pr, p.vmix) : 1;
+      let sm = useSize ? lifeMul(c.sizeModule.curve, pr, p.vmix) : 1;
+      let smY = sm;
+      /**
+       * ── SizeBySpeedModule（P2）：**倍率**乘在 `sizeOverLifetime` 之外 ──
+       *
+       * `rate = clamp((|v| − range[0]) / (range[1] − range[0]), 0, 1)`（见 `speedRate`）；
+       * `!separateAxes` ⇒ `y = z = x`（等比，feng3d 同口径）；
+       * 分轴时才另取 `y`（序列化里 `curve` 是 **x 轴**，`y` / `z` 另列）。
+       */
+      if (this.sbsOn) {
+        const rr = speedRate(p.spd, this.sbsR0, this.sbsR1);
+        const kx = lifeMulMix(c.sizeBySpeed!.curve, rr, p.vmix);
+        sm *= kx;
+        smY *= this.sbsSep && c.sizeBySpeed!.y
+          ? lifeMulMix(c.sizeBySpeed!.y, rr, p.vmix)
+          : kx;
+      }
       const hw = (p.sizeX * sm) / 2;
-      const hh = (p.sizeY * sm) / 2;
+      const hh = (p.sizeY * smY) / 2;
+
+      /**
+       * ── ColorBySpeedModule（P2）：**逐通道乘进** `startColor`（含 alpha）──
+       *
+       * 与 SizeBySpeed 同一个 `rate`；`startColor` 之外的这一层是**每帧按速度重取**的，
+       * 所以不能像 `p.sc` 那样出生定死 —— 在这里现算。
+       * `mode = 3`(TwoGradients) 时按 `p.vmix` 在 max↔min 两条梯度间 lerp（与
+       * `startColorGradient` 同口径）。
+       */
+      let cr = p.sc[0];
+      let cg = p.sc[1];
+      let cb = p.sc[2];
+      let ca = p.sc[3];
+      if (this.cbsOn) {
+        const bs = c.colorBySpeed!;
+        const u01 = speedRate(p.spd, this.cbsR0, this.cbsR1);
+        const hi = sampleGradient(bs.colorKeys, bs.alphaKeys, u01);
+        let mr = hi[0];
+        let mg = hi[1];
+        let mb = hi[2];
+        let ma = hi[3];
+        if (bs.mode === 3 && bs.minAlphaKeys && bs.minAlphaKeys.length) {
+          const lo = sampleGradient(bs.minColorKeys, bs.minAlphaKeys, u01);
+          mr += (lo[0] - mr) * p.vmix;
+          mg += (lo[1] - mg) * p.vmix;
+          mb += (lo[2] - mb) * p.vmix;
+          ma += (lo[3] - ma) * p.vmix;
+        }
+        cr *= mr;
+        cg *= mg;
+        cb *= mb;
+        ca *= ma;
+      }
       /**
        * ★ 丝带粒子的 `startSize = 0` 是**正常值**（宽度来自 `widthOverTrail`，不是粒子尺寸），
        *   所以 quad 的尺寸守卫对它们必须**放行** —— 否则 `hw = 0` 会把整条效果静默跳过。
@@ -2024,10 +2414,10 @@ export class ParticleAnimator {
             muvs[n * 2 + 1] = v[3];
             als[n] = v[4];
             // ★ 丝带分支同样要写 startColor（否则 attribute 留在 0 ⇒ 整条丝带全黑）
-            scs[n * 4 + 0] = p.sc[0];
-            scs[n * 4 + 1] = p.sc[1];
-            scs[n * 4 + 2] = p.sc[2];
-            scs[n * 4 + 3] = p.sc[3];
+            scs[n * 4 + 0] = cr;
+            scs[n * 4 + 1] = cg;
+            scs[n * 4 + 2] = cb;
+            scs[n * 4 + 3] = ca;
             n++;
           }
           prevX = q.x;
@@ -2138,10 +2528,11 @@ export class ParticleAnimator {
         muvs[n * 2 + 0] = qu[q];
         muvs[n * 2 + 1] = qv[q];
         als[n] = al;
-        scs[n * 4 + 0] = p.sc[0];
-        scs[n * 4 + 1] = p.sc[1];
-        scs[n * 4 + 2] = p.sc[2];
-        scs[n * 4 + 3] = p.sc[3];
+        // ★ 写的是「startColor × colorBySpeed」的合成值（见上方 ColorBySpeed 段）
+        scs[n * 4 + 0] = cr;
+        scs[n * 4 + 1] = cg;
+        scs[n * 4 + 2] = cb;
+        scs[n * 4 + 3] = ca;
         n++;
       }
     }
@@ -2207,6 +2598,15 @@ export class ParticleAnimator {
         rotDeg: p.rot / DEG2RAD,
         /** 出生抽定的 startColor（RGBA，终生不变；见 Particle.sc） */
         sc: [p.sc[0], p.sc[1], p.sc[2], p.sc[3]],
+        /**
+         * P2：本帧总速度大小（世界单位/秒；见 Particle.spd）。
+         * 三个 by-speed 模块的 `rate` 就由它归一化而来 —— 验收脚本读它即可复算，
+         * 不必在测试里重抄一遍公式（那样就成了自证）。
+         */
+        spd: p.spd,
+        /** P2：z 坐标 / z 速度（世界单位；只有 z 类模块启用时才可能非 0） */
+        z: p.z,
+        vz: p.vz,
         /** 逐粒子抽签系数（验收脚本复算 alphaMix / 双曲线用） */
         vmix: p.vmix,
         /** 本地→世界 Z 旋角（度）；盒形发射器专用，锥形/圆形恒 0（见 Particle.localRot） */
