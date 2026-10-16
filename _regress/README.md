@@ -36,6 +36,7 @@ npx ts-node --transpile-only _regress/<脚本名>.ts [参数...]
 | `70_回归_锥形形状采样.ts` | `argv[2]` = `config.json`（须含锥形 type 4/8） | `WK_CONFIG` | `public/assets/config.json` |
 | `71_回归_形状族补充.ts` | `argv[2]` = `config.json`（任一含启用粒子组的工程即可，形状靠覆盖 `shape` 合成） | `WK_CONFIG` | `public/assets/config.json` |
 | `72_回归_按速度与力.ts` | 同上（P2 六个模块靠覆盖字段合成，不要求 config 真有） | `WK_CONFIG` | `public/assets/config.json` |
+| `73_回归_渲染侧.ts` | 同上（P3 的 `renderer` 段靠覆盖字段合成，不要求 config 真有） | `WK_CONFIG` | `public/assets/config.json` |
 
 例：
 
@@ -69,6 +70,7 @@ npx ts-node --transpile-only _regress/64_回归_触摸通道并池.ts
 | `70` | **锥形（Cone / ConeVolume）形状采样** —— 方位角覆盖 `arc`、`ρ ∈ [R(1−t), R]`、`te` 两端点、单/多扇区、`m_Scale` 各轴缩放、方向发散幅度 ≤ `angle/2`；★ 2026-10-16 起含 **ConeVolume 的轴向几何**（近盘 = `radius` 在原点、沿轴张开 `+t·tan(angle)`，逐颗断言 `ρ = R + t·tan(angle)`）与 **`m_Scale`/`m_Rotation` 的 `TRS` 顺序** |
 | `72` | **P2「按速度与力」（2026-10-16）** —— `VelocityModule.z`（不产生屏幕位移、只进 `\|v\|`）、`ForceModule`（加速度、`Δv = a·dt`、Local/World 两种空间）、`orbitalX/Y/Z`（弧度/秒、绕 **orbitalOffset** 旋转位置，含"绕的是 offset 不是原点"）、`radial`（沿径向推/拉、取负朝中心收）、三个 by-speed 的同一条 `rate` 归一化（含上下界钳位）、`SizeBySpeed` 是倍率且不分轴时 `y = x`、`RotationBySpeed` 单位弧度/秒且**取负号**、`InheritVelocity` 在 **Local 下整个被忽略** + World 下 `Initial`/`Current` 两态与 `curve` 倍率；以及**零回归**：无 P2 字段 ≡ 有字段但全关（含"关闭模块的残留值不生效"） |
 | `71` | **形状族补充（P1，2026-10-16）** —— obsolete 变体折叠（`1→0/3→2/7→4/9→8/11→10`，逐位相同）、**圆盘族等价**（Sphere/Hemisphere 位置与 Circle 逐位相同）、**方向 = 径向**、`arc` 扇形与 BurstSpread、**Edge 的线段几何与本地 +Y 方向**、`m_Position`/`m_Rotation` 的形状通用性（平移不被旋转 + `rotZ` 与 `nodeRotZ` 同轴相加）、既有形状零回归与"未实现类型仍走锥形兜底"的现状钉扎 |
+| `73` | **P3「补渲染侧」（2026-10-17）** —— `renderMode` 五档（Billboard 轴对齐 / Stretched **长轴沿速度**（`长度 = \|v\|·velocityScale + lengthScale·size`，含`lengthScale=0 ⇒ 长度 0`）/ Horizontal **正视相机下高度为 0** / Vertical **正视相机下 ≡ Billboard** / Mesh **顶点 × 直径、不归一化** / None **不生成四边形但仍在模拟**）、`alignment=Velocity`（唯一有实感的一档）、`pivot`（**直径倍数**的旋转中心；`[0,0.5]` ⇒ 包围盒中心上移半个直径）、`allowRoll=false`（屏幕自转整体作废）、`flip`（UV 按条目自己的包围盒镜像）、`sortingFudge × fudgeToZ`（只动 `mesh.position.z`）、`min/maxParticleSize`（仅 Billboard 档生效）；Mesh 档在 **缺 mesh / 索引越界** 时静默回退 quad；以及**零回归**（无 `renderer` ≡ 有但全默认） |
 
 > ⚠️ `65` 的 D 段有一条**早已失配**的断言（找面板文案「旧版「touch触发greet事件」开关打开的效果」，
 > 该短语在 `src/` 里根本不存在、且注释不会进 bundle）⇒ 它会稳定报 1 条 FAIL，与本次改动无关。

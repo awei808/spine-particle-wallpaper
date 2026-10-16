@@ -565,6 +565,97 @@ function speedRate(speed: number, r0: number, r1: number): number {
   return t < 0 ? 0 : t > 1 ? 1 : t;
 }
 
+/* ── P3：渲染侧（`ParticleSystemRenderer`）的几何口径 ──────────────────────
+ *
+ * ★★ 三种 billboard 的**世界基向量**（Cocos `editor/assets/chunks/builtin/internal/
+ *    particle-common.chunk` 逐行可对照，与 Unity 手册描述一致）：
+ *      · Billboard ：基 = 相机 right / up（世界）
+ *      · Horizontal：基 = `(1,0,0)` 与 `(0,0,−1)` ⇒ 平面 = **世界 XZ 面**（水平）✓
+ *      · Vertical  ：基 = 相机 right 的**水平分量** 与 `(0,1,0)` ⇒ 竖直、绕 Y 转向相机 ✓
+ *
+ * 本引擎把"世界 XY"直接当作屏幕平面（粒子顶点本来就写在屏幕坐标系里），
+ * 所以"世界方向 → 屏幕二维"就是点乘相机的 right / up 两个基向量。
+ * ⚠️ 相机基向量对**整个系统**取一次（本引擎无逐粒子 3D 位置），
+ *   透视发散带来的误差量级 ≈ `粒子半径 / 相机距离`（本工程 < 0.1%），已接受。
+ */
+export interface CamBasis {
+  rx: number;
+  ry: number;
+  rz: number;
+  ux: number;
+  uy: number;
+  uz: number;
+}
+
+/**
+ * 相机缺省基 —— 与"正视相机"（看向 −Z、无俯角无偏航无 roll）逐位一致。
+ * `Scene.camera` 尚未初始化时退到这里（等价于 P3 之前的行为）。
+ */
+const CAM_IDENTITY: CamBasis = { rx: 1, ry: 0, rz: 0, ux: 0, uy: 1, uz: 0 };
+
+/** 取相机世界基向量（right / up）。矩阵不可用 ⇒ 返回 `CAM_IDENTITY` */
+function camBasis(): CamBasis {
+  const cam = Scene.camera;
+  if (!cam) {
+    return CAM_IDENTITY;
+  }
+  cam.updateMatrixWorld();
+  const m = cam.matrixWorld.elements;
+  return { rx: m[0], ry: m[1], rz: m[2], ux: m[4], uy: m[5], uz: m[6] };
+}
+
+/** 世界方向 d 在屏幕 x 轴（相机 right）上的分量 */
+function projX(dx: number, dy: number, dz: number, b: CamBasis): number {
+  return dx * b.rx + dy * b.ry + dz * b.rz;
+}
+
+/** 世界方向 d 在屏幕 y 轴（相机 up）上的分量 */
+function projY(dx: number, dy: number, dz: number, b: CamBasis): number {
+  return dx * b.ux + dy * b.uy + dz * b.uz;
+}
+
+/**
+ * 依 Render Mode 求 quad 的两条**单位半轴**（即 `sizeX = sizeY = 1` 时的半向量）。
+ *
+ * 返回 `[uAxX, uAxY, uAyX, uAyY]`，顶点 = `sgnA·uAx·sizeX + sgnB·uAy·sizeY`。
+ *   · **Billboard(0)**：`uAx = 0.5·proj(right)`、`uAy = 0.5·proj(up)` ⇒ 屏幕轴对齐（现状）
+ *   · **Horizontal(2)**：`uAx = 0.5·proj(X̂)`、`uAy = 0.5·proj(−Ẑ)`
+ *     ⇒ 本工程正视相机下 `proj(X̂) = (1,0)`、`proj(−Ẑ) = (0,0)` ⇒ **高度为 0**
+ *        （平面与视线共面 ⇒ 投影面积 0，与 Unity 里"看不见"一致）
+ *   · **Vertical(3)**：`uAx = 0.5·proj(right 的水平分量)`、`uAy = 0.5·proj(Ŷ)`
+ *     ⇒ 本工程下 `right` 本就水平 ⇒ `proj` 均为单位基 ⇒ **与 Billboard 逐位相同**
+ *   · Stretched(1) / Mesh(4) / None(5)：不适用（前两者由调用方另算基，后者不生成四边形），
+ *     这里返回 Billboard 的基只作为**兜底**（例如 Stretched 在速度为 0 时的退化姿态）。
+ */
+function renderModeAxes(mode: number, b: CamBasis): number[] {
+  if (mode === 2) {
+    return [
+      0.5 * projX(1, 0, 0, b),
+      0.5 * projY(1, 0, 0, b),
+      -0.5 * projX(0, 0, 1, b),
+      -0.5 * projY(0, 0, 1, b),
+    ];
+  }
+  if (mode === 3) {
+    // 相机 right 去掉沿世界 Y 的分量后归一化 —— 即 cocos 的 `camX`（水平、指向相机侧）
+    const hl = Math.hypot(b.rx, b.rz);
+    const nx = hl > 1e-9 ? b.rx / hl : 1;
+    const nz = hl > 1e-9 ? b.rz / hl : 0;
+    return [
+      0.5 * projX(nx, 0, nz, b),
+      0.5 * projY(nx, 0, nz, b),
+      0.5 * projX(0, 1, 0, b),
+      0.5 * projY(0, 1, 0, b),
+    ];
+  }
+  return [
+    0.5 * projX(b.rx, b.ry, b.rz, b),
+    0.5 * projY(b.rx, b.ry, b.rz, b),
+    0.5 * projX(b.ux, b.uy, b.uz, b),
+    0.5 * projY(b.ux, b.uy, b.uz, b),
+  ];
+}
+
 /**
  * 形状类型**归一化**：把 Unity 里已废弃的"外壳 / 边缘"变体折叠到基类型。
  *
@@ -953,6 +1044,66 @@ export class ParticleAnimator {
   private rbsR0 = 0;
   private rbsR1 = 0;
 
+  /* ══════════════════════════════════════════════════════════════════════════
+   * P3「渲染侧」—— `ParticleSystemRenderer` 的**预计算**（2026-10-17）
+   *
+   * 全部**缺省 = 与 P3 之前逐位一致**：`rMode = 0`(Billboard)、单位半轴 = 屏幕轴、
+   * 枢轴 = 0、`rRoll = true`、无 mesh、`fudgeToZ = 0`。
+   * 依据（官方逐字 + Cocos 逐行）见 `config.type.ts` 的 `renderer` 段与
+   * `docx/RESEARCH_粒子系统复刻参考.md` §4.12/§4.13。
+   * ══════════════════════════════════════════════════════════════════════════ */
+
+  /** Render Mode：0 Billboard / 1 Stretched / 2 Horizontal / 3 Vertical / 4 Mesh / 5 None */
+  private rMode = 0;
+  /**
+   * quad 的**两条单位半轴**在屏幕上的分量：顶点 = `sgn_A·uAx·sizeX + sgn_B·uAy·sizeY`。
+   *
+   * ★ 为什么用"基向量投影"而不是"宽度/高度压缩系数"：
+   *   Unity 的三种 billboard 本质是**平面在世界空间里的朝向**不同（Horizontal 的平面
+   *   平行 XZ、Vertical 的竖直并绕 Y 转向相机），投影到屏幕后一般是个**平行四边形**。
+   *   用两条基向量的屏幕投影直接表达，既覆盖了轴对齐的 Billboard（退化成矩形），
+   *   也精确表达了退化的 Horizontal（一条线段），无需为每档另立公式。
+   *   ⚠️ 本引擎只存 2D 位置 ⇒ 投影用的相机方向对**整个系统**取一次（不是逐粒子），
+   *      差异仅来自透视发散，量级在 `粒子半径/相机距离` 以下（本工程 ≈ 0.1%）。
+   */
+  private uAxX = 0.5;
+  private uAxY = 0;
+  private uAyX = 0;
+  private uAyY = 0.5;
+  /** 旋转枢轴偏移（**粒子直径的倍数**，逐轴）；缺省 0 = 绕中心（现状） */
+  private pvX = 0;
+  private pvY = 0;
+  /** `allowRoll`：是否施加屏幕自转（=`rotationOverLifetime` / `rotationBySpeed` 的角） */
+  private rRoll = true;
+  /** `alignment === 4 (Velocity)`：粒子基准朝向取**速度方向**的屏幕角 */
+  private rAlignVel = false;
+  /** Stretched：沿速度方向的长度系数（见 `config.type.ts` 逐字依据） */
+  private rVelScale = 0;
+  private rLenScale = 0;
+  /** 屏幕尺寸钳制（**视口高的比例**）；`rMaxSize <= 0` ⇒ 关闭 */
+  private rMinSize = 0;
+  private rMaxSize = 0;
+  /** 视口高的世界尺寸（`2·|z|·tan(fov/2)`）；钳制用，缺省 0 = 不钳制 */
+  private rViewportH = 0;
+  /** 逐轴镜像概率（0..1）；用出生抽签的 `p.vmix` 判定，不额外消耗 rng */
+  private rFlipX = 0;
+  private rFlipY = 0;
+  /** Mesh 档：顶点（每顶点 2 float）/ UV（2 float）/ 索引；`null` ⇒ 回退 quad */
+  private rMeshPos: Float32Array | null = null;
+  private rMeshUv: Float32Array | null = null;
+  private rMeshIdx: Uint16Array | null = null;
+  private rMeshScale = 1;
+  /** mesh 的 UV 包围盒（`min + max − uv` 即在该轴上镜像 —— 用于 `flip`） */
+  private rMeshUMin = 0;
+  private rMeshUMax = 1;
+  private rMeshVMin = 0;
+  private rMeshVMax = 1;
+  /**
+   * `sortingFudge × fudgeToZ` 的 z 微调（世界单位，正 = 更靠近相机）。
+   * 缺省 `0` ⇒ `mesh.position.z` 保持 config 给的值（现有产物逐位不变）。
+   */
+  private zShift = 0;
+
   private mesh: THREE.Mesh;
   private geometry: THREE.BufferGeometry;
   private posAttr: THREE.BufferAttribute;
@@ -1119,6 +1270,81 @@ export class ParticleAnimator {
     this.rbsR0 = (rbs && rbs.range ? rbs.range[0] : 0) * s2w;
     this.rbsR1 = (rbs && rbs.range ? rbs.range[1] : 1) * s2w;
 
+    /* ── P3 渲染侧（`ParticleSystemRenderer`）──────────────────────────────
+     * 整段 `if (rd)` 包住 ⇒ 缺省（无 `renderer` 字段）时下面这些量一个都不改，
+     * 与 P3 之前逐位一致（Billboard + 绕中心枢轴 + 不自转开关 + 无 mesh）。
+     */
+    const rd = meshConfig.renderer;
+    if (rd) {
+      const rm = typeof rd.renderMode === 'number' ? rd.renderMode : 0;
+      this.rMode = rm;
+      const b = camBasis();
+      const ax = renderModeAxes(rm, b);
+      this.uAxX = ax[0];
+      this.uAxY = ax[1];
+      this.uAyX = ax[2];
+      this.uAyY = ax[3];
+      /** 枢轴 = **直径的倍数**（ScriptReference 逐字："multiplier of the particle sizes,
+       *  relative to their diameters"）⇒ 偏移量 = `pivot × 当前帧尺寸`，在 `buildGeometry` 里乘 */
+      this.pvX = rd.pivot && isFinite(rd.pivot[0]) ? rd.pivot[0] : 0;
+      this.pvY = rd.pivot && isFinite(rd.pivot[1]) ? rd.pivot[1] : 0;
+      this.rRoll = rd.allowRoll !== false;
+      this.rAlignVel = rd.alignment === 4;
+      this.rVelScale = isFinite(rd.velocityScale as number) ? (rd.velocityScale as number) : 0;
+      this.rLenScale = isFinite(rd.lengthScale as number) ? (rd.lengthScale as number) : 0;
+      this.rMinSize = isFinite(rd.minParticleSize as number) ? Math.max(0, rd.minParticleSize as number) : 0;
+      this.rMaxSize = isFinite(rd.maxParticleSize as number) ? Math.max(0, rd.maxParticleSize as number) : 0;
+      this.rFlipX = rd.flip && isFinite(rd.flip[0]) ? Math.min(1, Math.max(0, rd.flip[0])) : 0;
+      this.rFlipY = rd.flip && isFinite(rd.flip[1]) ? Math.min(1, Math.max(0, rd.flip[1])) : 0;
+      /**
+       * 排序偏差 → **整个系统**的 z 微调。
+       * ★ 必须显式给 `fudgeToZ`：Unity 如何把无量纲 fudge 折进排序距离**未公开**，
+       *   而本引擎的透明排序完全由 `mesh.position.z` 决定 ⇒ 换算只能由数据层给出。
+       *   缺省 `fudgeToZ = 0` ⇒ `zShift = 0` ⇒ 现有产物的 z 序逐位不变。
+       */
+      if (isFinite(rd.sortingFudge as number) && isFinite(rd.fudgeToZ as number)) {
+        this.zShift = -(rd.sortingFudge as number) * (rd.fudgeToZ as number);
+      }
+      /**
+       * Mesh 档顶点集。⚠️ 只在 `renderMode === 4` 且数据自洽（索引非空、且
+       * 每个索引都落在顶点范围内）时才启用；否则**静默回退 quad** ——
+       * 宁可退化成现状，也不要越界读。
+       */
+      const msh = rd.mesh;
+      if (rm === 4 && msh && msh.positions && msh.uv0 && msh.indices) {
+        const nv = Math.floor(msh.positions.length / 2);
+        const ok =
+          nv > 0 &&
+          msh.indices.length >= 3 &&
+          msh.uv0.length >= nv * 2 &&
+          msh.indices.length <= 65535 &&
+          msh.indices.every((i) => i >= 0 && i < nv);
+        if (ok) {
+          this.rMeshPos = new Float32Array(msh.positions);
+          this.rMeshUv = new Float32Array(msh.uv0);
+          this.rMeshIdx = new Uint16Array(msh.indices);
+          this.rMeshScale = isFinite(msh.scale as number) ? (msh.scale as number) : 1;
+          // UV 包围盒（`flip` 要"在条目自己的范围内镜像"，不能一律按 [0,1] 算）
+          let u0m = Infinity;
+          let u1m = -Infinity;
+          let v0m = Infinity;
+          let v1m = -Infinity;
+          for (let i = 0; i < nv; i++) {
+            const uu = this.rMeshUv[i * 2];
+            const vv = this.rMeshUv[i * 2 + 1];
+            if (uu < u0m) u0m = uu;
+            if (uu > u1m) u1m = uu;
+            if (vv < v0m) v0m = vv;
+            if (vv > v1m) v1m = vv;
+          }
+          this.rMeshUMin = u0m;
+          this.rMeshUMax = u1m;
+          this.rMeshVMin = v0m;
+          this.rMeshVMax = v1m;
+        }
+      }
+    }
+
     const max = Math.max(1, Math.floor(meshConfig.maxNumParticles || 1));
 
     /**
@@ -1145,7 +1371,16 @@ export class ParticleAnimator {
       ? meshConfig.trail!.colorOverLifetimeAlpha ?? []
       : [];
     this.trailStretch = !meshConfig.trail || meshConfig.trail.textureMode === 0;
-    const vpp = 6 + (this.trailOn ? this.trailMaxPts * 6 : 0);
+    /**
+     * ── 每粒子顶点数（P3 起可被 Mesh 档抬高）──
+     *
+     * 默认 6（一个 quad = 两个三角形 = 6 个**独立**顶点，本引擎不建索引缓冲）；
+     * `renderMode = 4 (Mesh)` 且顶点数据自洽时按 mesh 的索引数走 —— 本引擎把 mesh 的
+     * 三角形**逐个展开成独立顶点**（与 quad 同一套约定），所以上限取索引个数。
+     * ⚠️ 缺省（无 `renderer.mesh`）⇒ 仍是 6，逐位不变。
+     */
+    const meshVpp = this.rMeshIdx ? this.rMeshIdx.length : 0;
+    const vpp = Math.max(6, meshVpp) + (this.trailOn ? this.trailMaxPts * 6 : 0);
     /**
      * 一个 mesh 承载本系统的全部粒子（动态四边形）。这样 z 排序只需给这一个
      * mesh 一个 `position.z`，与分层背景 / 角色共用同一套
@@ -1288,10 +1523,17 @@ export class ParticleAnimator {
     }
 
     this.mesh = new THREE.Mesh(this.geometry, material);
+    /**
+     * ★ `+ this.zShift`：`renderer.sortingFudge × fudgeToZ` 的 z 微调
+     *   （官方逐字：*"This setting only affects where an **entire system** appears in the
+     *   scene — it does not perform sorting on individual particles within a system."*
+     *   ⇒ 正好对应本引擎"一个系统 = 一个 `THREE.Mesh`、排序由它的 z 决定"）。
+     *   缺省 `zShift = 0` ⇒ 与 P3 之前逐位一致。
+     */
     this.mesh.position.set(
       meshConfig?.position?.x ?? 0,
       meshConfig?.position?.y ?? 0,
-      meshConfig?.position?.z ?? -1000
+      (meshConfig?.position?.z ?? -1000) + this.zShift
     );
     this.mesh.frustumCulled = false;
     Scene.scene?.add(this.mesh);
@@ -2215,6 +2457,19 @@ export class ParticleAnimator {
 
   private buildGeometry(): void {
     const c = this.cfg;
+    /**
+     * `min/maxParticleSize` 换算所需的**视口高的世界尺寸** = `2·|z|·tan(fov/2)`。
+     * 每帧算一次（相机 `fov` 会随窗口比例变化，见 `initScene` 的 `onWindowResize`），
+     * 且**只在真的要钳制时**才算 —— 缺省（不声明 `maxParticleSize`）零开销。
+     */
+    if (this.rMaxSize > 0) {
+      const cam = Scene.camera;
+      /** 相机缺席（无头验收 / 单测）时用 Unity 的缺省 fov = 60°，而不是让视口高塌成 0 */
+      const fov = cam && isFinite(cam.fov) && cam.fov > 0 ? cam.fov : 60;
+      const tanHalf = Math.tan((fov * Math.PI) / 360);
+      const dz = Math.abs((cam ? cam.position.z : 0) - this.mesh.position.z);
+      this.rViewportH = 2 * dz * tanHalf;
+    }
     const pos = this.posAttr.array as Float32Array;
     const uvs = this.uvTexAttr.array as Float32Array;
     const muvs = this.uvMaskAttr.array as Float32Array;
@@ -2494,7 +2749,42 @@ export class ParticleAnimator {
       // `groupRotation.rotateSelf = true` 时（轮盘本体）把 gAng 叠进自身角度。
       let cx = p.x;
       let cy = p.y;
-      const ang = p.rot + (gr && gr.rotateSelf === true ? gAng : 0);
+      /**
+       * P3 · `alignment` —— 官方 Render Alignment 表逐字：
+       *   View *"Particles face the Camera plane."*、World *"aligned with the world axes."*、
+       *   Local *"aligned to the Transform component of their GameObject."*、
+       *   Facing *"face the direct position of the Camera GameObject."*、
+       *   Velocity（新版本）*"aligned with their velocity"*。
+       *
+       * ★ 本引擎的粒子**本来就写在屏幕坐标系里**（相机无 roll / 无俯角 / 无偏航），
+       *   所以前四档投影后**逐位等价**（详见 `config.type.ts` 的 `alignment` 注释）；
+       *   **只有 Velocity 有可见差别** ⇒ 基准朝向改用该粒子速度方向的屏幕角。
+       */
+      let ang = p.rot + (gr && gr.rotateSelf === true ? gAng : 0);
+      if (this.rAlignVel) {
+        const vvy0 = p.vy + p.gvy;
+        const vl0 = Math.hypot(p.vx, vvy0);
+        if (vl0 > 1e-6) {
+          ang = Math.atan2(vvy0, p.vx);
+        }
+      }
+      /**
+       * `allowRoll = false` ⇒ 官方 *"控制面向摄像机的粒子是否可以围绕摄像机的 Z 轴旋转"*
+       * 的否定档 ⇒ 屏幕自转**整体作废**（`startRotation` 同样是绕相机 Z，一并忽略）。
+       */
+      if (!this.rRoll) {
+        ang = 0;
+      }
+      /**
+       * Stretched 档的朝向已由**速度**完全定义 —— 官方 2021.2+ 逐字：*"particles are
+       * aligned to face the Camera **and also aligned to their velocity**. This alignment
+       * occurs **regardless of the Velocity Scale value**"* ⇒ 不再叠屏幕自转。
+       * 依据 = Cocos `particle-vs-legacy.chunk`：`RENDER_MODE_STRETCHED_BILLBOARD` 下
+       * 把 `rotEuler` 钉成 `vec3(0)`。⚠️ Unity 内部未公开，此处采 Cocos 口径（见 RESEARCH §4.13）。
+       */
+      if (this.rMode === 1) {
+        ang = 0;
+      }
       if (gr) {
         const rx = p.x - px0;
         const ry = p.y - py0;
@@ -2511,29 +2801,149 @@ export class ParticleAnimator {
       const cs = Math.cos(ang);
       const sn = Math.sin(ang);
 
-      // 两个三角形（每顶点 3 float 位置 + 2+2 float uv + 1 float alpha）
-      const qx = [-hw, hw, hw, -hw, hw, -hw];
-      const qy = [-hh, -hh, hh, -hh, hh, hh];
-      const qu = [u0, u1, u1, u0, u1, u0];
-      const qv = [v0, v0, v1, v0, v1, v1];
-      for (let q = 0; q < 6; q++) {
-        const lx = qx[q];
-        const ly = qy[q];
-        pos[n * 3 + 0] = cx + lx * cs - ly * sn;
-        pos[n * 3 + 1] = cy + lx * sn + ly * cs;
-        pos[n * 3 + 2] = 0;
-        uvs[n * 2 + 0] = qu[q] + du;
-        uvs[n * 2 + 1] = qv[q] + dv;
-        // `_mask` 走 `maskUV = in_TEXCOORD0`，**不动**
-        muvs[n * 2 + 0] = qu[q];
-        muvs[n * 2 + 1] = qv[q];
-        als[n] = al;
-        // ★ 写的是「startColor × colorBySpeed」的合成值（见上方 ColorBySpeed 段）
-        scs[n * 4 + 0] = cr;
-        scs[n * 4 + 1] = cg;
-        scs[n * 4 + 2] = cb;
-        scs[n * 4 + 3] = ca;
-        n++;
+      /**
+       * `renderMode = 5 (None)`：官方 *"can be useful when using the Trails module,
+       * if you want to only render the trails and hide the default rendering"*
+       * ⇒ **不生成默认四边形**（丝带分支已在上方单独走完，不受影响）。
+       */
+      if (this.rMode === 5) {
+        continue;
+      }
+
+      /**
+       * ── P3：四边形 / Mesh 的顶点（枢轴 · 朝向基 · 拉伸 · 镜像 · 尺寸钳制）────
+       *
+       * 统一式：`顶点 = 中心 + 枢轴偏移 + R(ang)·(sgnA·半轴A + sgnB·半轴B − 枢轴偏移)`
+       *   · `半轴A/B` = 「**单位尺寸**下的半轴」（`renderModeAxes`）× 当前帧直径；
+       *   · `枢轴偏移 = pivot × 当前帧直径`（ScriptReference 逐字：*"multiplier of the
+       *     particle sizes, relative to their diameters"*）；
+       *   · `枢轴 = 0` 且基 = 屏幕轴 ⇒ **与 P3 之前逐位相同**。
+       */
+      let hwE = hw;
+      let hhE = hh;
+      /**
+       * `min/maxParticleSize`：官方逐字 *"expressed as a fraction of **viewport size**"*
+       * 且 *"only applied when the Rendering Mode is set to Billboard"*
+       * ⇒ 仅 `rMode === 0` 生效、等比缩放。缺省（不声明）⇒ 关闭，现有产物不受影响。
+       */
+      if (this.rMode === 0 && this.rMaxSize > 0 && this.rViewportH > 0) {
+        const ratio = (hhE * 2) / this.rViewportH;
+        if (ratio > 1e-9) {
+          const clamped = Math.min(this.rMaxSize, Math.max(this.rMinSize, ratio));
+          const k = clamped / ratio;
+          if (k !== 1) {
+            hwE *= k;
+            hhE *= k;
+          }
+        }
+      }
+      const sX2 = hwE * 2;
+      const sY2 = hhE * 2;
+      /** 半轴向量（屏幕二维）：`aXX/aXY` = A 轴，`aYX/aYY` = B 轴 */
+      let aXX = 0;
+      let aXY = 0;
+      let aYX = 0;
+      let aYY = 0;
+      if (this.rMode === 1) {
+        /**
+         * Stretched：长轴沿**速度**、短轴与速度垂直。
+         * 长度 = `|v|·velocityScale + lengthScale·size` —— 依据 = Cocos `computeVertPos` 的
+         * STRETCHED 分支逐行（`camUp = velocity·velocityScale + normalize(velocity)·lengthScale·s.y`），
+         * 且与手册 *"Stretches particles proportionally to their speed"* +
+         * *"…proportionally to their current size along the direction of their velocity"* 一致。
+         * ⚠️ 手册另有一句 *"Setting this to 0 makes the particles disappear, having effectively
+         * 0 length"* ⇒ `lengthScale = 0` 且速度为 0 时长度**确实是 0**（不兜底成 size）。
+         */
+        const vvy1 = p.vy + p.gvy;
+        const vl1 = Math.hypot(p.vx, vvy1);
+        const ux1 = vl1 > 1e-6 ? p.vx / vl1 : 1;
+        const uy1 = vl1 > 1e-6 ? vvy1 / vl1 : 0;
+        const len = vl1 * this.rVelScale + this.rLenScale * sY2;
+        aXX = -uy1 * (sX2 / 2);
+        aXY = ux1 * (sX2 / 2);
+        aYX = ux1 * (len / 2);
+        aYY = uy1 * (len / 2);
+      } else {
+        aXX = this.uAxX * sX2;
+        aXY = this.uAxY * sX2;
+        aYX = this.uAyX * sY2;
+        aYY = this.uAyY * sY2;
+      }
+      /** 枢轴偏移（**直径的倍数** ⇒ 与上面用的"当前帧直径"同源） */
+      const ox = this.pvX * sX2;
+      const oy = this.pvY * sY2;
+      /** 逐轴镜像：用出生抽签的 `p.vmix` 判定（**不**额外消耗 rng ⇒ 既有抽签序列零回归） */
+      const flipU = this.rFlipX > 0 && p.vmix < this.rFlipX;
+      const flipV = this.rFlipY > 0 && p.vmix < this.rFlipY;
+      const meshUse = this.rMode === 4 && !!(this.rMeshPos && this.rMeshUv && this.rMeshIdx);
+      if (meshUse) {
+        /**
+         * Mesh 档：顶点**直接用 mesh 的坐标 × 当前帧尺寸**（`mesh.scale` 是数据层旋钮）。
+         * 依据 = Cocos `matFromRTS(rot, pos, compScale)`，其中 `compScale = scale × size`
+         * ⇒ 与本引擎 quad 的"单位几何 × 尺寸"完全同构。⚠️ **不做归一化**：
+         *   `FX_Model_ZC_Plane13` extent ≈ 3.96×1.76 远超"直径 1"，归一化会把它缩小近 4 倍。
+         */
+        const mp = this.rMeshPos!;
+        const mu = this.rMeshUv!;
+        const mi = this.rMeshIdx!;
+        const mk = this.rMeshScale;
+        for (let q = 0; q < mi.length; q++) {
+          const vi = mi[q];
+          /**
+           * ★ **必须乘当前帧尺寸**（`sX2` / `sY2` = 直径）—— mesh 的坐标是"图元自己的
+           *   尺度"，与 quad 的"单位几何"不同，所以 `sX2` / `sY2` 要在**这里**乘，
+           *   而不能像 quad 分支那样折进 `aXX/aYX`（那两个在 mesh 分支里根本不参与）。
+           */
+          const lx = mp[vi * 2 + 0] * mk * sX2;
+          const ly = mp[vi * 2 + 1] * mk * sY2;
+          const ddx = lx - ox;
+          const ddy = ly - oy;
+          pos[n * 3 + 0] = cx + ox + ddx * cs - ddy * sn;
+          pos[n * 3 + 1] = cy + oy + ddx * sn + ddy * cs;
+          pos[n * 3 + 2] = 0;
+          const uu = flipU ? this.rMeshUMin + this.rMeshUMax - mu[vi * 2 + 0] : mu[vi * 2 + 0];
+          const vv2 = flipV ? this.rMeshVMin + this.rMeshVMax - mu[vi * 2 + 1] : mu[vi * 2 + 1];
+          uvs[n * 2 + 0] = uu + du;
+          uvs[n * 2 + 1] = vv2 + dv;
+          muvs[n * 2 + 0] = uu;
+          muvs[n * 2 + 1] = vv2;
+          als[n] = al;
+          scs[n * 4 + 0] = cr;
+          scs[n * 4 + 1] = cg;
+          scs[n * 4 + 2] = cb;
+          scs[n * 4 + 3] = ca;
+          n++;
+        }
+      } else {
+        // 两个三角形（每顶点 3 float 位置 + 2+2 float uv + 1 float alpha）
+        // 四个角的符号 × `qu`/`qv` 的顺序**必须严格对应**（旧写法就是这两行常量）
+        const SGA = [-1, 1, 1, -1, 1, -1];
+        const SGB = [-1, -1, 1, -1, 1, 1];
+        const qu = [u0, u1, u1, u0, u1, u0];
+        const qv = [v0, v0, v1, v0, v1, v1];
+        for (let q = 0; q < 6; q++) {
+          const lx = SGA[q] * aXX + SGB[q] * aYX;
+          const ly = SGA[q] * aXY + SGB[q] * aYY;
+          const ddx = lx - ox;
+          const ddy = ly - oy;
+          pos[n * 3 + 0] = cx + ox + ddx * cs - ddy * sn;
+          pos[n * 3 + 1] = cy + oy + ddx * sn + ddy * cs;
+          pos[n * 3 + 2] = 0;
+          const uu = flipU ? u0 + u1 - qu[q] : qu[q];
+          const vv2 = flipV ? v0 + v1 - qv[q] : qv[q];
+          uvs[n * 2 + 0] = uu + du;
+          uvs[n * 2 + 1] = vv2 + dv;
+          // `_mask` 走 `maskUV = in_TEXCOORD0`，**不动**
+          muvs[n * 2 + 0] = uu;
+          muvs[n * 2 + 1] = vv2;
+          als[n] = al;
+          // ★ 写的是「startColor × colorBySpeed」的合成值（见上方 ColorBySpeed 段）
+          scs[n * 4 + 0] = cr;
+          scs[n * 4 + 1] = cg;
+          scs[n * 4 + 2] = cb;
+          scs[n * 4 + 3] = ca;
+          n++;
+        }
       }
     }
 

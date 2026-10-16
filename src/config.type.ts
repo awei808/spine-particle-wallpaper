@@ -1939,6 +1939,88 @@ export type ParticleMeshConfig = MeshConfig & {
     separateAxes?: boolean;
     range?: [number, number];
   };
+  /**
+   * ── P3「渲染侧」：`ParticleSystemRenderer`（2026-10-17）──────────────────
+   *
+   * 依据 = Unity 官方手册 Renderer module **逐字**（`docx/RESEARCH…` §4.12）：
+   *   · Billboard *"The particle always faces the Camera."*
+   *   · Stretched Billboard *"faces the Camera but with various scaling applied"* ＋
+   *     手册 2021.2+ 的硬补充：*"particles are aligned to face the Camera **and also
+   *     aligned to their velocity**. This alignment occurs **regardless of the Velocity
+   *     Scale value** — even if Velocity Scale is set to 0, particles in this mode still
+   *     align to the velocity."*
+   *   · Horizontal Billboard *"The particle plane is parallel to the XZ 'floor' plane."*
+   *   · Vertical Billboard *"The particle is upright on the world Y-axis, but turns to face
+   *     the Camera."*
+   *   · Mesh *"The particle is rendered from a 3D Mesh instead of a Texture."*
+   *   · None *"useful when using the Trails module, if you want to only render the trails"*
+   *   · Pivot（ScriptReference 逐字）*"The units are expressed as a multiplier of the
+   *     particle sizes, relative to their diameters. For example, a value of 0.5 adjusts
+   *     the pivot by the particle radius, allowing particles to rotate around their edges."*
+   *   · Sorting Fudge *"Bias of particle system sort ordering. Lower values increase the
+   *     relative chance that particle systems are drawn over other transparent GameObjects…
+   *     **This setting only affects where an entire system appears in the scene** — it does
+   *     not perform sorting on individual particles within a system."*
+   *
+   * ★★ 三种"平面朝向"的**世界基向量**不是猜的，而是 Cocos `particle-common.chunk`
+   *    逐行可对照（与本项目 P2 查 galacean 同一套办法）：
+   *      · Billboard ：基 = 相机 right / up
+   *      · Horizontal：基 = 世界 (1,0,0) 与 (0,0,−1) ⇒ 法线沿 **世界 ±Y**，即水平面 ✓
+   *      · Vertical  ：基 = 相机 right 的**水平分量** 与 世界 (0,1,0) ⇒ 竖直且绕 Y 转向相机 ✓
+   *
+   * ★★ 本引擎是 **2D 分层渲染 + 正视相机**（相机在 `(cameraX, camY, 0)` 看向 −Z、
+   *    无俯角、无偏航）⇒ 后两档在该管线下会**几何退化**，逐条标注在下面的字段上
+   *    （用户 2026-10-17 拍板"全量忠实实现"）—— 这是投影的必然结果，不是实现取巧。
+   *
+   * ⚠️ 整个字段**缺省不声明** ⇒ 与 P3 之前逐位一致（Billboard + 绕中心枢轴 + 不动 z）。
+   */
+  renderer?: {
+    /** 0 Billboard / 1 Stretched / 2 Horizontal / 3 Vertical / 4 Mesh / 5 None。缺省 0 */
+    renderMode?: number;
+    /**
+     * 0 View / 1 World / 2 Local / 3 Facing / 4 Velocity。缺省 0。
+     *
+     * ★ 前四档在本引擎相机（无 roll / 无俯角 / 无偏航）下**投影等价**：四者都落到
+     *   "屏幕对齐"，而节点自身的旋角早已由 `nodeRotZ` 折进 `p.localRot`。
+     * ★ `4` Velocity 是唯一有实感的档：粒子基准朝向 = 该粒子**速度方向**的屏幕角。
+     */
+    alignment?: number;
+    /** 旋转枢轴：**粒子直径的倍数**；偏移 = `pivot × 当前帧尺寸`。缺省 `[0,0,0]` = 绕中心 */
+    pivot?: [number, number, number];
+    /** Stretched：沿速度方向的**长度** = `|v|·velocityScale + lengthScale·size`（见 §4.13） */
+    velocityScale?: number;
+    lengthScale?: number;
+    /** 屏幕尺寸钳制，**视口高的比例**（手册原文：该两项仅 Billboard 档生效）。缺省不钳制 */
+    minParticleSize?: number;
+    maxParticleSize?: number;
+    /** 逐粒子按概率镜像：`fx` ⇒ 该比例的粒子 UV-u 反转。缺省 `[0,0,0]` */
+    flip?: [number, number, number];
+    /** 是否允许粒子绕**相机 Z** 自转（= 本引擎的屏幕自转角）。缺省 `true` */
+    allowRoll?: boolean;
+    /**
+     * 排序偏差（**整个系统**的次序，不参与系统内逐粒子排序）。
+     * ★ 换算必须显式给出：Unity 如何把无量纲的 fudge 折进排序距离**未公开**，
+     *   而本引擎的透明排序完全由 `mesh.position.z` 决定 ⇒ 缺省 `fudgeToZ: 0`
+     *   （**不生效**，现有产物的 z 序逐位不变）。
+     */
+    sortingFudge?: number;
+    /** `1` 单位 fudge 折成多少**世界单位 z**（正 = 更靠近相机）。缺省 `0` = 关闭 */
+    fudgeToZ?: number;
+    /**
+     * Mesh 档的顶点集。缺省（或索引为空）⇒ **回退 quad**。
+     * 坐标口径 = **原样、不归一化**：顶点直接乘**当前帧尺寸**，与 Cocos
+     * `compScale = scale * size` 同式。本工程 `FX_Model_ZC_Plane13` extent ≈ 3.96×1.76
+     * （远超"直径 1"）、`FX_Model_ZC_Ring03` ≈ 0.46（≈直径 1）⇒ 两者尺度本来就由美术
+     * 按各自需要定，**不能擅自归一化**。`scale` 是留给数据层的调节旋钮（缺省 1）。
+     */
+    mesh?: {
+      positions: number[];
+      uv0: number[];
+      indices: number[];
+      name?: string;
+      scale?: number;
+    };
+  };
   sizeModule: { enabled: boolean; curve: ParticleMinMax };
   /** 有效 alpha 随寿命的曲线（已按 Unity 语义折算过；见 alphaSource） */
   colorModule: {

@@ -173,7 +173,8 @@
   + ConeVolume 轴向几何修正），**当晚三站观感验收通过**，见 §2.7。
 - ✅ **P2 按速度与力**：2026-10-16 完成（Velocity z/orbital/radial/offset/space、Force、
   ColorBySpeed、SizeBySpeed、RotationBySpeed、InheritVelocity），见 §2.8。
-- ⬜ **P3** 渲染侧（renderMode 5 种、alignment/pivot/sortingFudge）
+- ✅ **P3 渲染侧**：2026-10-17 完成（renderMode 5 种 + None、alignment 五档、pivot、
+  sortingFudge、flip、allowRoll、min·maxParticleSize、Mesh 顶点集），见 §2.9。
 - ⬜ **P4** UV / Noise 细节（rowMode、noise sizeAmount/scrollSpeed/octaves）
 - ⬜ **P5** SubEmitters（需先定 config 结构）
 
@@ -377,3 +378,74 @@ S8 用 `_work_星语心恋/19_部署step2到WE.py`）时会把 P1 一并带上�
 
 与 P0 / P1 同：本次只落源码 + 回归 + 文档。下次部署会把 P0 / P1 / P2 **一并带上**，
 届时按惯例在 WE 里重载并复核（三个产物理论上零变化）。
+
+---
+
+### 2.9 ✅ P3「补渲染侧」已落地（2026-10-17）
+
+> 报告：`_work_渲染侧/REPORT_P3渲染侧_2026-10-17.md`（含三个产物 39 个节点的 renderer 全量取值、
+> 全盘 mesh 定位、落地前后的实测对照）。
+> 依据：`docx/RESEARCH_粒子系统复刻参考.md` **§4.12 / §4.13**（Unity 手册逐字 + Cocos 着色器逐行）。
+> 回归：`_regress/73_回归_渲染侧.ts`（**34 断言** × 4 份 config 全绿）。
+
+#### 落地了什么
+
+| 项 | 实现要点 | 依据 |
+|---|---|---|
+| `renderMode = 0` | Billboard ⇒ 轴对齐（**现状**） | §4.12 |
+| `renderMode = 1` | Stretched ⇒ **长轴沿速度**（*"aligned to their velocity regardless of Velocity Scale"*）；长度 = `\|v\|·velocityScale + lengthScale·size` | §4.13（Cocos 逐行） |
+| `renderMode = 2` | Horizontal ⇒ 平面 ⊥ 视线 ⇒ 本工程**投影面积为 0**（不可见） | §4.12a |
+| `renderMode = 3` | Vertical ⇒ 竖直绕 Y 转向相机 ⇒ 本工程 **≡ Billboard** | §4.12a |
+| `renderMode = 4` | Mesh ⇒ 顶点 **× 粒子直径**（**不归一化**，与 Cocos `compScale = scale × size` 同式）；缺 mesh / 索引越界 ⇒ **静默回退 quad** | §4.12 |
+| `renderMode = 5` | None ⇒ 不生成默认四边形（只留 trails），粒子仍在模拟 | §4.12 |
+| `alignment` 0/1/2/3 | View / World / Local / Facing ⇒ 本引擎相机下**投影等价**（都落屏幕对齐） | §4.12 |
+| `alignment = 4` | Velocity ⇒ 粒子基准朝向 = **速度方向**的屏幕角（唯一有实感的一档） | §4.12 |
+| `pivot` | **直径的倍数**、旋转中心；`pivot = 0` ⇒ 绕中心（= 现状） | §4.12（ScriptReference 逐字） |
+| `sortingFudge` | 只动 `mesh.position.z += −fudge × fudgeToZ`；**必须显式给 `fudgeToZ`**（Unity 内部换算未公开） | §4.12 |
+| `flip` | 逐粒子按 `p.vmix` 判定（**不额外消耗 rng**），UV 在**条目自己的包围盒**内镜像 | 手册 *"Mirror a proportion of the particles…"* |
+| `allowRoll` | `false` ⇒ 屏幕自转整体作废（含 `startRotation`） | 手册 *"…rotate around the Z-axis of the camera"* |
+| `min/maxParticleSize` | 视口高比例、**仅 Billboard 档**（手册逐字）；缺省不声明 ⇒ 关闭 | §4.12 |
+
+★ **实现口径**：顶点统一写成 `中心 + 枢轴偏移 + R(ang)·(sgnA·uAx·sizeX + sgnB·uAy·sizeY − 枢轴偏移)`，
+其中 `uAx/uAy` 是「单位尺寸下的半轴」= 该档**世界基向量**在屏幕平面上的投影（`renderModeAxes()`）。
+`pivot = 0` 且基 = 屏幕轴 ⇒ **逐位退化成 P3 之前**（第 [1] 组钉住）。
+
+#### ★★ 对本工程的三个产物：**先做了全量实测**（`_work_渲染侧/01_三产物渲染模块取值.py`，39 个节点）
+
+| 产物 | renderMode | alignment | pivot | flip |
+|---|---|---|---|---|
+| S9 背景（11） | **1 个 Mesh（`yun`）** + 10 个 Billboard | 4 个 Local + 7 个 View | 全 `[0,0,0]` | `niao` / `yun` = `[1,0,0]` |
+| S9 动作特效 / S8（5） | 全 Billboard | 全 Local | 全 `[0,0,0]` | 全 0 |
+| S6 背景（14） | 全 Billboard | 全 View | `hua01` / `hua02` = `[0,0.5,0]`；`bao` = `[0.02,0.01,0]` | 全 0 |
+| S6 动作特效（9） | 全 Billboard | 全 Local | 全 `[0,0,0]` | 全 0 |
+
+`sortingFudge` 39 个**全部非零**（−1 ~ −10）；`allowRoll` 全 true；`velocityScale` 全 0；
+`maxParticleSize` ∈ {0.5, 10, 999, 9999}；`lengthScale` ∈ {−2, 1.2, 2}。
+
+#### 数据层：**只对 S9 下发**（用户选定范围 = "导出 yun 的 mesh 并下发"）
+
+* `10_wallpaper_engine/_构建_配置生成.py` 新增两张表 `PARTICLE_RENDERER` / `PARTICLE_MESH`（单一真源）
+  ＋ 在 `out.append(rec)` 前下发 `rec['renderer']`。
+* `10_wallpaper_engine/_补P3渲染侧.py`：把 `renderer` 段补进**现有** config（可重放）。
+  ★ **为什么不整跑生成链**：那份脚本早就领先于现有 config —— P0/P1/P2 的数据层改动
+  （`shape.radiusThickness`、`uv.frameOverTime`、`fitAspect`）**从未下发过**，整跑会顺带改动它们。
+  已实测确认：本脚本对 config 的 diff **只有 `renderer` 一个字段**（8 条）。
+* ★★ **`yun` 的 mesh = `FX_Model_ZC_Plane13`**（16 顶点 / 18 三角形，`14_effect/battle/_batch10.ab`）。
+  extent ≈ **3.96 × 1.76**（**未归一化**）⇒ 换成 Mesh 档后云的宽度从 **487 → 3857 世界单位**
+  （屏幕可见宽 ≈ 3759）⇒ 正好"铺满屏幕宽"，与实拍观感吻合。
+  落地前后的对照截图见报告（旧 = 头顶一条细白线，新 = 有形状铺开的云层）。
+* ⚠️ **S8 / S6 的 renderer 字段未下发**（留档在 `01_渲染模块取值.json`）。理由：S8 全部字段都是
+  "零变化"档（alignment = Local、pivot = 0、flip = 0）；S6 只有 `hua01`/`hua02` 的 `pivot = [0,0.5]`
+  会真的改观感 —— 那属于**单独的修正**，应由用户实测后单独下发（映射表见报告附录）。
+
+#### ⬜ 未做 / 存疑（如实标注）
+
+1. `cameraVelocityScale`（按相机移动拉伸）**未实现**：本引擎没有"相机速度"这个量（§4.13）。
+2. `normalDirection` **未实现**：只影响光照法线，本引擎粒子无光照。
+3. `sortMode`（系统**内**逐粒子排序）**未实现**：手册明确它与 `sortingFudge` 是两件事，前者影响
+   系统内部的绘制顺序 —— 本引擎按发射顺序画、未做距离排序。
+4. `freeformStretching` / `rotateWithStretchDirection` **未实现**：实测 39 个全是 `false`/`true`（默认）。
+5. `Stretched` 下是否该叠 `rotationOverLifetime`：照 Cocos 取"不叠"，Unity 内部未公开（§4.13 存疑 1）。
+6. `Length Scale` 的基准是 `width` 还是 `sizeY`：取 `sizeY`（与 Cocos 同源），§4.13 存疑 2。
+7. **仍未部署 WE、未发布**：本次落源码 + 回归 + 文档 + **S9 的 config 下发**；
+   下次部署会把 P0 / P1 / P2 / P3 **一并带上**。

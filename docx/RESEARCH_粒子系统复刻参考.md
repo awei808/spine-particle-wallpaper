@@ -73,7 +73,7 @@ CustomData / Renderer（+ Burst、顶层 ParticleSystem）。
 | **Trail** | ⚠️ 仅丝带（textureMode=Stretch），无宽/色 over trail 之外的模式 | ✅ 字段齐 | ✅ `ParticleTrailMode` | ❌ |
 | **UV / Texture Sheet Animation** | ⚠️ tiles/cycles/animationType/frameOverTime/drift/wrap（缺 rowMode/randomRow/speedRange/flipU,V/timeMode/fps/uvChannelMask） | ✅ | ✅ `texture-animation.ts` | ✅ |
 | CustomData | ⚠️ 仅 1 条曲线 + `_offon`（S9 扫光用） | ❌ | ❌ | ❌ |
-| **Renderer** | ⚠️ 只 billboard quad + `normal/add` 混合 + alphe（**无 renderMode 5 种 / alignment / pivot / sortingFudge / sortMode / mesh / soft particle**） | ✅ 字段齐 | ✅ 5 模式 + alignSpace + CPU/GPU | ⚠️ |
+| **Renderer** | ✅ **P3 已补齐**（renderMode 5 种 + None / alignment 五档 / pivot / sortingFudge / flip / allowRoll / min·maxParticleSize / Mesh 顶点集）；⚠️ **本引擎是 2D 分层渲染 + 正视相机** ⇒ Horizontal / Vertical 会几何退化、View·World·Local·Facing 投影等价（见 §4.12）；⚠️ 仍缺 normalDirection（无光照）/ sortMode（系统内排序）/ soft particle / freeformStretching | ⚠️ 只有数据接口壳（字段齐、**无实现**，见 §4.12 末注） | ✅ 5 模式 + alignSpace + CPU/GPU | ⚠️ |
 | MinMaxCurve / MinMaxGradient 取值口径 | ✅（mode 0/1/2/3 + 端点外推 + 逐粒子抽签，见 `MEMORY_粒子口径.md`） | ✅ | ✅ | ⚠️ |
 
 ---
@@ -300,6 +300,100 @@ feng3d `ParticleInheritVelocityModule.ts` 有同一个守卫
 
 ---
 
+
+### 4.12 ★★ P3 依据：`Renderer` 模块（官方逐字 + Cocos 逐行）
+
+**Render Mode**（Unity 手册 Renderer module，英文 2019.1 / 中文 2018.4 两版一致）：
+
+| 档 | 官方逐字 | 本引擎 2D 管线下 |
+|---|---|---|
+| `0 Billboard` | *"The particle always faces the Camera."* | 现状（轴对齐 quad） |
+| `1 Stretched Billboard` | *"faces the Camera but with various scaling applied"*；★ 2021.2+ 手册硬补充：*"particles are aligned to face the Camera **and also aligned to their velocity**. This alignment occurs **regardless of the Velocity Scale value** — even if Velocity Scale is set to 0, particles in this mode still align to the velocity."* | **长轴沿速度**（见 §4.13） |
+| `2 Horizontal Billboard` | *"The particle plane is parallel to the XZ 'floor' plane."* | **投影面积为 0**（§4.12a） |
+| `3 Vertical Billboard` | *"The particle is upright on the world Y-axis, but turns to face the Camera."* | **≡ Billboard**（§4.12a） |
+| `4 Mesh` | *"rendered from a 3D Mesh instead of a Texture."* | 顶点 × 粒子直径（**不归一化**） |
+| `5 None` | *"can be useful when using the Trails module, if you want to only render the trails and hide the default rendering."* | 不生成四边形，仍是模拟 |
+
+**Render Alignment**：View *"Particles face the Camera plane."* / World *"aligned with the world axes."* /
+Local *"aligned to the Transform component of their GameObject."* / Facing *"face the direct position of
+the Camera GameObject."* / Velocity（新版本）*"Particles face in the direction of their velocity."*
+
+**Pivot**（ScriptReference 逐字）：*"Modify the pivot point used for rotating particles. The units are
+expressed as a **multiplier of the particle sizes, relative to their diameters**. For example, a value of
+0.5 adjusts the pivot by the particle radius, allowing particles to rotate around their edges."*
+⇒ **偏移 = `pivot × 粒子直径`**，且它是**旋转中心**（`pivot = 0` ⇒ 绕中心）。
+⚠️ 解包实测 `m_Pivot` 36/39 是 `[0,0,0]`、S6 `hua01`/`hua02` 是 `[0, 0.5, 0]`、`bao` 是
+`[0.02, 0.01, 0]` —— 正好对上"0 = 默认绕中心"（若 Unity 存的是绝对 pivot，默认就该是 0.5）。
+
+**Sorting Fudge**：*"Bias of particle system sort ordering. Lower values increase the relative chance
+that particle systems are drawn over other transparent GameObjects, including other particle systems.
+**This setting only affects where an entire system appears in the scene — it does not perform sorting on
+individual particles within a system.**"* ⇒ 本引擎里一个系统 = 一个 `THREE.Mesh`、排序由它的 `z` 定，
+所以映射为 `mesh.position.z += −sortingFudge × fudgeToZ`。
+★ 为什么必须显式给 `fudgeToZ`：Unity 把无量纲 fudge 折进排序距离的**具体公式未公开** ⇒ 缺省 `0` = 不生效。
+
+`Min/Max Particle Size`：*"expressed as a fraction of viewport size. Note that this setting is only
+applied when the Rendering Mode is set to Billboard."* ⇒ 视口高比例、**仅 Billboard 档**。
+
+#### 4.12a ★★ 三种 billboard 的**世界基向量**（Cocos 逐行可对照）
+
+`cocos/cocos-engine` v3.8.0 `editor/assets/chunks/builtin/internal/particle-common.chunk`
+的 `computeVertPos()`：
+
+```glsl
+// Billboard：基 = 相机 right / up
+vec3 camX = normalize(vec3(viewInv[0][0], viewInv[1][0], viewInv[2][0]));
+vec3 camY = normalize(vec3(viewInv[0][1], viewInv[1][1], viewInv[2][1]));
+// Horizontal：基 = 世界 (1,0,0) 与 (0,0,-1)   ⇒ 平面 = XZ 面（水平）✓
+vec3 camX = vec3(1, 0, 0);
+vec3 camY = vec3(0, 0, -1);
+// Vertical：基 = 相机 right（水平分量）与 世界 (0,1,0)  ⇒ 竖直、绕 Y 转向相机 ✓
+vec3 camX = normalize(vec3(cc_matView[0][0], cc_matView[1][0], cc_matView[2][0]));
+vec3 camY = vec3(0, 1, 0);
+```
+
+**由此可直接推出本工程（相机 `position = (cameraX, camY, 0)`、看向 −Z、无俯角无偏航）的结果**：
+
+* **Horizontal**：quad 的两条边分别沿世界 `X` 与 `Z`。视线沿 `−Z` ⇒ `Z` 方向那条边的**屏幕投影长度为 0**
+  ⇒ 屏幕上是"宽度 = `sizeX`、高度 = **0**"的退化线段 ⇒ **不可见**（与 Unity 里"视线与平面共面"完全一致）。
+* **Vertical**：两条边沿"相机 right 的水平分量"与"世界 `Y`"。本工程相机 right 本就水平 ⇒
+  两条边的屏幕投影就是 `(1,0)` 与 `(0,1)` ⇒ **与 Billboard 逐位相同**。
+  （Cocos 也把这两档写在同一个 `#if` 分支里。）
+* 引擎实现用的是**统一的"单位半轴 × 投影"框架**（`renderModeAxes()`）：顶点 =
+  `sgnA·uAx·sizeX + sgnB·uAy·sizeY`，其中 `uAx/uAy` 是两条世界基向量在**屏幕平面**（相机 right / up）上的投影。
+  `pivot = 0` 且基 = 屏幕轴时，逐位退化成 P3 之前的实现。
+* ⚠️ 相机基向量对整个系统取一次（本引擎无逐粒子 3D 位置），透视发散误差量级 ≈ `粒子半径 / 相机距离`
+  （本工程 < 0.1%），已接受并记录。
+
+> 📌 顺带记录：**feng3d 的 `ParticleSystemRenderer.ts` 是一具"纯数据壳"** ——
+> `renderMode` / `alignment` / `pivot` / `sortingFudge` / `mesh` 字段都在，但注释明写
+> *"这些字段目前没有引擎侧消费方（是 Unity API 的镜像壳）"* ⇒ **不能当实现参考**，
+> 真正的几何只能看 Unity 手册 + Cocos 的着色器。
+
+### 4.13 ★ P3 依据：Stretched 的**拉伸长度**（Cocos 逐行；⚠️ Unity 内部未公开）
+
+`particle-common.chunk` 的 STRETCHED 分支：
+
+```glsl
+vec3 camRight = normalize(cross(pos.xyz - eye, velocity.xyz)) * s.x;
+vec3 camUp    = velocity.xyz * velocityScale + normalize(velocity.xyz) * lengthScale * s.y;
+```
+
+⇒ **宽度 = `sizeX`**（垂直于速度）、**沿速度方向的长度 = `|v|·velocityScale + lengthScale·sizeY`**。
+与手册两条描述逐字吻合：*"Stretches particles proportionally to their speed"*（速度项）＋
+*"…proportionally to their current size along the direction of their velocity"*（尺寸项）；
+手册另有一句 *"Setting this to 0 makes the particles disappear, having effectively 0 length."*
+⇒ `lengthScale = 0` 且速度为 0 时长度确实是 0（**不**兜底成 size）。
+
+⚠️ **存疑项**（如实标注）：
+1. Cocos 在 STRETCHED 下把自转角 `rotEuler` 钉成 `vec3(0)`（不叠 `rotationOverLifetime`），
+   本引擎**照此**实现；Unity 是否也如此**未知**（内部不公开）。当前无系统用该档 ⇒ 无差异。
+2. 手册的 `Length Scale` 措辞是"*compared to its width*"（2020.2 俄文版 ScriptReference 更明确：
+   *"the length of the particle compared to its width"*）⇒ 长度可能是 `width × lengthScale` 而非
+   `sizeY × lengthScale`。本引擎取 `s.y`（与 Cocos 逐字同源），差异仅在同轴尺寸不等时出现。
+3. `cameraVelocityScale`（按相机移动拉伸）**未实现**：本引擎相机位移由适配模块驱动、逐帧几乎恒定，
+   且没有"相机速度"这个量。
+
 ## 5. 可直接读的关键文件（取文件命令已备）
 
 ```bash
@@ -370,8 +464,9 @@ gh api repos/Unity-Technologies/UnityCsReference/contents/Modules/ParticleSystem
 3. **P2 补"按速度"与力** ✅ **2026-10-16 已完成**：Velocity 的 z/orbital/radial（+ offset/space）、
    Force、ColorBySpeed、SizeBySpeed、RotationBySpeed、InheritVelocity。
    依据见本节 §4.7~§4.11；落地与验证见 `docx/TODO.md` §2.8 与 `_regress/72_回归_按速度与力.ts`（33 断言）。
-4. **P3 补渲染侧**：renderMode 5 种（Billboard/Stretched/Horizontal/Vertical/Mesh）、
-   alignment/pivot/sortingFudge（Cocos 的 `billboard` 与 renderer 目录可对照）。
+4. **P3 补渲染侧** ✅ **2026-10-17 已完成**：renderMode 5 种（+ None）、alignment 五档、
+   pivot、sortingFudge、flip、allowRoll、min·maxParticleSize、Mesh 顶点集。
+   依据见本节 §4.12 / §4.13；落地与验证见 `docx/TODO.md` §2.9 与 `_regress/73_回归_渲染侧.ts`（34 断言）。
 5. **P4 补 UV/Noise 细节**：rowMode/randomRow/speedRange/flip、noise 的 sizeAmount/scrollSpeed/octaves。
 6. **P5（可选）SubEmitters**：需先定 config 结构。
 7. **明确不复刻**：Collision / Trigger / Lights / ExternalForces / LifetimeByEmitterSpeed（留档说明）。
