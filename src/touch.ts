@@ -30,6 +30,9 @@
  *   - 热区 = `config.json` 的 `touch.zones`；**暂不做"哪个区播哪个动作"的绑定**，
  *     S9 的 prefab 里只有 1 个无后缀 `SoulSpineHitArea`，解包侧没有绑定信息
  *     （用户 2026-09-17 定：任意区命中 → 随机选一条；2026-09-20 沿用）
+ *     ★ 2026-10-17 补充：热区**可自定义**（增删改都在 config 的 `touch.zones`），
+ *     且**重叠时按裁决出唯一一条**（`enabled → priority → 面积 → 下标`），
+ *     不再"数组里靠前的吃掉点击"。判据与校验都在 `touchZones.ts`。
  *
  * 为什么不用模板自带的 `cursorPress`（读了源码后否掉）：
  *   1. `SpineAnimator.ts` 里是 `setAnimation(TRACK_NUM, name, [loop]=true)`
@@ -102,6 +105,14 @@ import {
   TouchZoneConfig,
 } from './config.type';
 import { pickRandomFromPool } from './dialogue';
+import { hitTestZonesDetailed, TouchZone, ZoneHit } from './touchZones';
+
+/**
+ * ⚠️ `TouchZone` 的**权威定义已迁到 `touchZones.ts`**（2026-10-17：热区有了自己的
+ * 数据层）。这里 re-export 是为了不动既有 import（`probe.ts` / `touchZoneOverlay.ts`
+ * 都从本文件拿）。两处指向同一个类型，不存在定义漂移。
+ */
+export type { TouchZone, ZoneHit };
 
 /** 触摸动画占用的轨道号。模板的 cursorFollow/cursorPress 占 track 1。 */
 export const TOUCH_TRACK = 2;
@@ -162,15 +173,6 @@ export const TOUCH_MIX_IN = 0.25;
  * track 队列尾上，容量由 spine 自己管。
  */
 export const TOUCH_QUEUE_MAX = 1;
-
-/**
- * 一个触摸热区。几何用**归一化视口坐标**（0~1，原点左上，与 `clientX/clientY` 同向），
- * 这样既与分辨率、窗口比例无关，也能直接喂给 DOM 覆盖层的百分比定位。
- *
- * 定义放在 `config.type.ts`（`TouchZoneConfig`）—— 因为它的**权威来源是 config.json**，
- * 这里只是同一个类型的运行时别名，避免两处定义漂移。
- */
-export type TouchZone = TouchZoneConfig;
 
 /**
  * 热区几何的权威来源 = **`assets/config.json` 的 `touch.zones`**（归一化 0~1，原点左上）。
@@ -334,15 +336,21 @@ export type TouchControllerOptions = {
   /** 骨架里除常驻动画外的全部动画名。仅用于"有没有可播动作"的判据与无字幕时的兜底 */
   touchAnimations: string[];
   /**
-   * 热区；**必须显式传入**（来自 `config.json` 的 `touch.zones`）。
-   * 命中判定按数组顺序**先命中先返回** —— 所以重叠处由靠前的区吃掉点击。
+   * 热区；**必须显式传入**（来自 `config.json` 的 `touch.zones`，且应先过
+   * `normalizeZones` —— 去重、端点反向自动交换、非法项剔除都在那里）。
+   *
+   * ★ 2026-10-17：重叠处不再"靠前的吃掉"，而是按
+   *   `enabled → priority 降序 → 面积升序 → 数组下标` 裁决出唯一一条。
    */
   zones: TouchZone[];
   /**
-   * 每次按下后回调命中的区域 id；**没命中任何区域**时回调 `null`。
-   * 只给调试覆盖层用（显示"这次点到了哪块"），不影响播放逻辑。
+   * 每次按下后回调**命中结果**（赢家 + 全部候选）；**没命中任何区域**时回调 `null`。
+   *
+   * ★ 2026-10-17 由"只给 zoneId"改为给 `ZoneHit`：重叠裁决之后，"点中了但被压住的"
+   *   那些区也是有效信息（覆盖层据此高亮"谁赢了、谁被压住"），只给赢家看不出来。
+   *   只给调试覆盖层 / 探针用，**不影响播放逻辑**。
    */
-  onZoneHit?: (zoneId: string | null) => void;
+  onZoneHit?: (hit: ZoneHit | null) => void;
   /** 随机源，测试时可注入固定值 */
   random?: () => number;
   /**
@@ -413,21 +421,36 @@ export type TouchController = {
     /** 按下位置落在**所有区域之外**的次数 */
     missCount: number;
     lastPick: string;
-    /** 最近一次按下的命中区域 id；没命中则为空串 */
+    /** 最近一次按下的命中区域 id（**裁决出的赢家**）；没命中则为空串 */
     lastHitZone: string;
+    /**
+     * 最近一次按下时**同时命中**的全部区域 id，按裁决顺序排列
+     * （`[0]` = `lastHitZone`；长度 > 1 ⇒ 此处有重叠）。
+     *
+     * ★ 给探针用：排查"点了却不是我想要的反应"时，一眼看出是被谁压住的。
+     */
+    lastHitCandidates: string[];
     /** 当前生效的热区（供覆盖层/测试读取） */
     zones: TouchZone[];
   };
 };
 
 /**
- * 区域命中判定（纯函数，导出以便单测）。
+ * 区域命中判定：**裁决出唯一一条**（纯函数，导出以便单测）。
+ *
+ * 实现已迁到 `touchZones.ts`（2026-10-17）—— 这里保留同名同签名的导出，
+ * 旧的"按数组顺序先命中先返回"只在**多区重叠**这一格被替换成裁决：
+ *
+ *   ① 跳过 `enabled:false` → ② `priority` 降序 → ③ 面积升序 → ④ 数组下标升序
+ *
+ * ⇒ 单区 / 互不重叠的多区**逐字等价**；重叠处现在由**更具体（小）或更高优先级**的区
+ *   吃掉，不再看谁排在数组前面。
  *
  * 坐标口径：`clientX/clientY` 与 `viewW/viewH` 必须是**同一坐标系**。
  * WE 桌面下 `window.innerWidth/innerHeight` = 工程分辨率，与事件坐标一致
- * （实测见 `_探针_实验结论.md`），所以直接相除即是归一化坐标。
+ * （实测见 `_探针_实验结论.md`）。
  *
- * 按数组顺序**先命中先返回**——所以区域内不要重叠，或把优先级高的放前面。
+ * 需要"这次点中了哪几条" ⇒ 用 `hitTestZonesDetailed`（返回赢家 + 候选全集）。
  */
 export const hitTestZones = (
   zones: TouchZone[],
@@ -435,20 +458,8 @@ export const hitTestZones = (
   clientY: number,
   viewW: number,
   viewH: number
-): TouchZone | null => {
-  if (!(viewW > 0) || !(viewH > 0)) {
-    return null;
-  }
-  const u = clientX / viewW;
-  const v = clientY / viewH;
-  for (let i = 0; i < zones.length; i++) {
-    const z = zones[i];
-    if (u >= z.u0 && u <= z.u1 && v >= z.v0 && v <= z.v1) {
-      return z;
-    }
-  }
-  return null;
-};
+): TouchZone | null =>
+  hitTestZonesDetailed(zones, clientX, clientY, viewW, viewH).zone;
 
 /** 无 state / 无动画可播时的空实现（保证调用方不必到处判空） */
 const createNoopController = (
@@ -478,6 +489,7 @@ const createNoopController = (
     missCount: 0,
     lastPick: '',
     lastHitZone: '',
+    lastHitCandidates: [],
     zones,
   }),
 });
@@ -537,6 +549,13 @@ export const createTouchController = (
   let missCount = 0;
   let lastPick = '';
   let lastHitZone = '';
+  /** 最近一次按下的**全部**命中 id（裁决序）；与 `lastHitZone` 同步更新 */
+  let lastHitCandidates: string[] = [];
+  /**
+   * 已经 warn 过"骨架里没有这个动画"的名字 —— 同一条缓存起来，
+   * 免得用户连点十下刷十条一样的日志（与 `index.ts` 的 `warnedEffectNames` 同一口径）。
+   */
+  const warnedMissingAnim: { [name: string]: boolean } = {};
 
   /** 当前 track 2 上的 entry；非空且未被 end/dispose 即视为"忙" */
   let activeEntry: threejsSpine.TrackEntry = null;
@@ -635,6 +654,33 @@ export const createTouchController = (
     entry: DialogueEntry | null
   ): boolean => {
     if (!animationName) {
+      return false;
+    }
+    /**
+     * ★★ **未知动画名 = 直接放弃，不要交给 spine**（2026-10-17）。
+     *
+     * `AnimationState.addAnimation(track, name, …)` 在找不到动画时是
+     * **`throw new Error('Animation not found: …')`**（`AnimationState.ts:601-603`），
+     * 不是静默失败 —— 一次点击会抛穿整个 mousedown 监听器。
+     *
+     * 什么时候会拿到不存在的名字：动作族换名是纯字符串推导
+     * （`greet` + `_marry`），而真正有没有这条 clip 取决于骨架
+     * （挂件骨架没有 `_marry`、个别皮肤的誓约态名不是"原名+后缀"）。
+     * `index.ts` 启动时已把不一致的条目汇总打一条 error；这里是**最后一道闸门**，
+     * 只 warn 一次（同一名字不重复刷屏），返回 `false` ⇒ 上层按"这次没播"处理。
+     */
+    if (
+      state?.data?.skeletonData &&
+      !state.data.skeletonData.findAnimation(animationName)
+    ) {
+      if (!warnedMissingAnim[animationName]) {
+        warnedMissingAnim[animationName] = true;
+        console.warn(
+          '[touch] 骨架 %s 里没有动画 "%s" ⇒ 本次点击不播（核对 config.subtitle.actionPhase / phaseAnimations）',
+          options.skeletonFile,
+          animationName
+        );
+      }
       return false;
     }
     clearActive();
@@ -906,18 +952,19 @@ export const createTouchController = (
 
   const onMouseDown = (event: MouseEvent) => {
     // 先判区域：落在热区之外就什么都不做（也算一次"没命中"，便于统计）
-    const zone = hitTestZones(
+    const hit = hitTestZonesDetailed(
       zones,
       event.clientX,
       event.clientY,
       window.innerWidth,
       window.innerHeight
     );
-    lastHitZone = zone ? zone.id : '';
+    lastHitZone = hit.zone ? hit.zone.id : '';
+    lastHitCandidates = hit.candidates.map((z) => z.id);
     if (onZoneHit) {
-      onZoneHit(zone ? zone.id : null);
+      onZoneHit(hit);
     }
-    if (!zone) {
+    if (!hit.zone) {
       missCount++;
       return;
     }
@@ -961,6 +1008,7 @@ export const createTouchController = (
       missCount,
       lastPick,
       lastHitZone,
+      lastHitCandidates: lastHitCandidates.slice(),
       zones,
     }),
   };

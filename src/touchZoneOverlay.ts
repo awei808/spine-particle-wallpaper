@@ -31,18 +31,38 @@
  * 用 DOM 绝对定位 + 百分比：
  *   - 百分比 → 区域坐标天然与分辨率无关，不必关心视口是 2560x1600 还是别的；
  *   - 设 `pointer-events:none` → 绝不能把点击吃掉，否则热区测量本身就失真。
+ *
+ * ## ★ 2026-10-17：重叠怎么画
+ *
+ * 热区允许重叠（解包侧 11 个皮肤有 2~4 个相交的区），且**重叠处由裁决决定归属**
+ * （`enabled → priority 降序 → 面积升序 → 下标`，见 `touchZones.ts`）。本覆盖层据此：
+ *
+ *   - **绘制顺序按面积降序**（大的先画、小的后画）⇒ 小框永远压在大框之上，看得见；
+ *   - `highlight` 收**赢家 + 候选全集** ⇒ 赢家实心加粗、**被压住的候选**用点线中等浓度，
+ *     其余维持淡虚线 —— "点了却没反应"时能直接看出是被谁吃掉的；
+ *   - 标签上标出 `p:<priority>` 与「关」（`enabled:false`）。
  */
 
-import { TouchZone } from './touch';
+import { isZoneEnabled, TouchZone, zoneArea } from './touchZones';
 
 /** 各区配色（按数组顺序取，超出则循环），仅用于肉眼区分 */
 const PALETTE = ['#22d3ee', '#f59e0b', '#a78bfa', '#34d399', '#f472b6'];
 
+/** 被停用（`enabled:false`）的区的颜色 —— 一律灰，避免"看着像能点" */
+const DISABLED_COLOR = '#8b95a5';
+
 const OVERLAY_ID = 'spine-touch-zones';
 
 export type TouchZoneOverlay = {
-  /** 高亮命中的区域；传 `null` 取消全部高亮 */
-  highlight: (zoneId: string | null) => void;
+  /**
+   * 高亮命中的区域；传 `null` 取消全部高亮。
+   *
+   * @param zoneId 裁决出的**赢家** id；`null` = 本次点击没命中任何区
+   * @param candidateIds 本次**同时命中**的全部 id（含赢家）。
+   *   长度 > 1 ⇒ 该点落在重叠处，除赢家外的那些会被画成"被压住"的样子。
+   *   ⚠️ 可选参数（旧调用方只传第一个也照样工作）。
+   */
+  highlight: (zoneId: string | null, candidateIds?: string[]) => void;
   dispose: () => void;
 };
 
@@ -68,8 +88,25 @@ export const createTouchZoneOverlay = (
     'user-select:none',
   ].join(';');
 
-  const boxes = zones.map((z, i) => {
-    const color = PALETTE[i % PALETTE.length];
+  /**
+   * ★ 绘制顺序 = **面积降序**（大的先画、小的后画 ⇒ 小框压在大框上面看得见）。
+   *
+   * 为什么不按数组顺序：解包数据里"整屏兜底区"常常排在最前且面积巨大，
+   * 按原顺序画会把后面所有小框整个盖住（底色叠 0x22 也会把边框糊掉）。
+   * 保留原 `zones` 顺序给配色与下标用（`drawOrder` 只是绘制次序）。
+   */
+  const drawOrder = zones
+    .map((z, i) => ({ z, i }))
+    .sort((a, b) => zoneArea(b.z) - zoneArea(a.z) || a.i - b.i);
+
+  /** 与 `zones` 同下标，存每个区画出来的 DOM（没画出来的是 `null`） */
+  const boxByIndex: (HTMLElement | null)[] = new Array(zones.length).fill(null);
+  /** 每个区标签的**基础文本**（高亮时在其后追加状态后缀，避免文本被状态写死） */
+  const tagByIndex: (HTMLElement | null)[] = new Array(zones.length).fill(null);
+
+  drawOrder.forEach(({ z, i }) => {
+    const on = isZoneEnabled(z);
+    const color = on ? PALETTE[i % PALETTE.length] : DISABLED_COLOR;
     /**
      * ★ 只画**视口内可见**的那部分。
      *
@@ -102,7 +139,16 @@ export const createTouchZoneOverlay = (
     const clipped = z.u0 < 0 || z.v0 < 0 || z.u1 > 1 || z.v1 > 1;
     const tag = document.createElement('div');
     tag.textContent =
-      (z.label ?? z.id) + ' (' + z.id + ')' + (clipped ? ' ⤢超出视口' : '');
+      (z.label ?? z.id) +
+      ' (' +
+      z.id +
+      ')' +
+      // ★ 非 0 的优先级才标：全表都是 0 时这行就是噪音
+      (typeof z.priority === 'number' && z.priority !== 0
+        ? ' p:' + z.priority
+        : '') +
+      (on ? '' : ' 关') +
+      (clipped ? ' ⤢超出视口' : '');
     tag.style.cssText = [
       'position:absolute',
       'left:0',
@@ -115,8 +161,9 @@ export const createTouchZoneOverlay = (
     ].join(';');
     box.appendChild(tag);
 
+    boxByIndex[i] = box;
+    tagByIndex[i] = tag;
     container.appendChild(box);
-    return box;
   });
 
   const boot = () => {
@@ -130,17 +177,33 @@ export const createTouchZoneOverlay = (
   boot();
 
   return {
-    highlight: (zoneId: string | null) => {
+    highlight: (zoneId: string | null, candidateIds?: string[]) => {
+      const candidates = candidateIds ?? [];
       zones.forEach((z, i) => {
-        const box = boxes[i];
+        const box = boxByIndex[i];
+        const tag = tagByIndex[i];
         if (!box) {
           return;
         }
-        const color = PALETTE[i % PALETTE.length];
-        const on = !!zoneId && z.id === zoneId;
+        const color = isZoneEnabled(z)
+          ? PALETTE[i % PALETTE.length]
+          : DISABLED_COLOR;
+        const winner = !!zoneId && z.id === zoneId;
+        /** 命中了、但被赢家压住的那几条 */
+        const covered = !winner && candidates.indexOf(z.id) >= 0;
         // 只换边框粗细/线型与底色浓度：命中瞬间肉眼能看出"亮起来的是哪块"
-        box.style.border = on ? '8px solid ' + color : '3px dashed ' + color;
-        box.style.background = color + (on ? '66' : '22');
+        // ★ 点线 + 中等浓度 = "我也被点到了，但让给了赢家"（重叠处的判读关键）
+        box.style.border = winner
+          ? '8px solid ' + color
+          : covered
+          ? '5px dotted ' + color
+          : '3px dashed ' + color;
+        box.style.background = color + (winner ? '66' : covered ? '44' : '22');
+        if (tag) {
+          const base = tag.dataset['base'] || tag.textContent;
+          tag.dataset['base'] = base;
+          tag.textContent = base + (winner ? ' ★赢' : covered ? ' 被压住' : '');
+        }
       });
     },
     dispose: () => {

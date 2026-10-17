@@ -148,6 +148,13 @@ export type ProbeTouchRow = {
   lastPick: string;
   /** 最近一次按下的命中热区 id；没命中为空串 */
   lastHitZone: string;
+  /**
+   * 最近一次按下时**同时命中**的全部热区 id（裁决顺序，`[0]` = `lastHitZone`）。
+   *
+   * ★ 长度 > 1 ⇒ 这个点落在**重叠区**，[0] 是裁决赢家、后面的是被压住的
+   * —— 排查"点了不是我想要的那条反应"时，这一列直接给出答案。
+   */
+  lastHitCandidates: string[];
   /** 当前生效的热区（与判定用的是同一组，供覆盖层/验证脚本读取） */
   zones: TouchZone[];
 };
@@ -372,7 +379,11 @@ const renderHud = () => {
         '] ' +
         (t.zones.map((z) => z.id).join('/') || '(无)') +
         ' | 本次命中 ' +
-        (t.lastHitZone || '(区外)')
+        // ★ 重叠时把候选全集一起显示：只看赢家看不出"它为什么赢"
+        (t.lastHitZone || '(区外)') +
+        (t.lastHitCandidates && t.lastHitCandidates.length > 1
+          ? ' ←[' + t.lastHitCandidates.join(',') + ']'
+          : '')
     );
   } else {
     hud.setLine(HUD_LINE.TOUCH_A, 'TOUCH (未登记)');
