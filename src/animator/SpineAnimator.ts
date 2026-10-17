@@ -84,6 +84,33 @@ export class SpineAnimator {
       (parameters) => {
         parameters.depthTest = true;
         parameters.depthWrite = false;
+        /**
+         * ★★★ 必须置 true，否则叠层顺序会被 three.js 改写（2026-10-17 定案）。
+         *
+         * three r149 `WebGLRenderer.renderObject()` 对
+         * `transparent === true && side === DoubleSide && forceSinglePass === false`
+         * 的材质会**把同一个 mesh 画两遍**（先 `side=BackSide`、再 `side=FrontSide`）。
+         *
+         * 而整个骨架被 `MeshBatcher` 合批进**同一个 geometry**，spine 的
+         * 「按 drawOrder 叠层」语义完全依赖索引顺序 ⇒ 两遍拆分把它换成
+         * 「**按三角形绕序分类**」：某槽位内**绕序与多数派相反**的少数派三角形
+         * 会被排到另一遍，等于画到了本该压住它的上层之上。
+         *
+         * 实测后果（S8「星语心恋」`touch1`）：`R_arm2`（右前臂）12 颗三角形里
+         * 有 1 颗屏幕有向面积为负（手臂旋转到某角度时过零翻转），它恰好压在
+         * `L_arm2_2` 的轮廓边界上、采到 `R_arm2` 图集的暗带纹素 ⇒ 前臂闪出
+         * 一道 4px×15px 深色细条（伸/收臂各一次）。置 true 后细缝逐像素消失，
+         * 且全场景其余部分逐像素不变（无回归）。
+         *
+         * 依据：three r149 `Material.forceSinglePass` 默认 false（`Material.js:67`）；
+         * customizer 收到的就是 `ShaderMaterialParameters`，会被 `super(parameters)` 消费
+         * ⇒ 纯调用层改动，无需改 `threejs-spine-3.8-runtime-es6`。
+         *
+         * ⚠️ 不要改成 `side: FrontSide` 来绕过 —— 那会剔掉反绕序三角形，直接丢图元。
+         *
+         * 追查报告：`_work_星语心恋/_追查/REPORT_touch1肱二头肌深色三角.md` §9。
+         */
+        parameters.forceSinglePass = true;
       }
     );
 
