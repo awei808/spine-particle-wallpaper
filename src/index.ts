@@ -39,6 +39,7 @@ import {
 } from './probe';
 import { createTouchController, TouchController } from './touch';
 import { createTouchZoneOverlay, TouchZoneOverlay } from './touchZoneOverlay';
+import { normalizeZones } from './touchZones';
 import { PointerTrail } from './pointerTrail';
 import {
   TouchZoneConfig,
@@ -53,15 +54,20 @@ import {
 import {
   buildFamilyRegistry,
   buildPool,
+  isEntryVisibleInPhase,
   mergeKindPools,
   normalizeGreetIds,
   pickGreetingEntry,
   pickRandomFromPool,
+  projectDialoguesToActionPhase,
+  resolveActionPhase,
+  resolveAnimationName,
   resolveChatIds,
   resolveDialoguePhase,
+  resolvePhases,
   resolveGreetSource,
+  resolveIdleAnimation,
   resolveTriggerKinds,
-  resolveTriggerPhases,
   resolveTouchIds,
 } from './dialogue';
 import { createVoiceBubble, VoiceBubble } from './voiceBubble';
@@ -298,7 +304,9 @@ const main = async () => {
    * 详见 `config.type.ts` 的 `limitEdge`。缺省（`'height'`）与老工程都不受影响。
    */
   if (configs.fitAspect === 'width' && configs.meshes) {
-    const kept = configs.meshes.filter((m) => !('limitEdge' in m && m.limitEdge));
+    const kept = configs.meshes.filter(
+      (m) => !('limitEdge' in m && m.limitEdge)
+    );
     if (kept.length !== configs.meshes.length) {
       console.info(
         '[fit] 按宽基准：已剔除 %d 个黑遮幅层（limitEdge）',
@@ -401,9 +409,33 @@ const main = async () => {
     u1: 1,
     v1: 1,
   };
+  /**
+   * ★★ 热区**先归一再装配**（2026-10-17）。
+   *
+   * `normalizeZones` 做四件事：剔除非法项（id 空 / 重复 / 几何不是数）、
+   * 端点反向**自动交换**（解包坐标系 y 轴向上、视口向下，换算漏翻转时救一次）、
+   * `priority` 归一（非有限数按 0）、产出校验告警。
+   *
+   * 为什么必须在装配期做一次而不是只靠作者自觉：热区现在是**可以自定义的**
+   * （`touch.zones` 是唯一落点），而自定义最容易犯的就是 id 撞车与坐标写反；
+   * 这类错误在旧口径下表现为"点了没反应 / 反应错区"，没有任何报错。
+   *
+   * ⚠️ `fullscreen` 打开 ⇒ **整张表被忽略**，只剩一块全屏区（与改动前一致），
+   *    所以那条分支不过归一（只有一个常量区，没有可错的地方）。
+   */
+  const normalizedZones = normalizeZones(touchCfg?.zones);
   const touchZones: TouchZoneConfig[] = touchFullscreen
     ? [FULLSCREEN_ZONE]
-    : touchCfg?.zones ?? [];
+    : normalizedZones.zones;
+  normalizedZones.issues.forEach((issue) => {
+    const tag = issue.level === 'error' ? 'error' : 'warn';
+    console[tag](
+      '[touch.zones] %s [%s] %s',
+      issue.id,
+      issue.code,
+      issue.message
+    );
+  });
   if (touchEnabled && !touchZones.length) {
     console.warn(
       '[touch] config.json 缺少 touch.zones ⇒ 触摸交互已禁用（热区现在只认配置，代码里不再有兜底矩形）'
@@ -574,7 +606,10 @@ const main = async () => {
     Object.keys(actionEffectNames).forEach((k) => delete actionEffectNames[k]);
     (list ?? []).forEach((bind) => {
       if (!bind || !bind.animation || !(bind.particles ?? []).length) {
-        console.warn('[actionEffects] 有一条绑定缺 animation / particles，已忽略:', bind);
+        console.warn(
+          '[actionEffects] 有一条绑定缺 animation / particles，已忽略:',
+          bind
+        );
         return;
       }
       (actionEffectIndex[bind.animation] ??= []).push(bind);
@@ -740,82 +775,126 @@ const main = async () => {
    * ★★ **事件族注册表（2026-10-15 起）** —— 见 `config.type.ts` 的 `EventFamily`。
    *
    * · 注册表本身由 `config.subtitle.eventFamilies` 声明
-   *   （**没声明 ⇒ 内置单族 `normal`** ⇒ 非誓约皮肤看不到「誓约前/誓约后事件」）；
-   * · 触摸通道：用用户在面板「事件池」页选的 `subtitle.touchPhases`
+   *   （**没声明 ⇒ 内置单族 `normal`** ⇒ 非誓约皮肤既看不到「事件族」行、
+   *   也看不到「spine 动作族显示」行）；
+   * · **候选闸门**：用户在面板「事件池」页勾的 `subtitle.phases`
    *   （缺省 = 注册表的缺省勾选 `defaultIds`）；
-   * · 待机 / 回到壁纸：**只用缺省族**（`fallbackId`）—— 非缺省族的内容只由
-   *   「触摸 · 可触发的事件」控制，免得用户没动它、却在别的通道里冒出来。
+   *   ★★ **2026-10-17 起对所有入口生效**（字段此前叫 `touchPhases`、只作用于点击触摸）——
+   *      一项都不勾 ⇒ **所有池为空** ⇒ 任何通道都不触发、档案里没有任何事件行。
+   * · **动作族**（2026-10-17）：`subtitle.actionPhase` 决定播哪一套动画名。
    * · 注册表**为空**（config 写了 `eventFamilies: []` = 本项目无事件族机制）
-   *   ⇒ `*Filter` 全为 `undefined` ⇒ **不按族筛**，所有条目一视同仁。
+   *   ⇒ 不按族筛、不换名，所有条目一视同仁。
    *
-   * ★ 触摸池与另外两个通道的池**分开建**（`TOUCH_KIND_POOLS` vs `KIND_POOLS`），
-   *   这是"两层筛子（先族后类）"里"族"那一层的落点。
+   * ★★ **两层正交的闸门，别再合并**：
+   *   ① **事件族**（`phases`，全局）：用户允不允许这一族 —— 一项都不勾就是"全关"；
+   *   ② **动作族**（`actionPhase`，全局）：决定"播哪套动画"，并把属**别的**动作族的
+   *      条目挡在池外 —— 誓约前池 6 条 / 誓约后池 9 条就靠这一层。
+   *   两者是 **AND**。⚠️ 早先 `chatPool` / `greetPool` 被按**缺省族**预筛过（`autoFilter`）——
+   *      那是把"动作族"错误地实现成了"池筛子"；现在两层分别由 `phaseFilter` /
+   *      `isEntryVisibleInPhase` 表达，互不兼任。
    */
   const fams = buildFamilyRegistry(subtitleCfg?.eventFamilies);
-  const touchPhases = resolveTriggerPhases(subtitleCfg?.touchPhases, fams);
-  const autoPhases: readonly TriggerPhase[] =
-    fams.fallbackId !== null ? [fams.fallbackId] : [];
-  /** 待机 / 回到壁纸的族筛（注册表空 ⇒ `undefined` = 不筛） */
-  const autoFilter: readonly TriggerPhase[] | undefined = fams.families.length
-    ? autoPhases
+  /**
+   * ★★ **全局事件族闸门**（`subtitle.phases`；旧字段 `touchPhases` 仅在新字段缺席时读）。
+   * ⚠️ 注册表为空 ⇒ `undefined`（= 不按族筛）；否则是用户勾选的族列表（`[]` = 全关）。
+   */
+  const phases = resolvePhases(
+    subtitleCfg?.phases,
+    subtitleCfg?.touchPhases,
+    fams
+  );
+  /**
+   * ★ 当前动作族（`subtitle.actionPhase`）。
+   * ⚠️ 面板上单选那一档写的是**空串**（= 不换名）—— 与"没配"是两种输入：
+   *   没配 ⇒ 取 `fams.defaultActionId`（誓约工程 = 婚后）；空串 ⇒ 保持原动画名。
+   */
+  const actionPhase = resolveActionPhase(subtitleCfg?.actionPhase, fams);
+  if (
+    typeof subtitleCfg?.actionPhase === 'string' &&
+    subtitleCfg.actionPhase &&
+    !fams.suffixOf(subtitleCfg.actionPhase)
+  ) {
+    console.warn(
+      '[subtitle] actionPhase="%s" 不是带 matchSuffix 的动作族 ⇒ 按"不换名"处理（可选：%s）',
+      subtitleCfg.actionPhase,
+      fams.actionIds.length ? fams.actionIds.join(' / ') : '(无)'
+    );
+  }
+  /**
+   * 族筛（**全通道共用**；注册表为空 ⇒ `undefined` = 不筛）。
+   * ⚠️ 空数组 `[]` 会原样传下去 ⇒ `buildPool` 收 0 条 ⇒ 所有池为空（用户要的"全关"）。
+   */
+  const phaseFilter: readonly TriggerPhase[] | undefined = fams.families.length
+    ? phases
     : undefined;
-  /** 触摸通道的族筛（同上） */
-  const touchFilter: readonly TriggerPhase[] | undefined = fams.families.length
-    ? touchPhases
-    : undefined;
-  /** 待机 / 回到壁纸用的事件表（已按缺省族筛过）—— 供 `pickChannelEntry` 的单勾 greet 分支用 */
-  const dialoguesAuto: DialogueEntry[] = autoFilter
-    ? dialogues.filter(
-        (d) => autoFilter.indexOf(resolveDialoguePhase(d, fams)) >= 0
-      )
-    : dialogues;
-
-  const chatPool: DialogueEntry[] = buildPool(
+  /**
+   * ★★ **投影到当前动作族**：动画名换成该族那一套（`greet` → `greet_marry`），
+   *   并把条目按 `isEntryVisibleInPhase` 剔掉"本状态不存在"的那些。
+   *
+   * ⇒ 往下所有池、字幕、档案、调试面板**只认这一份数组**，
+   *   不可能出现"点击播 `greet`、档案写 `greet_marry`"这种漂移。
+   */
+  const dialoguesAuto: DialogueEntry[] = projectDialoguesToActionPhase(
     dialogues,
+    fams,
+    actionPhase
+  );
+  /** 本状态下**存在**的条目（= 池的候选总集；自动通道与触摸通道共用） */
+  const activeDialogues: DialogueEntry[] = dialoguesAuto.filter((d) =>
+    isEntryVisibleInPhase(d, fams, actionPhase)
+  );
+
+  /**
+   * ★★ **三个通道共用的一套池**（`TriggerEventKind` → 条目池）。
+   *
+   * 建池的三层判据（顺序即短路顺序，**别调换**）：
+   *   ① `activeDialogues` —— 已投影到当前**动作族**（动画名换好）+ 已剔除本状态
+   *      不存在的条目（`isEntryVisibleInPhase`）；
+   *   ② `phaseFilter` —— **全局事件族闸门**（`subtitle.phases`）。`[]` ⇒ 三个池全空；
+   *   ③ 各池的 id 列表（`chat` / `greet` / `touch`）。
+   *
+   * ⚠️ **不要再拆出"触摸专用池"**（2026-10-17 撤掉）：那是事件族只管点击时的产物。
+   *   现在族筛对**所有入口**生效，三个通道看见的候选必须完全一致 ——
+   *   否则"表里说待机能播、实际抽不出"这类漂移会立刻出现。
+   */
+  const chatPool: DialogueEntry[] = buildPool(
+    activeDialogues,
     resolveChatIds(subtitleCfg?.chat, subtitleCfg?.standby),
-    autoFilter,
+    phaseFilter,
     fams
   );
   /** ★★「问候」池 —— `greet` 池（或旧时段表 `greeting`），只勾 greet类 时按 `greetMode` 取条 */
   const greetPool: DialogueEntry[] = buildPool(
-    dialogues,
+    activeDialogues,
     normalizeGreetIds(greetSource),
-    autoFilter,
+    phaseFilter,
     fams
   );
   /** ★★「触摸」池 —— `subtitle.touch`，与**点击热区**同一份候选 */
   const touchBasePool: DialogueEntry[] = buildPool(
-    dialogues,
+    activeDialogues,
     resolveTouchIds(subtitleCfg?.touch),
-    autoFilter,
+    phaseFilter,
     fams
   );
 
   /**
-   * ★★ **触摸通道专用的三个池** —— 按「触摸可触发的事件族」`touchPhases` 再筛一次
-   * （2026-10-10）。与 `KIND_POOLS` 的唯一差别就是"事件的取值范围"，
-   * 类别（chat/greet/touch）语义完全一致。
+   * ★★ **再按全局事件族闸门筛一遍**的表 —— 只给"绕过池、按 actionId 直接取条"的那条路用。
+   *
+   * 为什么需要：`pickChannelEntry` 在"只勾 `greet` 一类"时走 `pickGreetingEntry`
+   * （它要按**时段**取条，所以必须自己 `findByActionId`，不能只吃并好的池）。
+   * 那条路如果拿 `activeDialogues`，就会把被事件族勾掉的问候也播出来 ——
+   * 恰恰是"事件族对所有事件生效"这件事最容易漏掉的一个洞。
+   *
+   * ★ 判据与 `buildPool` 的 `phases` 参数**完全一致**（都是 `resolveDialoguePhase`），
+   *   不存在第二套口径。
    */
-  const TOUCH_KIND_POOLS: Record<TriggerEventKind, DialogueEntry[]> = {
-    chat: buildPool(
-      dialogues,
-      resolveChatIds(subtitleCfg?.chat, subtitleCfg?.standby),
-      touchFilter,
-      fams
-    ),
-    greet: buildPool(
-      dialogues,
-      normalizeGreetIds(greetSource),
-      touchFilter,
-      fams
-    ),
-    touch: buildPool(
-      dialogues,
-      resolveTouchIds(subtitleCfg?.touch),
-      touchFilter,
-      fams
-    ),
-  };
+  const phasedDialogues: DialogueEntry[] =
+    phaseFilter === undefined
+      ? activeDialogues
+      : activeDialogues.filter(
+          (e) => phaseFilter.indexOf(resolveDialoguePhase(e, fams)) >= 0
+        );
 
   /**
    * 三个通道各自的「可触发的事件」候选池（`TriggerEventKind` → 条目池）。
@@ -862,11 +941,11 @@ const main = async () => {
     subtitleCfg?.touchKinds,
     undefined,
     undefined,
-    // ★ 用**触摸专用池**的长度判可用性：勾了「誓约前事件」这种只有 3 条、或某族为空的
-    //   情况下，类别可用性必须按"筛过之后还剩多少"算（否则会出现"勾了却永远抽不出"的假象）
-    TOUCH_KIND_POOLS.chat.length > 0,
-    TOUCH_KIND_POOLS.greet.length > 0,
-    TOUCH_KIND_POOLS.touch.length > 0
+    // ★ 可用性必须按**筛过之后还剩多少**算（否则会出现"勾了却永远抽不出"的假象）——
+    //   现在三个通道共用同一套池，`phaseFilter` 已经把"一项都不勾 ⇒ 全空"表达掉了
+    chatPool.length > 0,
+    greetPool.length > 0,
+    touchBasePool.length > 0
   );
   const resumeKinds = resolveTriggerKinds(
     'resume',
@@ -888,12 +967,13 @@ const main = async () => {
    *   均匀随机下概率分布完全相同，只有归档面板的列举次序会变。
    * 缺省 `['touch']` ⇒ 与 `greetInTouchPool:false` 等价。
    *
-   * ★ 取的是 `TOUCH_KIND_POOLS`（已按「触摸可触发的事件族」筛过），不是 `KIND_POOLS`
-   *   —— 这就是"先按族筛、再按类并池"的两层顺序（2026-10-10）。
+   * ★ 取的是 `KIND_POOLS`（三个通道**共用**那一套，已按全局事件族闸门 `phases` 筛过）
+   *   —— 这就是"先按族筛、再按类并池"的两层顺序。⚠️ 2026-10-17 起族筛对所有入口生效，
+   *   所以**不再有**"触摸专用池"：三通道看见的候选完全一致。
    */
   const touchPool: DialogueEntry[] = mergeKindPools(
     touchKinds,
-    TOUCH_KIND_POOLS,
+    KIND_POOLS,
     fams
   );
 
@@ -909,8 +989,8 @@ const main = async () => {
    *   因此与改动前**逐字一致**。
    *
    * ★ 本函数**只服务待机 / 回到壁纸两个通道**（触摸通道已由 `touchPool` 预建好）。
-   *   两条路都传 `dialoguesAuto`（已按**缺省族**筛过）—— 非缺省族的孪生不进这两个通道，
-   *   否则 `findByActionId` 会把同一个 id 的孪生也带进来（2026-10-10）。
+   *   两条路都受**两层全局闸门**约束：`KIND_POOLS` 已在建池时按 `phaseFilter` 筛过；
+   *   单勾 greet 那条走 `phasedDialogues`（= 动作族投影 + 存在性 + 事件族闸门）。
    */
   const pickChannelEntry = (
     kinds: readonly TriggerEventKind[]
@@ -920,7 +1000,9 @@ const main = async () => {
     }
     if (kinds.length === 1 && kinds[0] === 'greet') {
       return pickGreetingEntry(
-        dialoguesAuto,
+        // ★ 用**已过族闸门**的那份（见 `phasedDialogues`）—— 否则单勾 greet 的通道
+        //   会绕过事件族，把勾掉的问候也播出来
+        phasedDialogues,
         greetSource,
         subtitleCfg?.greetingRanges ?? {},
         new Date(),
@@ -1295,8 +1377,61 @@ const main = async () => {
              * 没有可播的触摸动画，挂上去只会白白多一个监听器。
              * 判据 = 「除常驻动画外还有别的动画可播」。
              */
-            const idleName = meshConfig.animationName;
-            const touchNames = allAnimations.filter((n) => n !== idleName);
+            const baseIdleName = meshConfig.animationName;
+            /**
+             * ★★ **常驻动画跟着动作族换名**（2026-10-17）—— 游戏 `GotoIdleState` 在
+             *   誓约后用 `idle_marry`，壁纸侧必须一致，否则"誓约后"只换了触摸动作、
+             *   待机仍是婚前的（戒指不戴），一眼看出没复刻。
+             *
+             * ★ 换名规则与念白条目**同一个纯函数**（`resolveAnimationName`）；
+             *   是否真换由骨架动画表决定：挂件骨架（`*_BJ_*`）根本没有 `_marry` 动画
+             *   ⇒ 保持原常驻动画，**不算错**（`resolveIdleAnimation.fallback` 只是"没换"）。
+             */
+            const idleResolved = resolveIdleAnimation(
+              baseIdleName,
+              allAnimations,
+              fams,
+              actionPhase
+            );
+            const idleName = idleResolved.name;
+            if (idleResolved.fallback) {
+              const suffix = fams.suffixOf(actionPhase);
+              const hasAnyVariant =
+                !!suffix && allAnimations.some((n) => n.endsWith(suffix));
+              /**
+               * ★ 两种"没换"要分开报：骨架里**一条该族的动画都没有**（挂件骨架、
+               *   非誓约皮肤）属正常 ⇒ `info`；**有变体却唯独缺常驻那条** ⇒ `warn`
+               *   （config 写错了动画名才会走到这里，必须能在控制台看见）。
+               */
+              const msg =
+                '[subtitle] %s: 动作族 "%s" 的常驻动画应播 "%s"，骨架里没有 ⇒ 保持 "%s"';
+              if (hasAnyVariant) {
+                console.warn(
+                  msg,
+                  skeletonFile,
+                  actionPhase,
+                  resolveAnimationName(baseIdleName, fams, actionPhase),
+                  baseIdleName
+                );
+              } else {
+                console.info(
+                  msg,
+                  skeletonFile,
+                  actionPhase,
+                  idleResolved.want,
+                  baseIdleName
+                );
+              }
+            } else if (idleName !== baseIdleName) {
+              spineAnimator.setIdleAnimation(idleName);
+            }
+            /**
+             * ★ `touchNames` 同时排除**原常驻名**与**换名后的常驻名**：
+             *   否则 `idle_marry` 会被当成"可触摸动作"混进兜底池（池为空时的随机动画名单）。
+             */
+            const touchNames = allAnimations.filter(
+              (n) => n !== idleName && n !== baseIdleName
+            );
             /**
              * 角色骨架判据。
              *
@@ -1328,6 +1463,33 @@ const main = async () => {
               );
 
               /**
+               * ★★ **一次集中核对"投影后的动画名"是否都在骨架里**（2026-10-17）。
+               *
+               * 为什么必须核：`actionPhase` 的换名是**纯字符串**推导（`greet` + 后缀），
+               * 而骨架才是唯一的真相。名字不存在时 `state.addAnimation` 会 **throw**
+               * （`AnimationState.ts:601-603`，整条点击丢失），所以：
+               *   ① 这里把不一致的条目**列出来**（一条 error 汇总，不逐条刷屏）；
+               *   ② `touch.ts` 的 `playAction` 另有一道运行时闸门兜底（返回 false 而非抛）。
+               *
+               * ⚠️ 只报 `activeDialogues`（本状态真正会播的那些）—— 别的动作族的条目
+               *   本来就不该出现在当前骨架的播放路径上。
+               */
+              const missingAnims = activeDialogues.filter(
+                (d) => d.animation && allAnimations.indexOf(d.animation) < 0
+              );
+              if (missingAnims.length) {
+                console.error(
+                  '[subtitle] 动作族 "%s" 下有 %d 条念白的动画在 %s 里不存在（点击会静默失败）: %s',
+                  actionPhase || '(无)',
+                  missingAnims.length,
+                  skeletonFile,
+                  missingAnims
+                    .map((d) => d.actionId + '→' + d.animation)
+                    .join(', ')
+                );
+              }
+
+              /**
                * 常驻动作序列（config 顶层 `idleSequence`）：顶替 idle 占住 track 0。
                *
                * ★ 必须在 `createTouchController` **之前**建：控制器要拿它的
@@ -1342,7 +1504,24 @@ const main = async () => {
                 spineAnimator.getSkeletonMesh(),
                 {
                   availableAnimations: allAnimations,
-                  entries: dialogues,
+                  /**
+                   * ★ 传**投影后**的念白表：序列项若写 `actionId`，播的必须是当前动作族的
+                   *   那条动画名（`chat` vs `chat2_marry`），否则序列会绕过动作族。
+                   */
+                  entries: dialoguesAuto,
+                  /**
+                   * 裸动画名（`"items": ["idle", …]`）也跟动作族走 —— 规则与念白同源
+                   * （`resolveAnimationName`），本模块只负责"收到名字就换"。
+                   */
+                  resolveAnimation: (name) =>
+                    resolveAnimationName(name, fams, actionPhase),
+                  /**
+                   * ★ 事件族是**全局闸门**（2026-10-17）：被勾掉的族的条目不能经由常驻序列
+                   *   漏出来 ⇒ 序列项写 `actionId` 时先问一句"这个 id 现在允许吗"。
+                   *   ⚠️ 判据来自 `phasedDialogues`（同一套闸门），本模块不自己判族。
+                   */
+                  isActionAllowed: (id) =>
+                    phasedDialogues.some((d) => d.actionId === id),
                   onItem: (entry, animation) => showDialogue(entry, animation),
                 }
               );
@@ -1356,7 +1535,7 @@ const main = async () => {
                  * 触摸池：动作与字幕**同源**。
                  *
                  * ★★ 池子由「触摸可触发的事件」（`subtitle.touchKinds`）在**启动期**算好
-                 * （上面那个 `touchPool` = `mergeKindPools(touchKinds, TOUCH_KIND_POOLS)`）——
+                 * （上面那个 `touchPool` = `mergeKindPools(touchKinds, KIND_POOLS)`）——
                  * 勾了多类就是并成一个大池，命中热区时在整个大池里随机取一条
                  * ⇒ 播哪个动作就显示哪句台词，天然配套不会串。
                  *
@@ -1395,9 +1574,14 @@ const main = async () => {
                     touchAnimations: touchNames,
                     zones: touchZones,
                     touchPool,
-                    // 命中哪块就把哪块点亮——桌面上截图即可判读热区位置对不对
-                    onZoneHit: (zoneId) =>
-                      zoneOverlay && zoneOverlay.highlight(zoneId),
+                    // 命中哪块就把哪块点亮——桌面上截图即可判读热区位置对不对；
+                    // ★ 同时把"本次命中的全部候选"传进去 ⇒ 重叠处能看出谁赢、谁被压住
+                    onZoneHit: (hit) =>
+                      zoneOverlay &&
+                      zoneOverlay.highlight(
+                        hit?.zone?.id ?? null,
+                        hit ? hit.candidates.map((z) => z.id) : []
+                      ),
                     // 每播一条念白：刷新待机计时 + 同步字幕（动作与字幕来自同一条）
                     onAction: (payload) => {
                       markActivity();
@@ -1443,9 +1627,7 @@ const main = async () => {
               // ★ 只有轿厢组才传姿态模式；其余传 undefined（不干预）
               cabinGroups.indexOf(meshConfig.name) >= 0 ? cabinMode : undefined,
               // ★ 同理：只有轿厢组才补"图元自带倾角"，其余传 0（保持解包原样）
-              cabinGroups.indexOf(meshConfig.name) >= 0
-                ? cabinSpriteTiltDeg
-                : 0
+              cabinGroups.indexOf(meshConfig.name) >= 0 ? cabinSpriteTiltDeg : 0
             );
             particleAnimators.push(particleAnimator);
             // ★ `config.actionEffects` 按名字找实例 ⇒ 建索引（见 `particleByName` 的说明）
@@ -1538,8 +1720,14 @@ const main = async () => {
           if (!touchController) {
             return false;
           }
+          /**
+           * ★★★ 从 `phasedDialogues` 找（= 动作族投影 + 存在性 + **全局事件族闸门**）
+           *   —— 与真实点击/待机**完全同源**。
+           *   ⚠️ 不能退化成 `activeDialogues`：那样探针会绕过事件族，读数与真实行为不符
+           *   （"表/探针说会播、实际抽不出"），正是本仓库反复强调要避免的那类谎报。
+           */
           const entry =
-            dialogues.find((it) => it.actionId === actionId) ?? null;
+            phasedDialogues.find((it) => it.actionId === actionId) ?? null;
           const src =
             source === 'greet' || source === 'standby' ? source : 'touch';
           return touchController.trigger(entry, src);
@@ -1733,13 +1921,18 @@ const main = async () => {
         /**
          * ★ 事件族注册表（`config.subtitle.eventFamilies`，见 `config.type.ts` 的 `EventFamily`）。
          *
-         * 面板据此建「事件池」页的「事件族（仅点击触摸）」那一行：**注册表为空**（含
-         * 显式 `[]`）⇒ 不建该行 —— 没有事件族的皮肤不该多出一个永远点不动的控件
-         * （与上面「壁纸独立设置」页同一口径）。
+         * 面板据此建「事件池」页的「事件族」（全局闸门）与「spine 动作族显示」两行：
+         * **注册表为空**（含显式 `[]`）⇒ 两行都不建 —— 没有事件族的皮肤不该多出
+         * 永远点不动的控件（与上面「壁纸独立设置」页同一口径）。
          * ⚠️ 传的是**原始 config 的值**，归一（丢非法项 / 去重 / 定缺省族）在面板与
          *   `dialogue.buildFamilyRegistry` 里做。
          */
         eventFamilies: configs.subtitle?.eventFamilies,
+        /**
+         * ★ 「spine 动作族显示」里"不换名"那一档的显示名（`config.subtitle.actionPhaseBaseLabel`）。
+         *   誓约工程写「誓约前」⇒ 单选呈现 `[誓约前 | 誓约后]`；引擎不内置业务词。
+         */
+        actionPhaseBaseLabel: configs.subtitle?.actionPhaseBaseLabel,
         /**
          * ★★ 右上角**整列入口**（折叠按钮 + 5 个入口）是否显示 —— WE 属性 `showCornerButtons`
          * （属性面板**第一项**「显示右上角按钮」）。
@@ -1748,7 +1941,8 @@ const main = async () => {
          *   （只管齿轮）已全链路删除 ⇒ 这里不再传 `visible`。
          * 缺省 `true`（老存档里没这个键 ⇒ 照常显示）。
          */
-        cornerVisible: weShowCornerButtons ?? storedSettings.showCornerButtons !== false,
+        cornerVisible:
+          weShowCornerButtons ?? storedSettings.showCornerButtons !== false,
         /** 入口列的展开/收起状态（覆盖层 `cornerCollapsed`；缺省展开） */
         cornerCollapsed: storedSettings.cornerCollapsed === true,
         /** 运行时静音初值（本轮会话才有效，重载即回到配置值） */
@@ -1857,15 +2051,24 @@ const main = async () => {
           if (!touchController) {
             return false;
           }
+          /**
+           * ★★ 从 `phasedDialogues` 里找（动作族投影 + 存在性 + **全局事件族闸门**）：
+           *   ① 用 `activeDialogues` 会播婚前动画名，看起来像"动作族没生效"；
+           *   ② 不过闸门 ⇒ 点一条被事件族勾掉的条目居然能播，与真实触发不符。
+           *   条目被闸门挡住时返回 false，面板回显 ✗ —— 这正是它该有的诊断信息。
+           */
           const entry =
-            dialogues.find((it) => it.actionId === actionId) ?? null;
+            phasedDialogues.find((it) => it.actionId === actionId) ?? null;
           return touchController.trigger(entry, 'touch');
         },
         /**
-         * 调试面板「触发事件」的候选 = 全部念白。无念白 ⇒ 不传（面板不建该组）。
-         * 只带显示用字段，触发一律交给上面的 `onTriggerEvent`（它才有闸门）。
+         * 调试面板「触发事件」的候选 = 本状态下**存在**的全部念白（`activeDialogues`）。
+         *
+         * ★ 这里**故意不按事件族闸门收窄**：被勾掉的条目也要能看见、能试着点一下，
+         *   否则"为什么这条不触发"就查不到原因。真点下去时由 `onTriggerEvent` 的闸门
+         *   判定（返回 false ⇒ 面板回显 ✗），两者分工明确。
          */
-        events: dialogues.map((d) => ({
+        events: activeDialogues.map((d) => ({
           actionId: d.actionId,
           label: d.label,
           animation: d.animation,

@@ -393,22 +393,47 @@ eq(
   [1, 3, 2]
 );
 
-/* ── G. 缺省勾选口径：注册表空 ⇒ 调用方不应按族筛 ──────── */
+/* ── G. 调用方判据：族筛**全局**、注册表空 ⇒ 不筛 ──────── */
 
-console.log('\nG. 注册表为空时的运行时口径');
+console.log('\nG. 运行时口径（事件族 = 全局闸门）');
 
 ok(
-  'G1 空注册表 ⇒ fallbackId = null ⇒ index/archive 的族筛退化为 undefined（= 不筛）',
+  'G1 空注册表 ⇒ fallbackId = null（本项目无事件族机制）',
   empty.fallbackId === null
 );
+/**
+ * ★★ 2026-10-17 口径变更：事件族从"只作用于点击触摸"改成**全局闸门**。
+ *   调用方的判据因此不再是「只用缺省族」，而是：
+ *     注册表为空 ⇒ `undefined`（不筛）；否则 = 用户勾选的族（`[]` = 全关）。
+ *   本节钉住这条判据，防止有人把旧的 `[fams.fallbackId]` 写回来。
+ */
 eq(
-  'G2 复现调用方判据：fams.families.length ? [fams.fallbackId] : undefined',
+  'G2 调用方判据：注册表空 ⇒ undefined（不筛）；非空 ⇒ 用户勾选（这里缺省勾选）',
   (() => {
     const mk = (f: ReturnType<typeof buildFamilyRegistry>) =>
-      f.families.length ? [f.fallbackId] : undefined;
+      f.families.length ? resolveTriggerPhases(undefined, f) : undefined;
     return [mk(vow), mk(def), mk(empty)];
   })(),
-  [['normal'], ['normal'], null]
+  [['postMarry', 'normal'], ['normal'], null]
+);
+eq(
+  'G3 ★ 显式空数组 ⇒ 空数组（全关），且**不会**退化成 undefined',
+  (() => {
+    const mk = (f: ReturnType<typeof buildFamilyRegistry>) =>
+      f.families.length ? resolveTriggerPhases([], f) : undefined;
+    return [mk(vow), mk(def), mk(empty)];
+  })(),
+  [[], [], null]
+);
+eq(
+  'G4 ★ 全局闸门：空数组传进 buildPool ⇒ 三个池全为空（任何通道都不触发）',
+  (() => {
+    const ids = [63004, 63006, 64005];
+    const chats = buildPool(DIALOGUES, [64011], [], vow);
+    const touches = buildPool(DIALOGUES, ids, [], vow);
+    return [chats.length, touches.length];
+  })(),
+  [0, 0]
 );
 
 /* ── H. 产物：不再含写死的族名 ───────────────────────────── */

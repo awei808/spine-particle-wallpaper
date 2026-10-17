@@ -59,8 +59,9 @@ import { PROBE_OPTS } from './probe';
 // 摊平"新多选 / 待机通道的旧两个布尔"的口径（纯函数，可单测）；dialogue 不反向依赖本模块，无循环
 import {
   buildFamilyRegistry,
+  resolveActionPhase,
+  resolvePhases,
   resolveTriggerIntent,
-  resolveTriggerPhases,
 } from './dialogue';
 
 /** localStorage 键。带版本号，将来改结构时便于一次性弃用旧值 */
@@ -173,16 +174,41 @@ export type SettingsOverrides = {
    */
   touchKinds?: TriggerEventKind[];
   /**
-   * **触摸可触发的事件族（多选）** —— 对应 `config.subtitle.touchPhases`（2026-10-10 新增）。
+   * **允许触发的事件族（多选）** —— 对应 `config.subtitle.phases`。
    *
    * 取值是 `config.subtitle.eventFamilies` 注册表的 id 子集（见 `config.type.ts` 的
-   * `EventFamily`）—— 2026-10-15 起**不再限定"誓约前/誓约后/普通"这几种**。
-   * 与 `touchKinds` 是**两层筛子**：先按族筛候选，再在勾中的 chat/greet/touch 类里并池随机。
+   * `EventFamily`）。★★ 2026-10-17 起**对所有入口生效**（此前只作用于点击触摸，
+   * 字段也因此叫 `touchPhases`）：
    *
-   * **缺省（不写本字段）= 注册表的缺省勾选**（没声明注册表 ⇒ 内置单族 `normal`）。
-   * ⚠️ 显式空数组 = 全关（一族都不出条）。改了要重载。
+   * | 勾选 | 结果 |
+   * |---|---|
+   * | 勾了若干族 | 待机 / 点击 / 回到壁纸 / 常驻序列都只从这些族取条 |
+   * | **空数组** | **所有事件都不触发**（档案里没有任何事件行） |
+   * | 不写 | 注册表的缺省勾选（没声明注册表 ⇒ 内置单族 `normal`） |
+   *
+   * ⚠️ 改了要重载（池是开机一次性构造的）。
+   */
+  phases?: TriggerPhase[];
+  /**
+   * ⚠️ **旧键（改名前的 `touchPhases`）** —— 只为"老存档照常生效"而保留读取。
+   *
+   * ⚠️ 新代码**不要再往这里写**：`applyOverrides` 里 `phases` 优先，两者同在时旧键被忽略。
+   * 判据集中在 `dialogue.resolvePhases`。
    */
   touchPhases?: TriggerPhase[];
+  /**
+   * **当前显示的动作族（单选）** —— 对应 `config.subtitle.actionPhase`（2026-10-17 新增）。
+   *
+   * 取值 = `config.subtitle.eventFamilies` 里某个**带 `matchSuffix` 的族**的 id，
+   * 或 **`''`**（= 不换名那一档，誓约工程写「誓约前」）。
+   *
+   * ★ 它管的是"**播哪一套 spine 动画**"（全局：常驻 idle / 问候 / 待机 / 点击 / 序列），
+   *   与 `phases`（哪些念白能被抽到）**正交** —— 两件事，别合并。
+   * ★ **缺省（不写本字段）= 注册表里第一个动作族**（誓约工程 ⇒ 婚后）；
+   *   显式 `''` = 誓约前。见 `dialogue.resolveActionPhase`。
+   * ⚠️ 改了要重载（池与常驻动画都是开机一次性构造的）。
+   */
+  actionPhase?: TriggerPhase;
   /**
    * **回到壁纸可触发的事件（多选）** —— 对应 `config.subtitle.resumeKinds`。
    *
@@ -331,11 +357,19 @@ export type SettingsView = {
    */
   touchKinds: TriggerEventKind[];
   /**
-   * 触摸可触发的**事件族**（多选，**意向列表**，顺序 = 注册表声明顺序）。
+   * **允许触发的事件族**（多选，**意向列表**，顺序 = 注册表声明顺序）。
    *
+   * ★★ **对所有入口生效**（2026-10-17 起；此前仅点击触摸）。空数组 = 所有事件都不触发。
    * ⚠️ 同样是意向列表，不判可用性。缺省 = 注册表的缺省勾选（没声明注册表 ⇒ `['normal']`）。
    */
-  touchPhases: TriggerPhase[];
+  phases: TriggerPhase[];
+  /**
+   * **当前显示的动作族**（单选）—— 取值 = 某个带 `matchSuffix` 的族 id，或 `''`（不换名）。
+   *
+   * ★ 与 `phases` 正交：本项决定"播哪套动画名"，那一项决定"哪些念白能被抽到"。
+   * 缺省 = 注册表的第一个动作族（誓约工程 ⇒ 婚后）；没有动作族 ⇒ `''`。
+   */
+  actionPhase: TriggerPhase;
   /**
    * 回到壁纸可触发的事件（**多选**）—— 载入 / 回到桌面 / 回到前台 / WE 恢复时可能播的类别。
    *
@@ -462,7 +496,9 @@ export const applyOverrides = (cfg: Configs, o: SettingsOverrides): Configs => {
     o.subtitlePosition !== undefined ||
     o.standbyKinds !== undefined ||
     o.touchKinds !== undefined ||
+    o.phases !== undefined ||
     o.touchPhases !== undefined ||
+    o.actionPhase !== undefined ||
     o.resumeKinds !== undefined ||
     o.standbyGreetEnabled !== undefined ||
     o.standbyTouchEnabled !== undefined ||
@@ -511,11 +547,22 @@ export const applyOverrides = (cfg: Configs, o: SettingsOverrides): Configs => {
       out.subtitle.touchKinds = o.touchKinds.slice();
     }
     /**
-     * ★ 事件族同样 **slice** —— 与面板 `draft.touchPhases` 同源时，不拷一份会让用户在
-     *   面板里点 chips **就地改到"生效值"**上（同 `standbyKinds` 的注释）。
+     * ★★ 事件族闸门。**`phases` 优先**（2026-10-17 改名）；只有它缺席时才落到旧键
+     *    `touchPhases`（老存档）。两者同在时**旧键被忽略**，避免出现两个生效的开关。
+     * ⚠️ 必须 `slice`（同 `*Kinds`）—— 与面板 `draft.phases` 同源时不拷一份，
+     *   用户在面板里点 chips 会**就地改到"生效值"**上。
      */
-    if (o.touchPhases !== undefined) {
+    if (o.phases !== undefined) {
+      out.subtitle.phases = o.phases.slice();
+    } else if (o.touchPhases !== undefined) {
       out.subtitle.touchPhases = o.touchPhases.slice();
+    }
+    /**
+     * ★ 动作族是**标量**（单选），没有 slice 的坑；`''` 是合法值（= 誓约前/不换名），
+     *   所以判据必须是 `!== undefined`，不能写成真值判断。
+     */
+    if (o.actionPhase !== undefined) {
+      out.subtitle.actionPhase = o.actionPhase;
     }
     if (o.resumeKinds !== undefined) {
       out.subtitle.resumeKinds = o.resumeKinds.slice();
@@ -738,11 +785,26 @@ export const readView = (cfg: Configs): SettingsView => ({
   touchKinds: resolveTriggerIntent('touch', cfg.subtitle?.touchKinds),
   /**
    * ★ 缺省 = **注册表的缺省勾选**（`config.subtitle.eventFamilies` 里标 `default` 的那些；
-   *   没声明注册表 ⇒ 内置单族 `normal`）。摊平口径复用 `dialogue.resolveTriggerPhases`
+   *   没声明注册表 ⇒ 内置单族 `normal`）。摊平口径复用 `dialogue.resolvePhases`
    *   —— 面板勾选态与运行时真正筛的族不可能各写一套判据。
    */
-  touchPhases: resolveTriggerPhases(
+  /**
+   * ★★ **事件族闸门**（全局）。摊平口径复用 `dialogue.resolvePhases`：
+   *   新字段 `phases` 优先、旧字段 `touchPhases` 兜底 ⇒ 老存档照样生效。
+   *   面板勾选态与运行时真正会筛的族不可能各写一套判据。
+   */
+  phases: resolvePhases(
+    cfg.subtitle?.phases,
     cfg.subtitle?.touchPhases,
+    buildFamilyRegistry(cfg.subtitle?.eventFamilies)
+  ),
+  /**
+   * ★ **当前动作族**（单选）—— 摊平口径复用 `dialogue.resolveActionPhase`：
+   *   缺省 = 注册表第一个动作族、显式 `''` = 不换名、非法值退化成 `''`。
+   *   面板勾选态与运行时实际播的动画不可能各写一套判据。
+   */
+  actionPhase: resolveActionPhase(
+    cfg.subtitle?.actionPhase,
     buildFamilyRegistry(cfg.subtitle?.eventFamilies)
   ),
   /** ★ 缺省 `['greet']`（= 四个自动时机仍只播问候） */
@@ -1037,7 +1099,9 @@ export const sameView = (a: SettingsView, b: SettingsView): boolean => {
     // ★ 触摸反馈策略也要比（2026-10-08）：漏比 ⇒"只改了这一档"不重载
     a.touchFeedbackMode !== b.touchFeedbackMode ||
     // ★ 问候触发方式同理（2026-10-08）：漏比 ⇒"只改了这一项"不重载
-    a.greetMode !== b.greetMode
+    a.greetMode !== b.greetMode ||
+    // ★ 动作族（2026-10-17，单选标量）：漏比 ⇒"只切了誓约前/誓约后"不重载
+    a.actionPhase !== b.actionPhase
   ) {
     return false;
   }
@@ -1066,13 +1130,10 @@ export const sameView = (a: SettingsView, b: SettingsView): boolean => {
    * ⚠️ 三个通道**逐个都要比** —— 漏掉任何一个 ⇒"只改了那一个通道的勾选"不重载（静默失效）。
    *   共用一个 `sameKinds` 小工具，避免写三遍同样的循环时漏掉一个。
    *
-   * ★ 参数类型放宽到 `readonly string[]`（2026-10-10）：**触摸的事件族**（`touchPhases`）
-   *   也是同一种形状的数组，同样的坑（漏比 ⇒ 只改事件族不重载）。
+   * ★ 参数类型放宽到 `readonly string[]`：**事件族闸门**（`phases`）也是同一种形状的数组，
+   *   同样的坑（漏比 ⇒ 只改事件族不重载）。
    */
-  const sameKinds = (
-    x: readonly string[],
-    y: readonly string[]
-  ): boolean => {
+  const sameKinds = (x: readonly string[], y: readonly string[]): boolean => {
     if (x.length !== y.length) {
       return false;
     }
@@ -1086,7 +1147,7 @@ export const sameView = (a: SettingsView, b: SettingsView): boolean => {
   return (
     sameKinds(a.standbyKinds, b.standbyKinds) &&
     sameKinds(a.touchKinds, b.touchKinds) &&
-    sameKinds(a.touchPhases, b.touchPhases) &&
+    sameKinds(a.phases, b.phases) &&
     sameKinds(a.resumeKinds, b.resumeKinds)
   );
 };

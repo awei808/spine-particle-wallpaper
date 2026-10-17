@@ -58,7 +58,11 @@
  */
 
 import * as threejsSpine from 'threejs-spine-3.8-runtime-es6';
-import { DialogueEntry, IdleSequenceConfig, IdleSequenceItem } from './config.type';
+import {
+  DialogueEntry,
+  IdleSequenceConfig,
+  IdleSequenceItem,
+} from './config.type';
 import { findByActionId } from './dialogue';
 
 /** 常驻轨道。触摸/问候/待机在 track 2，互不干扰。 */
@@ -120,8 +124,33 @@ export type IdleSequenceController = {
 export type IdleSequenceOptions = {
   /** 骨架里真实存在的动画名（用来过滤无效项，避免 `setAnimation` 抛错） */
   availableAnimations: string[];
-  /** 念白总表，供 `actionId` 解析 */
+  /** 念白总表，供 `actionId` 解析（★ 传**投影到当前动作族**的那份，见 `index.ts`） */
   entries: DialogueEntry[];
+  /**
+   * **动画名换名钩子**（2026-10-17 新增，可选）。
+   *
+   * 只有"**裸动画名**"的 item（`"idle"` 这种字符串，或只写了 `animation` 的对象）
+   * 需要它 —— 带 `actionId` 的 item 走 `entries`，那份已经投影过了。
+   *
+   * ★ 本模块**不认识"动作族/誓约"**，只认"调用方要我把名字换掉"：
+   *   规则由 `index.ts` 注入（`dialogue.resolveAnimationName`），
+   *   于是未来自定义动作族时这里零改动。
+   * ⚠️ 换名后再做存在性过滤 —— 换名换出一条骨架里没有的动画，应当按"无效项"跳过。
+   */
+  resolveAnimation?: (name: string) => string;
+  /**
+   * **某个 actionId 当前是否允许被触发**（可选；缺省 = 不判）。
+   *
+   * ★ 2026-10-17 新增：`subtitle.phases`（事件族）现在是**全局闸门** —— 被勾掉的族
+   *   不该经由常驻序列"漏"出来。本模块不认识事件族，只认调用方给的允许集合
+   *   （`index.ts` 传 `phasedDialogues` 的 actionId）。
+   *
+   * | 返回值 | 行为 |
+   * |---|---|
+   * | `false` | **整项跳过**并 warn（不是退化成"只播动画"—— 那等于绕过了闸门） |
+   * | `true` / 没传 | 照原逻辑走（命中念白条目 ⇒ 连台词一起播） |
+   */
+  isActionAllowed?: (actionId: number) => boolean;
   /** 每播到一项都会回调（含首项）。`entry` 为 `null` = 该项只播动作 */
   onItem?: (entry: DialogueEntry | null, animation: string) => void;
 };
@@ -150,6 +179,18 @@ export const resolveSequence = (
       animation = it;
     } else if (it && typeof it === 'object') {
       if (typeof it.actionId === 'number') {
+        /**
+         * ★ 先过"事件族闸门"再解析条目：被勾掉的族**整项跳过**。
+         *   ⚠️ 不能退化成"只播 `it.animation`"—— 那等于让序列绕过全局闸门。
+         */
+        if (options.isActionAllowed && !options.isActionAllowed(it.actionId)) {
+          console.warn(
+            '[idleSequence] items[%d] 的 actionId=%s 所属事件族未勾选 ⇒ 跳过该项',
+            i,
+            it.actionId
+          );
+          continue;
+        }
         entry = findByActionId(options.entries, it.actionId);
         animation = entry?.animation ?? it.animation ?? '';
         if (typeof it.actionId === 'number' && !entry) {
@@ -168,6 +209,14 @@ export const resolveSequence = (
     if (!animation) {
       console.warn('[idleSequence] items[%d] 没给出可用的动画名 ⇒ 跳过', i);
       continue;
+    }
+    /**
+     * ★ 换名钩子（动作族）—— 只对裸动画名有意义；带 `actionId` 的条目其 `animation`
+     *   已在 `entries` 里投影过（见 `index.ts` 的 `projectDialoguesToActionPhase`），
+     *   再换一次会被"后缀已存在就不再追加"的分支挡住，无害但没必要 ⇒ 一律过一遍即可。
+     */
+    if (options.resolveAnimation) {
+      animation = options.resolveAnimation(animation);
     }
     if (options.availableAnimations.indexOf(animation) < 0) {
       console.warn(

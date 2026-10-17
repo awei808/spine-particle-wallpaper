@@ -179,6 +179,31 @@ export class SpineAnimator {
   };
 
   /**
+   * **替换常驻动画**（track 0）—— 动作族换名用（2026-10-17）。
+   *
+   * 构造里已经按 `meshConfig.animationName` 设过一次（保证"没有动作族时逐字不变"）；
+   * 这里只在"该骨架确实有换名后的动画"时覆盖一次。
+   *
+   * @returns 是否真的换了（`false` = 名字为空 / 骨架里没有 ⇒ 保持原常驻动画）
+   *
+   * ⚠️ 不做"不存在就静默" —— 返回 false 由调用方决定日志级别：
+   *   挂件骨架没有 `_marry` 是**正常**的，角色骨架缺才是配置错误。
+   * ⚠️ 不能直接 `state.setAnimation(0, name, true)`：未知名字会 **throw**
+   *   （`AnimationState.ts:601-603`），所以先查 `findAnimation`。
+   */
+  public setIdleAnimation = (name: string): boolean => {
+    if (!name) {
+      return false;
+    }
+    const state = this.skeletonMesh?.state;
+    if (!state?.data?.skeletonData?.findAnimation(name)) {
+      return false;
+    }
+    state.setAnimation(0, name, true);
+    return true;
+  };
+
+  /**
    * 供触摸控制器拿到 SkeletonMesh（需要它的 `state` 来播 track 2 动画）。
    *
    * 为什么不让 touch.ts 自己去解析/新建骨架：那样会加载第二份资源、状态也无法

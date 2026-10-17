@@ -160,10 +160,17 @@ export type SettingsPanelOptions = {
    * 本壁纸的**事件族注册表**（对应 `config.subtitle.eventFamilies`，见 `config.type.ts`
    * 的 `EventFamily`）。
    *
-   * ★ 缺省 / 归一后为空 ⇒ 「事件池」页**不建**「事件族（仅点击触摸）」那一行
+   * ★ 缺省 / 归一后为空 ⇒ 「事件池」页**不建**「事件族」那一行
    *   （与 `wallpaperSettings` 同一口径：没有事件族的皮肤不该多出一个点不动的控件）。
    */
   eventFamilies?: EventFamily[];
+  /**
+   * 「spine 动作族显示」里**"不换名"那一档的显示名**（对应 `config.subtitle.actionPhaseBaseLabel`）。
+   *
+   * 誓约工程写「誓约前」⇒ 单选呈现 `[誓约前 | 誓约后]`。缺省 `'默认'`。
+   * ★ 由调用方传原始 config 值 —— 面板不读配置文件，与 `eventFamilies` 同一口径。
+   */
+  actionPhaseBaseLabel?: string;
   /**
    * 右上角**整列入口**（折叠按钮 + 5 个入口）是否显示 —— WE 属性 `showCornerButtons`
    * （属性面板**第一项**「显示右上角按钮」）。缺省 `true`。
@@ -427,7 +434,6 @@ const setEntryLabel = (btn: HTMLElement, label: string): void => {
   btn.title = label;
   btn.setAttribute('aria-label', label);
 };
-
 
 /* ── 自绘控件的样式（★ 一律 `appearance:none` + 纯 DOM，不用原生 widget） ── */
 const TOGGLE_BASE = [
@@ -713,7 +719,11 @@ export const createSettingsPanel = (
    *   各写一份样式串就是"改了 5 处漏了 1 处"的经典来源。
    * ★ `flex:0 0 auto`：列是 flex column，不写的话按钮在窄容器里会被压扁。
    */
-  const makeEntryBtn = (id: string, label: string, svg: string): HTMLButtonElement => {
+  const makeEntryBtn = (
+    id: string,
+    label: string,
+    svg: string
+  ): HTMLButtonElement => {
     const btn = createEl(
       'button',
       [
@@ -747,7 +757,11 @@ export const createSettingsPanel = (
     btn.style.borderColor = active ? ENTRY_BD_ACTIVE : ENTRY_BD_IDLE;
   };
 
-  const toggleBtn = makeEntryBtn('wb-corner-toggle', '', iconSvg(ICON_CHEVRON_UP));
+  const toggleBtn = makeEntryBtn(
+    'wb-corner-toggle',
+    '',
+    iconSvg(ICON_CHEVRON_UP)
+  );
   const gear = makeEntryBtn('wb-settings-gear', '壁纸设置', iconSvg(ICON_GEAR));
   const muteBtn = makeEntryBtn('wb-mute-btn', '静音', iconSvg(ICON_VOLUME_ON));
   const debugBtn = makeEntryBtn('wb-debug-btn', '调试', iconSvg(ICON_BUG));
@@ -779,7 +793,6 @@ export const createSettingsPanel = (
   };
   renderToggleBtn();
   renderMuteBtn();
-
 
   /* ── 面板本体（居中 + 屏幕 80% + 分 tab） ─────────
    *
@@ -1714,7 +1727,7 @@ export const createSettingsPanel = (
    *
    * @param ids 每个选项的 **DOM 锚点**（**写全字面量**：验证脚本按 id 找元素；拼出来的
    *   `'wb-set-standby-' + kind` 会被 terser 折成运行期拼接、产物里查不到字面量 ⇒ 锚点形同虚设）
-   * @param get 读当前勾选（一般是 `draft.xxxKinds` / `draft.touchPhases`）
+   * @param get 读当前勾选（一般是 `draft.xxxKinds` / `draft.phases`）
    * @param set 把**归一后**的结果写回（归一用 `dialogue.normalize*`，
    *   面板自己不排序也不去重）
    * @param order 选项的固定显示顺序
@@ -1802,7 +1815,7 @@ export const createSettingsPanel = (
    * 本壁纸的**事件族注册表**（`config.subtitle.eventFamilies` 归一而来，2026-10-15）。
    *
    * ★ 一次归一、多处复用：chips 的选项 / 顺序 / 显示名 / 归一函数全部从它取
-   *   （见下面「事件族（仅点击触摸）」）。
+   *   （见下面「事件族」与「spine 动作族显示」两行）。
    * ⚠️ 归一结果**为空** ⇒ 该行不建；**没声明** `eventFamilies` ⇒ 内置单族 `normal`，仍会建。
    */
   const fams = buildFamilyRegistry(options.eventFamilies);
@@ -1959,22 +1972,22 @@ export const createSettingsPanel = (
   );
 
   /**
-   * ★★ **事件族 —— 点击触摸的第二层筛子**（2026-10-10 新增；2026-10-11 挪到本页**最后一行**；
-   *   **2026-10-15 改为注册表驱动**）。
+   * ★★ **事件族 —— 全局候选闸门**（2026-10-10 新增；2026-10-11 挪到本页末尾；
+   *   **2026-10-15 改为注册表驱动**；**2026-10-17 起对所有入口生效**）。
    *
-   * 它**只作用于点击触摸这一个入口**：
-   *   ① 先按本项勾中的**事件族**筛候选；
-   *   ② 再在勾中的**类别**里并池随机（`mergeKindPools`）。
-   * ⇒ 与上面「触摸可触发的事件」**叠加生效**，互不覆盖。
+   * 它是一道**全局闸门**，与入口无关：
+   *   ① 待机 / 点击 / 回到壁纸 / 常驻序列**都只从勾中的族取条**；
+   *   ② **一项都不勾 ⇒ 所有池为空** ⇒ 档案里没有任何事件行、任何通道都不触发；
+   *   ③ 再往下一层才是各通道勾中的**类别**并池随机（`mergeKindPools`）。
+   * ⇒ 与上面三行「可触发的事件」（类别）是 **AND**，与下面的「spine 动作族显示」
+   *   也是 **AND**（前者管"允不允许这一族"，后者管"播哪套动画"）。
    *
-   * ## ★ 为什么排在本页最后（用户 2026-10-11 拍板）
+   * ## ★ 位置：仍是本页倒数第二行
    *
-   * 上面三行是**三个入口**（待机 / 触摸 / 回到壁纸）**同构**的"可抽到哪些类别"，
-   * 是一组平级的项目；而本项是**挂在其中一个入口上的第二层筛子**，不是第四个入口。
-   * 夹在中间会让"三个入口"这组读起来断成两截（还会被迫带一个 `└` 前缀去指向上面的行，
-   * 而它本来就不是那个入口的子行）⇒ 收在本页末尾，与前一组**分开**。
-   * ⚠️ 标签里因此**不带 `└` 前缀**（2026-10-11 用户拍板），措辞「（仅点击触摸）」
-   *   已经把作用域交代清楚了。
+   * 上面三行是**三个入口**同构的"可抽到哪些类别"，先列完；下面两行是**两个全局筛子**
+   * （事件族 → 动作族），相邻成组。这样"三个入口"那组不被拆开，两个筛子也不假装成
+   * "第四个入口"。
+   * ⚠️ 标签里**不带 `└` 前缀**，也**不再写「仅点击触摸」**（作用域已变成全局）。
    *
    * ## ★★ 选项全部来自 `config.subtitle.eventFamilies`（2026-10-15）
    *
@@ -1995,19 +2008,67 @@ export const createSettingsPanel = (
     });
     phaseChips = createChips<TriggerPhase>(
       phaseIds,
-      () => draft.touchPhases,
+      () => draft.phases,
       (v) => {
-        draft.touchPhases = v;
+        draft.phases = v;
       },
       fams.ids,
       phaseLabels,
       (v) => normalizeTriggerPhases(v, fams)
     );
     addRow(
-      '事件族（仅点击触摸）',
+      '事件族',
       phaseChips.el,
-      '在勾中的类别里再按事件族筛一层，两层叠加生效；选项与本项目的事件族一致' +
-        '（缺省勾选见 config 的 eventFamilies）。',
+      '★ 对**所有入口**生效：只有勾中的族能被触发（待机 / 点击 / 回到壁纸都受它约束）。' +
+        '一项都不勾 ⇒ 所有事件都不触发。与下面的「spine 动作族显示」叠加生效。',
+      pages.touch,
+      true
+    );
+  }
+
+  /**
+   * ★★ **spine 动作族显示（单选）** —— 决定"播哪一套动画名"（2026-10-17 新增）。
+   *
+   * | 选项 | 值 | 效果 |
+   * |---|---|---|
+   * | `actionPhaseBaseLabel`（誓约工程 =「誓约前」） | `''` | 播原动画名（`greet` / `chat` / `idle`） |
+   * | 每个**带 `matchSuffix` 的族**（`fams.actionIds`） | 族 id | 播该族那一套（`greet_marry` / `chat2_marry` / `idle_marry`） |
+   *
+   * ## ★ 与上面「事件族」那行的分工（两件事，别合并）
+   *
+   *   · 本项 = **动作族**：全局（常驻 / 问候 / 待机 / 点击 / 序列）换动画名，
+   *     并把属**别的**动作族的条目挡在池外 ⇒ 誓约前池 6 条 / 誓约后池 9 条；
+   *   · 「事件族」= **候选闸门**：**全局**，决定哪些族允许被触发（`[]` = 全关）。
+   *
+   * ## ★ 为什么是单选 + 为什么选项由注册表推导
+   *
+   * 游戏里 `isOath and MarryActionState≠""` 是**一个全局状态位**，同一条 actionId
+   * 只会走其中一套动画 —— 不存在"两族同时显示"。所以是单选（分段控件）。
+   * 选项**没有一个是写死的**：`''` + `fams.actionIds` ⇒ 未来加自定义动作族
+   * （比如「和服态」`_kimono`）只要在 config 里声明 `matchSuffix`，这里自动多一档。
+   *
+   * ⚠️ `fams.actionIds` 为空（非誓约工程）⇒ **整行不建**（与「事件族」行同口径）。
+   * ⚠️ DOM 锚点：容器 `wb-set-action-phase`，每个选项 `data-wb-opt="<族id>"`；
+   *   "不换名"那一档的 `data-wb-opt` 是**空串**（`[data-wb-opt=""]`）。
+   */
+  let selActionPhase: ReturnType<typeof createSegmented> | null = null;
+  if (fams.actionIds.length) {
+    selActionPhase = createSegmented(
+      'wb-set-action-phase',
+      [
+        ['', options.actionPhaseBaseLabel ?? '默认'],
+        ...fams.actionIds.map((id) => [id, fams.actionLabel(id)] as const),
+      ],
+      true
+    );
+    selActionPhase.addEventListener('change', () => {
+      draft.actionPhase = selActionPhase.value;
+    });
+    addRow(
+      'spine 动作族显示',
+      selActionPhase.el,
+      '选择播放哪一套 spine 动画：选中某个动作族后，常驻 / 问候 / 待机 / 点击都换用' +
+        '本项目为该族声明的动画名，且只抽得到属于该动作族的念白。字幕与语音不受影响。',
       pages.touch,
       true
     );
@@ -2540,9 +2601,13 @@ export const createSettingsPanel = (
     standbyChips.paint();
     touchChips.paint();
     resumeChips.paint();
-    // ★ 触摸页的事件族 chips 同理（2026-10-10）；注册表为空时该行没建 ⇒ 跳过
+    // ★ 事件族 chips（全局闸门）；注册表为空时该行没建 ⇒ 跳过
     if (phaseChips) {
       phaseChips.paint();
+    }
+    // ★ 动作族单选（2026-10-17）：没有动作族的工程该行没建 ⇒ 判空
+    if (selActionPhase) {
+      selActionPhase.value = draft.actionPhase;
     }
     cbTouchFullscreen.checked = draft.touchFullscreen;
     selTouchFeedback.value = draft.touchFeedbackMode;
@@ -2862,7 +2927,9 @@ export const createSettingsPanel = (
       standbyIdleSec: draft.standbyIdleSec,
       standbyKinds: draft.standbyKinds.slice(),
       touchKinds: draft.touchKinds.slice(),
-      touchPhases: draft.touchPhases.slice(),
+      phases: draft.phases.slice(),
+      /** ★ 动作族是标量（单选）；`''` = 誓约前/不换名，是合法值 */
+      actionPhase: draft.actionPhase,
       resumeKinds: draft.resumeKinds.slice(),
       touchFeedbackMode: draft.touchFeedbackMode,
       greetMode: draft.greetMode,
@@ -2888,7 +2955,7 @@ export const createSettingsPanel = (
     idleSequenceItems: view.idleSequenceItems.slice(),
     standbyKinds: view.standbyKinds.slice(),
     touchKinds: view.touchKinds.slice(),
-    touchPhases: view.touchPhases.slice(),
+    phases: view.phases.slice(),
     resumeKinds: view.resumeKinds.slice(),
   };
   syncFromDraft();
@@ -2920,7 +2987,7 @@ export const createSettingsPanel = (
         idleSequenceItems: next.idleSequenceItems.slice(),
         standbyKinds: next.standbyKinds.slice(),
         touchKinds: next.touchKinds.slice(),
-        touchPhases: next.touchPhases.slice(),
+        phases: next.phases.slice(),
         resumeKinds: next.resumeKinds.slice(),
       };
       syncFromDraft();

@@ -98,14 +98,17 @@ import {
   buildFamilyRegistry,
   buildPool,
   findByActionId,
+  isEntryVisibleInPhase,
   mergeKindPools,
   normalizeGreetIds,
+  projectDialoguesToActionPhase,
+  resolveActionPhase,
+  resolvePhases,
   resolveChatIds,
   resolveDialoguePhase,
   resolveGreetSource,
   resolveTouchIds,
   resolveTriggerKinds,
-  resolveTriggerPhases,
 } from './dialogue';
 import { UI_SCALE_VAR, fpx, getUiScale, initUiScale, uiPx } from './uiScale';
 
@@ -308,18 +311,21 @@ type ArchiveState = {
   /** 三张 id 列表（摊平旧口径之后） */
   chatIds: number[];
   greetIds: number[];
-  /** 三个类别各自的条目池（`buildPool` 的产物；**只含缺省族**，= `index.ts` 的 `KIND_POOLS`） */
-  pools: Record<TriggerEventKind, DialogueEntry[]>;
   /**
-   * **触摸通道专用**的三个池（再按 `touchPhases` 筛过一次）= `index.ts` 的 `TOUCH_KIND_POOLS`。
+   * 三个类别各自的条目池（`buildPool` 的产物）。
    *
-   * ★★ 为什么必须分开：触摸通道现在有**两层筛子**（先事件族、后类别），
-   *   而待机 / 回到壁纸只用**缺省族** ⇒ 两个池集不同，不能共用一份
-   *   （否则"表里说会播"与"实际会不会播"会不一致，正是本文件要避免的事）。
+   * ★★ 三层判据都已含在里面：当前**动作族**投影 + 本状态存在性 + **全局事件族闸门**
+   *   （`subtitle.phases`）。三个通道**共用这一套**（= `index.ts` 的 `KIND_POOLS`）。
+   *   ⚠️ 2026-10-17 起不再有"触摸专用池"：事件族对所有入口生效，若这里分两套，
+   *      表格就会替某个入口撒谎。
    */
-  touchPools: Record<TriggerEventKind, DialogueEntry[]>;
+  pools: Record<TriggerEventKind, DialogueEntry[]>;
   /** 事件族注册表（`config.subtitle.eventFamilies` 归一而来；族名/缺省族/判据都从它取） */
   families: FamilyRegistry;
+  /** 生效的**事件族闸门**（`subtitle.phases`；注册表为空 ⇒ `undefined` = 不筛） */
+  phases: readonly TriggerPhase[] | undefined;
+  /** 当前**动作族**（`subtitle.actionPhase` 的生效值；`''` = 不换名 = 誓约前） */
+  actionPhase: TriggerPhase;
   /** 三个通道**真正会播**哪些类别（口径 + 可用性，= 运行时同一判据） */
   channels: Record<TriggerChannel, TriggerEventKind[]>;
   greetMode: 'time' | 'random';
@@ -335,36 +341,59 @@ const resolveState = (cfg: Configs): ArchiveState => {
   const greetIds = normalizeGreetIds(greetSource);
   const touchIds = resolveTouchIds(sub?.touch);
   /**
-   * ★ 事件族注册表（2026-10-15）—— 与 `index.ts` 完全同一套摊平口径。
-   *   待机 / 回到壁纸只用**缺省族**；注册表为空 ⇒ 不按族筛（`undefined`）。
+   * ★★ 事件族注册表 + **当前动作族**（2026-10-17）—— 与 `index.ts` 完全同一套摊平口径。
+   *
+   * 两件事必须分清（都是**全局**）：
+   *   · `actionPhase`（动作族）：决定播哪套动画名，并把属别的动作族的条目挡在池外；
+   *   · `phases`（事件族闸门）：用户允不允许这一族 —— **对所有入口生效**，
+   *     一项都不勾 ⇒ 所有池为空 ⇒ 表里没有任何事件行。
+   * ⚠️ 早先待机 / 回到壁纸的池被 `autoFilter`（缺省族）预筛过 —— 那是把"动作族"
+   *   错当"池筛子"，誓约后会把问候/闲聊整类筛掉。现在两层分别由
+   *   `phaseFilter` / `isEntryVisibleInPhase` 表达，互不兼任。
    */
   const families = buildFamilyRegistry(sub?.eventFamilies);
-  const autoPhases: readonly TriggerPhase[] =
-    families.fallbackId !== null ? [families.fallbackId] : [];
-  const autoFilter: readonly TriggerPhase[] | undefined =
-    families.families.length ? autoPhases : undefined;
-  const touchPhases = resolveTriggerPhases(sub?.touchPhases, families);
-  const touchFilter: readonly TriggerPhase[] | undefined =
-    families.families.length ? touchPhases : undefined;
+  const actionPhase = resolveActionPhase(sub?.actionPhase, families);
+  /**
+   * ★ 全局**事件族闸门**（`subtitle.phases`；旧字段 `touchPhases` 仅在新字段缺席时读）。
+   * 注册表为空 ⇒ `undefined`（不筛）；否则是勾选的族（`[]` = 全关 ⇒ 所有池为空）。
+   */
+  const phases = resolvePhases(sub?.phases, sub?.touchPhases, families);
+  const phaseFilter: readonly TriggerPhase[] | undefined = families.families
+    .length
+    ? phases
+    : undefined;
+  /**
+   * ★ 投影 + 存在性过滤：`dialogues` 之后**就是**本状态真正能播的那份
+   *   （动画名已换成当前动作族的），`buildRows` 里的 `findByActionId` 因此拿到的
+   *   是**换名后**的条目 —— 表里写的动画名与实际播放的必然一致。
+   */
+  const projected = projectDialoguesToActionPhase(
+    dialogues,
+    families,
+    actionPhase
+  );
+  const active: DialogueEntry[] = projected.filter((e) =>
+    isEntryVisibleInPhase(e, families, actionPhase)
+  );
   const pools: Record<TriggerEventKind, DialogueEntry[]> = {
-    chat: buildPool(dialogues, chatIds, autoFilter, families),
-    greet: buildPool(dialogues, greetIds, autoFilter, families),
-    touch: buildPool(dialogues, touchIds, autoFilter, families),
-  };
-  const touchPools: Record<TriggerEventKind, DialogueEntry[]> = {
-    chat: buildPool(dialogues, chatIds, touchFilter, families),
-    greet: buildPool(dialogues, greetIds, touchFilter, families),
-    touch: buildPool(dialogues, touchIds, touchFilter, families),
+    chat: buildPool(active, chatIds, phaseFilter, families),
+    greet: buildPool(active, greetIds, phaseFilter, families),
+    touch: buildPool(active, touchIds, phaseFilter, families),
   };
   const has = (k: TriggerEventKind): boolean => pools[k].length > 0;
-  const tHas = (k: TriggerEventKind): boolean => touchPools[k].length > 0;
   return {
-    dialogues,
+    /** ★ 投影 + 存在性过滤后的那批（动画名 = 当前动作族），**不是** config 里的原始表 */
+    dialogues: active,
     chatIds,
     greetIds,
     pools,
-    touchPools,
     families,
+    actionPhase,
+    /**
+     * ⚠️ 存**生效的闸门**（`phaseFilter`），不是 `phases` 原值 —— 注册表为空时
+     * `phaseFilter` 是 `undefined`（不筛），此时绝不能写成 `[]`，否则细则会谎报"全关"。
+     */
+    phases: phaseFilter,
     channels: {
       // ★ 与 `index.ts` 完全同一组入参 —— 表里显示的"会播哪几类"不可能与实际行为不同
       standby: resolveTriggerKinds(
@@ -376,15 +405,15 @@ const resolveState = (cfg: Configs): ArchiveState => {
         has('greet'),
         has('touch')
       ),
-      // ★ 触摸通道的可用性必须按**筛过族之后**的池算（否则会说"会播"却永远抽不出）
+      // ★ 触摸通道的可用性同样按**筛过族之后**的池算（否则会说"会播"却永远抽不出）
       touch: resolveTriggerKinds(
         'touch',
         sub?.touchKinds,
         undefined,
         undefined,
-        tHas('chat'),
-        tHas('greet'),
-        tHas('touch')
+        has('chat'),
+        has('greet'),
+        has('touch')
       ),
       resume: resolveTriggerKinds(
         'resume',
@@ -553,14 +582,20 @@ const buildRows = (
 
   /* ③ 点击触摸 —— 池 = 「触摸可触发的事件」勾中的类别并池，且**先按「可触发的事件族」筛过** */
   const touchKinds = st.channels.touch;
-  const touchPool = mergeKindPools(touchKinds, st.touchPools, st.families);
+  const touchPool = mergeKindPools(touchKinds, st.pools, st.families);
   touchPool.forEach((e, i) => {
-    const kind = kindOfEntry(e, touchKinds, st.touchPools);
+    const kind = kindOfEntry(e, touchKinds, st.pools);
     rows.push(
       makeRow(
         '点击触摸 #' + (i + 1),
         // ★ 不写事件族（2026-10-17）：属族由念白列角标表达，条件列只留"命中热区 + 池内序号"
-        '点击角色热区 · 池 #' + (i + 1) + '/' + touchPool.length + '（' + KIND_TEXT[kind] + '）',
+        '点击角色热区 · 池 #' +
+          (i + 1) +
+          '/' +
+          touchPool.length +
+          '（' +
+          KIND_TEXT[kind] +
+          '）',
         e,
         st.families,
         ae
@@ -665,6 +700,24 @@ const buildNotes = (cfg: Configs, st: ArchiveState): string[] => {
   );
 
   /**
+   * ★★ **事件族闸门**（2026-10-17 起对所有入口生效）—— 必须写在第一条：
+   *   它一项都不勾时上面三句全是"不播任何东西"，不先解释会让人以为是配置坏了。
+   */
+  if (
+    st.phases !== undefined &&
+    (st.families.families.length > 1 || st.phases.length === 0)
+  ) {
+    notes.push(
+      st.phases.length
+        ? '「事件族」：当前只触发 ' +
+            st.phases.map((p) => st.families.label(p)).join('、') +
+            '（**所有入口**都受它约束）。'
+        : '「事件族」：**一项都没勾 ⇒ 所有事件都不触发**' +
+            '（下方的入口细则全部为空是正常的；勾上至少一族即可恢复）。'
+    );
+  }
+
+  /**
    * ★ 2026-10-17 从简（用户要求）：原先 6 段长句里塞了太多"为了严谨而重复表格"的内容。
    *   每条压到 1~2 行 —— 闸门讲到"能分辨"即可，秒数之类的数字留在条件列/表格里。
    */
@@ -687,15 +740,12 @@ const buildNotes = (cfg: Configs, st: ArchiveState): string[] => {
     '「点击触摸」：点中任一热区后从池中随机取 1 条' +
       (st.channels.touch.length
         ? /**
-           * ★★ 必须用 `st.touchPools`（**筛过事件族**的那套），不能用 `st.pools`
-           *   —— 后者只含缺省族（那是待机 / 回到壁纸用的口径）。
-           *   2026-10-17 修正：早先误用 `st.pools` ⇒ S8 上细则写「池 3 条」，
-           *   而表格（按 `touchPools` 列）明明有 6 行 ⇒ 表格与细则互相打架，
-           *   正是本文件开头点名要避免的事。
+           * ★ 2026-10-17 起只有**一套**池（`st.pools`，三层判据都已含在里面）——
+           *   不再有"触摸专用 / 缺省族专用"两套，表格与细则不可能各读一套。
            */
           '（池 ' +
-            mergeKindPools(st.channels.touch, st.touchPools, st.families).length +
-            ' 条）'
+          mergeKindPools(st.channels.touch, st.pools, st.families).length +
+          ' 条）'
         : '（池为空 ⇒ 不播）') +
       '；多条念白可共用同一动画，属骨架资源本身的情况。'
   );
@@ -825,7 +875,21 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
       uiPx(3),
     header
   ).textContent =
-    '下表按当前生效的配置实时生成（改过设置后，这里的数字与池子会跟着变）。';
+    '下表按当前生效的配置实时生成（改过设置后，这里的数字与池子会跟着变）。' +
+    /**
+     * ★ 当前**动作族**（2026-10-17）—— 档案里"动作"列显示的是换名后的动画名，
+     *   不交代一句读者会以为 `*_marry` 是笔误。只在声明了动作族的工程里出现。
+     */
+    (st.families.actionIds.length
+      ? ' 当前动作族：' +
+        (st.actionPhase
+          ? st.families.actionLabel(st.actionPhase) +
+            '（动画名带 "' +
+            st.families.suffixOf(st.actionPhase) +
+            '"）'
+          : cfg.subtitle?.actionPhaseBaseLabel ?? '默认') +
+        '。'
+      : '');
 
   /* ── 正文（唯一滚动容器）───────────────────── */
   const body = createEl(

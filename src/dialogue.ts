@@ -44,8 +44,21 @@
  *    类别之间按条目数加权。⚠️ 唯一例外：**只勾 `greet` 一类**时走 `pickGreetingEntry`，
  *    以保住「问候触发方式」（`greetMode` 按时段 / 随机）。
  *
- * ★★ **两层筛子（2026-10-10）**：触摸通道先按**事件族**（`subtitle.touchPhases`，
- *    见 `config.type.ts` 的 `EventFamily` 注册表）筛一遍，再按**类别**（`touchKinds`）并池随机。
+ * ★★ **两层筛子（2026-10-10；2026-10-17 起含义变了）**：
+ *    ① **事件族闸门**（`subtitle.phases`，**全局**）—— 只有属于勾选族的条目才进任何池；
+ *       一项都不勾 ⇒ 所有池为空（档案为空、任何通道都不触发）；
+ *    ② **动作族**（`subtitle.actionPhase`，**全局**）—— 决定播哪套动画名，并把属别的
+ *       动作族的条目挡在池外（誓约前 6 / 誓约后 9）。
+ *    两者是 **AND**；再往下一层才是各通道的**类别**（`*Kinds`）并池随机。
+ *
+ * ★★ **动作族（2026-10-17）**：与此正交的另一层 —— `subtitle.actionPhase` 决定
+ *    **播哪一套动画名**（`greet` 还是 `greet_marry`），**全局生效**（含常驻 idle）。
+ *    它不筛"哪条念白"，只换名 + 决定"属别的动作族的条目能不能进池"：
+ *    · `resolveEntryAnimation`       —— 单条换名（显式 `phaseAnimations` → 后缀 → 原名）；
+ *    · `projectDialoguesToActionPhase` —— 整表投影（唯一入口，档案/调试面板必须复用）；
+ *    · `isEntryVisibleInPhase`      —— 池成员资格（缺省族 / 当前动作族 / 无后缀族）。
+ *    ⚠️ 换名只改 `animation`，**不动** `actionId` / `text` / `voice` / `phase`
+ *      —— 游戏侧 CV 不分誓约前后，字幕与语音必须保持同一条。
  *
  * ## ⚠️ "随机"这件事的成色
  *
@@ -353,12 +366,13 @@ export const isTriggerChannel = (v: unknown): v is TriggerChannel =>
 
 /* ══════════════════════════════════════════════════════════════════════
  * 事件族注册表（`EventFamily` / `TriggerPhase`）
- * —— 2026-10-10 引入，2026-10-15 由写死的三族改为**注册表制**
+ * —— 2026-10-10 引入，2026-10-15 由写死的三族改为**注册表制**，
+ *    2026-10-17 起同时承担「动画变体」职责（`actionPhase`）
  *
  * 族的定义见 `config.type.ts` 的 `EventFamily`；本节只放"纯函数口径"：
  * 归一化注册表、缺省、以及"条目属于哪一族"的判据。
- * ⚠️ 按族筛选同样只作用于**触摸通道**（`subtitle.touchPhases`）；
- *    待机 / 回到壁纸两个自动通道只用**缺省族**（由 `FamilyRegistry.fallbackId` 决定）。
+ * ⚠️ 按族**筛候选**是**全局**的（`subtitle.phases`，2026-10-17 起对所有入口生效）；
+ *    按族**换动画名**（`subtitle.actionPhase`）同样全局 —— 两件事别混。
  * ══════════════════════════════════════════════════════════════════════ */
 
 export type { EventFamily, TriggerPhase };
@@ -391,10 +405,27 @@ export type FamilyRegistry = {
   fallbackId: string | null;
   /** 缺省勾选的族（`default` 标记的那些；都没标 ⇒ `[缺省族]`；注册表为空 ⇒ `[]`） */
   defaultIds: string[];
+  /**
+   * **动作族** id 列表 = 声明了非空 `matchSuffix` 的族（声明顺序）。
+   *
+   * 它们就是「spine 动作族显示」单选里除"不换名"之外的可选项
+   * （`subtitle.actionPhase` 的合法取值域）。**注册表为空 ⇒ `[]`**。
+   */
+  actionIds: string[];
+  /**
+   * 动作族的**缺省** id（= `actionIds[0]`；没有动作族 ⇒ `''`）。
+   * `subtitle.actionPhase` 缺席时取它 —— "誓约工程默认显示誓约后动画"就落在这里，
+   * 引擎不需要知道 `postMarry` 这个名字。
+   */
+  defaultActionId: string;
   /** 是不是合法族 id */
   has: (v: unknown) => boolean;
   /** 取族的显示名（没写 / 写空 `label` ⇒ 回落成 `id`） */
   label: (id: string) => string;
+  /** 取族的**动作变体后缀**（没有 / 非动作族 ⇒ `''`） */
+  suffixOf: (id: string) => string;
+  /** 取动作族的**短名**（`actionLabel` → `label` → `id`） */
+  actionLabel: (id: string) => string;
 };
 
 /** 注册表项是否合法：`id` 必须是非空字符串（config 无 schema 校验 ⇒ 非法项静默丢弃） */
@@ -403,6 +434,10 @@ const isValidFamily = (v: unknown): v is EventFamily =>
   typeof v === 'object' &&
   typeof (v as EventFamily).id === 'string' &&
   (v as EventFamily).id.length > 0;
+
+/** 取某族的**动作变体后缀**：非空字符串才算动作族（`""` / 非字符串 ⇒ 不是） */
+const suffixOfFamily = (f: EventFamily | undefined): string =>
+  f && typeof f.matchSuffix === 'string' ? f.matchSuffix : '';
 
 /**
  * 把 `config.subtitle.eventFamilies` 归一成注册表。
@@ -429,7 +464,9 @@ export const buildFamilyRegistry = (raw: unknown): FamilyRegistry => {
       }
     });
     families =
-      want.length > 0 || raw.length === 0 ? want : DEFAULT_EVENT_FAMILIES.slice();
+      want.length > 0 || raw.length === 0
+        ? want
+        : DEFAULT_EVENT_FAMILIES.slice();
   } else {
     families = DEFAULT_EVENT_FAMILIES.slice();
   }
@@ -444,18 +481,39 @@ export const buildFamilyRegistry = (raw: unknown): FamilyRegistry => {
   const defaultIds = marked.length
     ? marked
     : fallbackId !== null
-      ? [fallbackId]
-      : [];
+    ? [fallbackId]
+    : [];
+  /**
+   * 动作族 = 声明了非空 `matchSuffix` 的族（声明顺序）。
+   * ★ 这是「spine 动作族显示」单选的**唯一**数据源 —— 引擎里没有族名字面量。
+   */
+  const actionIds = families
+    .filter((f) => suffixOfFamily(f) !== '')
+    .map((f) => f.id);
+  const defaultActionId = actionIds.length ? actionIds[0] : '';
+  /** 按 id 取族（找不到 ⇒ `undefined`；`suffixOf` / `actionLabel` 共用） */
+  const findFamily = (id: string): EventFamily | undefined =>
+    families.find((x) => x.id === id);
 
   return {
     families,
     ids,
     fallbackId,
     defaultIds,
+    actionIds,
+    defaultActionId,
     has: (v: unknown): v is string =>
       typeof v === 'string' && ids.indexOf(v) >= 0,
     label: (id: string): string => {
-      const f = families.find((x) => x.id === id);
+      const f = findFamily(id);
+      return f && typeof f.label === 'string' && f.label ? f.label : id;
+    },
+    suffixOf: (id: string): string => suffixOfFamily(findFamily(id)),
+    actionLabel: (id: string): string => {
+      const f = findFamily(id);
+      if (f && typeof f.actionLabel === 'string' && f.actionLabel) {
+        return f.actionLabel;
+      }
       return f && typeof f.label === 'string' && f.label ? f.label : id;
     },
   };
@@ -544,6 +602,239 @@ export const resolveTriggerPhases = (
     }
   }
   return reg.defaultIds.slice();
+};
+
+/**
+ * 摊平「**允许触发的事件族**」—— 面板「事件池 → 事件族」那一项（`subtitle.phases`）。
+ *
+ * ★★ **2026-10-17 起它对所有入口生效**（此前只作用于点击触摸，字段名因此叫
+ *   `touchPhases`）。现在它是一道**全局闸门**：
+ *
+ * | 勾选 | 结果 |
+ * |---|---|
+ * | 勾了若干族 | **任何**通道（待机 / 点击 / 回到壁纸 / 常驻序列）都只从这些族取条 |
+ * | **一项都不勾**（`[]`） | **所有池为空** ⇒ 档案里没有任何事件行，任何通道都不触发 |
+ * | 没配 | 注册表的缺省勾选（`defaultIds`）；注册表为空 ⇒ `[]`（但此时也不按族筛） |
+ *
+ * ## 旧字段兼容（`touchPhases`）
+ *
+ * 改名前的 config / localStorage 覆盖层里写的是 `subtitle.touchPhases`。
+ * 判据 = **新字段优先，旧字段仅在新字段缺席时读取**：
+ *
+ * | `phases` | `touchPhases` | 用哪个 |
+ * |---|---|---|
+ * | 给了（含空数组） | 任意 | `phases` —— ⚠️ **空数组是显式全关，绝不退回旧字段** |
+ * | 没给 | 给了 | `touchPhases`（老存档照常生效） |
+ * | 都没给 | — | 注册表缺省勾选 |
+ *
+ * ★ 为什么用 `!== undefined` 而不是 `??`：语义上两者等价（`??` 也只对 null/undefined 回退），
+ *   但这里要**显式**表达"空数组是合法值"——`resolveTriggerPhases` 内部已按这个口径处理，
+ *   直接传它即可。
+ */
+export const resolvePhases = (
+  phases: unknown,
+  legacyTouchPhases: unknown,
+  reg: FamilyRegistry = DEFAULT_FAMILY_REGISTRY
+): TriggerPhase[] =>
+  resolveTriggerPhases(phases !== undefined ? phases : legacyTouchPhases, reg);
+
+/* ══════════════════════════════════════════════════════════════════════
+ * 动作族（`subtitle.actionPhase`）—— 决定**播哪一套动画名**（2026-10-17）
+ *
+ * 与上面「哪些念白能被抽到」正交：这里只回答两件事
+ *   ① 某条念白在当前状态下**播哪个动画名**（换名）；
+ *   ② 某条念白在当前状态下**能不能进池**（属别的动作族的条目不能）。
+ *
+ * ⚠️ 换名**永远不动** `actionId` / `text` / `voice` / `phase`：
+ *   游戏侧同一条 actionId 的 CV 不分誓约前后（`SoulSpineCell.PlayAction`），
+ *   字幕与语音必须与换名前完全一致 —— 否则"动作换了、台词也对不上"。
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/**
+ * 摊平「当前显示的动作族」。
+ *
+ * | 输入 | 结果 |
+ * |---|---|
+ * | **没配**（`undefined` / 非字符串） | `reg.defaultActionId`（第一个动作族；没有动作族 ⇒ `""`） |
+ * | **空串 `""`** | `""`（= **显式**选"不换名"那一档） |
+ * | 合法动作族 id | 原样 |
+ * | 非法值 / 指向没有 `matchSuffix` 的族 | `""`（降级成不换名，绝不换到错误后缀） |
+ *
+ * ★ 缺省取"第一个动作族"而不是 `""`：誓约工程的 config 一旦声明了 `_marry` 后缀、
+ *   就等于宣告"本壁纸有誓约态"，此时**出厂即婚后**（用户 2026-10-17 拍板）。
+ *   非誓约工程没有任何动作族 ⇒ 恒 `""` ⇒ 行为与改动前逐字相同。
+ * ⚠️ 与 `*Kinds` 的容错口径一致：拼错一个词只降级、不改语义。
+ */
+export const resolveActionPhase = (
+  raw: unknown,
+  reg: FamilyRegistry = DEFAULT_FAMILY_REGISTRY
+): TriggerPhase => {
+  if (typeof raw === 'string') {
+    return reg.suffixOf(raw) ? raw : '';
+  }
+  return reg.defaultActionId;
+};
+
+/**
+ * 把一个**裸动画名**换到指定动作族（`resolveEntryAnimation` 的分支 ②③ 部分）。
+ *
+ * ★ 单独抽出来是给**常驻 idle** 用的：`meshConfig.animationName` 不是念白条目
+ *   （`idle` 本来就不在 `dialogues` 里），但它同样要跟着动作族走
+ *   （游戏 `GotoIdleState` 在誓约后用 `idle_marry`）。
+ * ⚠️ 没有条目级的 `phaseAnimations` 覆盖可用 ⇒ 只认后缀 —— 所以调用方**必须**
+ *   拿骨架的动画表核一次存在性（`index.ts` 的 `idleAnimation`）。
+ */
+export const resolveAnimationName = (
+  base: string,
+  reg: FamilyRegistry = DEFAULT_FAMILY_REGISTRY,
+  actionPhase: TriggerPhase = ''
+): string => {
+  if (!base) {
+    return '';
+  }
+  const suffix = reg.suffixOf(actionPhase);
+  if (!suffix) {
+    return base;
+  }
+  return base.slice(-suffix.length) === suffix ? base : base + suffix;
+};
+
+/**
+ * **常驻动画**换名 + 骨架存在性核对（`meshConfig.animationName` 专用）。
+ *
+ * 与念白条目的区别：条目可以有 `phaseAnimations` 显式覆盖，常驻动画只有"原名 + 后缀"
+ * 一条路 ⇒ **必须**拿骨架动画表核一次，不然 `state.addAnimation` 遇未知名字会
+ * **直接 throw**（`AnimationState.ts:601-603`，不是静默失败）。
+ *
+ * @param available 该骨架里真实存在的动画名（`skeletonData.animations`）
+ * @returns `name` = 实际要播的常驻动画；`want` = 按规则算出来的（可能不存在）；
+ *          `fallback` = 是否因为骨架里没有而退回原名（挂件骨架 / 非誓约皮肤属正常）
+ */
+export const resolveIdleAnimation = (
+  base: string,
+  available: readonly string[],
+  reg: FamilyRegistry = DEFAULT_FAMILY_REGISTRY,
+  actionPhase: TriggerPhase = ''
+): { name: string; want: string; fallback: boolean } => {
+  const want = resolveAnimationName(base, reg, actionPhase);
+  if (!base || want === base) {
+    return { name: base, want, fallback: false };
+  }
+  /** 没有动画表 ⇒ 不敢换（宁可保持原样，也不要 throw） */
+  if (!available || !available.length) {
+    return { name: base, want, fallback: true };
+  }
+  if (available.indexOf(want) >= 0) {
+    return { name: want, want, fallback: false };
+  }
+  return { name: base, want, fallback: true };
+};
+
+/**
+ * 某条念白在**指定动作族**下要播的动画名（换名的唯一判据）。
+ *
+ * 三分支，**显式优先**：
+ *   ① 条目写了 `phaseAnimations[actionPhase]` ⇒ 用它（解决 `chat` → `chat2_marry`
+ *      这种"不是原名加后缀"的个例，见 `DialogueEntry.phaseAnimations`）；
+ *   ② 原名已以该族后缀结尾 ⇒ 原样（`greet_marry` 不会变成 `greet_marry_marry`）；
+ *   ③ 否则 ⇒ `原名 + 后缀`。
+ *
+ * ⚠️ `actionPhase` 为空 / 无后缀族 ⇒ **恒返回原名**（分支 ①②③ 都不触发）。
+ * ⚠️ 本函数是**纯字符串**运算，不知道骨架里到底有没有这条动画 ——
+ *   存在性校验由 `index.ts` 拿 `skeletonData.animations` 做一次集中核对。
+ */
+export const resolveEntryAnimation = (
+  e: DialogueEntry,
+  reg: FamilyRegistry = DEFAULT_FAMILY_REGISTRY,
+  actionPhase: TriggerPhase = ''
+): string => {
+  const base = typeof e?.animation === 'string' ? e.animation : '';
+  if (!base) {
+    return '';
+  }
+  const suffix = reg.suffixOf(actionPhase);
+  if (!suffix) {
+    return base;
+  }
+  const map = e?.phaseAnimations;
+  const override =
+    map && typeof map === 'object' ? map[actionPhase] : undefined;
+  if (typeof override === 'string' && override) {
+    return override;
+  }
+  return resolveAnimationName(base, reg, actionPhase);
+};
+
+/**
+ * 把整张念白表**投影**到某个动作族：返回新数组（每条浅拷贝），只改 `animation`。
+ *
+ * ★★ 这是"当前状态"的**唯一投影入口** —— `index.ts` / `archive.ts` / 调试面板
+ *   必须都调它，**禁止**各自再写一份换名逻辑（否则"档案说会播 greet_marry、
+ *   实际播 greet"这类漂移必然出现）。
+ *
+ * ★ 为什么同时**钉住 `phase`**：投影后动画名带了后缀，`resolveDialoguePhase` 的
+ *   ② "按后缀判族"会把本来没有 `phase` 的条目判成该动作族 —— 从而改变它在池里的
+ *   归类（`phases` 闸门、`mergeKindPools` 的去重键）。投影前先把判族结果写死，
+ *   后续一切判据都基于**原动画名**，与"没投影"时完全一致。
+ *
+ * ⚠️ 无后缀（`actionPhase` 为空 / 非法）⇒ 原样返回**数组浅拷贝**（不克隆条目，
+ *   因为什么都没变，克隆只会白白增加对象数）。
+ */
+export const projectDialoguesToActionPhase = (
+  entries: DialogueEntry[],
+  reg: FamilyRegistry = DEFAULT_FAMILY_REGISTRY,
+  actionPhase: TriggerPhase = ''
+): DialogueEntry[] => {
+  if (!entries?.length) {
+    return [];
+  }
+  if (!reg.suffixOf(actionPhase)) {
+    return entries.slice();
+  }
+  return entries.map((e) => {
+    if (!e) {
+      return e;
+    }
+    return {
+      ...e,
+      animation: resolveEntryAnimation(e, reg, actionPhase),
+      /** 钉住投影前的判族结果（见上面的"为什么同时钉住 phase"） */
+      phase: resolveDialoguePhase(e, reg),
+    };
+  });
+};
+
+/**
+ * 某条念白在**当前动作族**下能不能进池。
+ *
+ * | 条件 | 结果 |
+ * |---|---|
+ * | 注册表为空（本项目没有事件族机制） | `true`（不筛） |
+ * | 属**缺省族**（`fallbackId`） | `true`（誓约前/后都可用 —— 游戏里 `TouchFeedback` 的常态） |
+ * | 属**当前动作族** | `true`（如誓约后的 `MarryAction` 三条） |
+ * | 属**没有后缀的纯分类族** | `true`（它无法被表达成某个动作态 ⇒ 不因状态而消失；老 config 兜底） |
+ * | 属**另一个动作族** | `false`（誓约前抽不到誓约后的专属念白 —— 与游戏婚前池 6 条一致） |
+ *
+ * ★ 这就是"婚前 6 / 婚后 9"的落点：S8 的 9 个 touch id 里 3 条属 `postMarry`，
+ *   在 `actionPhase: ""` 时被挡掉，剩 6 条 = 游戏 `TouchFeedback` 的 6 个触摸位。
+ */
+export const isEntryVisibleInPhase = (
+  e: DialogueEntry,
+  reg: FamilyRegistry = DEFAULT_FAMILY_REGISTRY,
+  actionPhase: TriggerPhase = ''
+): boolean => {
+  if (!reg.families.length) {
+    return true;
+  }
+  const ph = resolveDialoguePhase(e, reg);
+  if (ph === reg.fallbackId) {
+    return true;
+  }
+  if (actionPhase && ph === actionPhase) {
+    return true;
+  }
+  /** 无后缀的族不是"动作态"，不参与状态筛选（老 config 的 preMarry 等纯分类族走这里） */
+  return reg.suffixOf(ph) === '';
 };
 
 /**
