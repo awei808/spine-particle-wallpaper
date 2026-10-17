@@ -567,8 +567,12 @@ export type DialogueEntry = {
   textTime?: number;
   /**
    * 录音文件（`Sound.csv.FileName`，如 `CV/Asuna/Asuna_Touch_Head_03.ogg`）。
-   * ⚠️ **本轮不播音频**：ogg 本体在 `base.apk` 的 `06_sounds/cv/_asuna.ab` 里，尚未解出。
-   * 这里先登记路径，将来解出音频后只要补一个播放器即可接上。
+   *
+   * ★ 2026-10-17 起**扩展名不再是硬约束**：可以写 `.ogg` / `.mp3` / `.wav` / `.m4a`
+   *   （以及 `voicePlayer.VOICE_MIME` 认识的其它格式）。播放时先原样试这里的扩展名，
+   *   失败再按 `subtitle.audio.extOrder` 换扩展名重试 —— 详见 `voicePlayer.ts` 文件头。
+   *   所以皮肤换过转码口径（ogg → mp3）时**不必改 config**，旧条目照样能响。
+   * ⚠️ 只取 basename（`voiceBasename`）后拼 `subtitle.audio.path`，子目录会被丢弃。
    */
   voice?: string;
 };
@@ -596,6 +600,28 @@ export type SubtitleAudioConfig = {
   volume?: number;
   /** 语音目录（相对 `index.html`，缺省 `./assets/voice/`） */
   path?: string;
+  /**
+   * **扩展名兜底顺序**（2026-10-17 新增，对应 TODO「语音文件支持多种类型的音频文件」）。
+   *
+   * `DialogueEntry.voice` 只写一个文件名，而解包产物可能是 ogg / mp3 / wav / m4a
+   * 混装。播放时先原样试 `voice` 里写的扩展名，失败再按本数组换扩展名重试
+   * （每个候选只试一次，见 `voicePlayer.buildVoiceCandidates`）。
+   *
+   * ```jsonc
+   * "audio": { "extOrder": ["ogg", "mp3", "wav", "m4a"] }   // 等于缺省，可删掉
+   * ```
+   *
+   * | 取值 | 含义 |
+   * |---|---|
+   * | **没写** | 缺省 `["ogg", "mp3", "wav", "m4a"]` |
+   * | `[]` | **显式关闭兜底**：只试 `voice` 里写的那个扩展名（无扩展名的条目将无法定位） |
+   * | 有项但全是垃圾 | 退回缺省（容忍拼错，不当成"关掉兜底"） |
+   *
+   * ⚠️ `m4a` 故意排最后：WE 的 CEF 对 AAC 支持不稳，放前面会"明明有 ogg、
+   * 却先撞一条解不了的 m4a"。改顺序前先看 `PLAN_自定义事件前置条件` §8 的实测待办。
+   * ⚠️ 与 `SubtitleAudioConfig.enabled` 无关：本字段只影响**找到哪个文件**，不控制是否出声。
+   */
+  extOrder?: string[];
 };
 
 /**

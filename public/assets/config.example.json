@@ -28,7 +28,8 @@
     "audio": {
       "enabled": true,
       "volume": 0.8,
-      "path": "./assets/voice/"
+      "path": "./assets/voice/",
+      "extOrder": ["ogg", "mp3", "wav", "m4a"]
     },
     "dialogues": [],
     "greet": [],

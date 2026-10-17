@@ -1631,6 +1631,10 @@ const main = async () => {
          * 为什么需要：语音的 `<audio>` 同样不进 DOM，而"WE 暂停时语音有没有
          * 跟着停"是这次修复的核心断言 —— 必须在暂停前后各读一次
          * `playing` + `currentTime`，才能证明"暂停时停住、恢复时从原处续播"。
+         *
+         * ★ 2026-10-17 补 `resolved`：多格式兜底后，"config 里写 `X.ogg`、
+         *   实际响的是 `X.mp3`"是**正常**结果。只报 `file`（config 里那个名字）
+         *   会让排查者以为播放器读错了文件 —— 实际命中的候选单独报。
          */
         voice: () =>
           voicePlayer
@@ -1639,6 +1643,7 @@ const main = async () => {
                 currentTime: voicePlayer.currentTime(),
                 volume: voicePlayer.getVolume(),
                 file: lastVoiceFile,
+                resolved: voicePlayer.resolvedUrl(),
               }
             : null,
         /**
