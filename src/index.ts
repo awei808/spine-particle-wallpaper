@@ -496,6 +496,15 @@ const main = async () => {
    *   ⇒ 查表时**必须再判一次** `particleByName[name]` 是否存在（那才是"这一组真的建起来了"）。
    */
   const actionEffectIndex: { [animation: string]: ActionEffectConfig[] } = {};
+  /**
+   * 「动画名 → 绑定的粒子组名」的**扁平**表（2026-10-17 新增）。
+   *
+   * ★ 为什么单独存一份：档案面板（`archive.ts`）与探针钩子（`__WB_FX__.actionEffects()`）
+   *   都只要**名字列表**，而 `actionEffectIndex` 的值是完整的 `ActionEffectConfig[]`
+   *   （还带 `restart` 等字段）。两处各写一遍 `.map(b => b.particles).flat()` 迟早漂移
+   *   ⇒ 只在重建索引时算一次，随 `actionEffectIndex` 一起重建、一起清空。
+   */
+  const actionEffectNames: { [animation: string]: string[] } = {};
   /** 已经因为"名字写错"报过 warn 的组名 —— 避免同一处每播一次刷一条日志 */
   const warnedEffectNames: { [name: string]: boolean } = {};
 
@@ -510,12 +519,15 @@ const main = async () => {
    */
   const rebuildActionEffectIndex = (list?: ActionEffectsConfig): void => {
     Object.keys(actionEffectIndex).forEach((k) => delete actionEffectIndex[k]);
+    Object.keys(actionEffectNames).forEach((k) => delete actionEffectNames[k]);
     (list ?? []).forEach((bind) => {
       if (!bind || !bind.animation || !(bind.particles ?? []).length) {
         console.warn('[actionEffects] 有一条绑定缺 animation / particles，已忽略:', bind);
         return;
       }
       (actionEffectIndex[bind.animation] ??= []).push(bind);
+      /** 扁平表与索引**同一处**写入 ⇒ 两者永远一致（少一处就少一个漂移点） */
+      (actionEffectNames[bind.animation] ??= []).push(...bind.particles);
     });
   };
   rebuildActionEffectIndex(configs.actionEffects);
@@ -1615,6 +1627,14 @@ const main = async () => {
       archiveUI = createArchive({
         visible: weShowArchive ?? storedSettings.showArchive === true,
         config: configs,
+        /**
+         * ★ 把「动画 → 特效」映射交给档案面板显示「特效」列（2026-10-17）。
+         *
+         * 传的是**上面那份已建好的扁平索引**，不是让面板自己再解析一遍
+         * `config.actionEffects` —— 那份索引才是"到底会拉起哪些组"的权威判据
+         * （见 `actionEffectNames` 与 `archive.ts` 的 `ActionEffectNames` 说明）。
+         */
+        actionEffects: actionEffectNames,
       });
 
       settingsUI = createSettingsPanel({
@@ -1740,13 +1760,8 @@ const main = async () => {
            * 返回：`{ bindings: {animation → 组名[]}, resolvable: 组名 → 是否真建起来了 }`
            */
           actionEffects: () => ({
-            bindings: Object.keys(actionEffectIndex).reduce(
-              (acc: { [k: string]: string[] }, k) => {
-                acc[k] = actionEffectIndex[k].map((b) => b.particles).flat();
-                return acc;
-              },
-              {}
-            ),
+            /** ★ 直接用重建时算好的扁平表（与档案面板同一个数据源，见 `actionEffectNames`） */
+            bindings: actionEffectNames,
             resolvable: Object.keys(particleByName).reduce(
               (acc: { [k: string]: boolean }, k) => {
                 acc[k] = !!particleByName[k];

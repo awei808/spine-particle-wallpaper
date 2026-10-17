@@ -129,6 +129,22 @@ only; the standby/resume channels always use the `fallback` family). An entry's 
 is not built and no family filtering happens). Never reintroduce hardcoded family names — see
 `dialogue.ts` (`buildFamilyRegistry` / `resolveDialoguePhase`) and `config.type.ts` (`EventFamily`).
 
+The **archive panel** (`src/archive.ts`) renders the *effective* config as a table:
+event / trigger condition / animation / **particle FX** / line / voice. Two hard rules:
+
+- **Never re-derive anything locally.** Pools come from `dialogue.*` (`resolveTriggerKinds` /
+  `buildPool` / `mergeKindPools`), and the FX column comes from `index.ts`'s
+  `actionEffectNames` (the flattened form of `actionEffectIndex`, rebuilt in the same place).
+  A second copy of either judgement is exactly how the panel starts silently lying about
+  behaviour. ⚠️ The touch channel has **two** pool sets (`pools` = fallback family only,
+  used by standby/resume; `touchPools` = filtered by `touchPhases`) — quoting the wrong one
+  in the notes is a real bug that shipped once (it said "池 3 条" next to 6 table rows).
+- **Trigger conditions stay terse and family-free** (2026-10-17). Event-family text is
+  deliberately absent from the condition column — a line's family is shown by the `#id`
+  badge suffix in the *line* column instead. The note list under the table is kept to
+  ~5 short lines: WE does not forward the wheel, so anything longer just pushes the card
+  into overflow.
+
 Other config knobs (meshes, layers, `minAspect` / `maxAspect`, `dpr: "auto"`, panel
 `fitAspect`) are described in `public/assets/README.md`.
 

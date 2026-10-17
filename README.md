@@ -25,7 +25,7 @@ This repository grew into a **framework** on top of that rendering core:
 | Pause / resume                                                   | —        | ✅ **Unified audio master** (WE `setPaused` + page visibility) |
 | Pointer trail                                                    | —        | ✅ Emitted along cursor movement                               |
 | Built-in settings panel                                          | —        | ✅ 7 tabs (the last one, "wallpaper-specific", is config-gated), edit at runtime and persist |
-| Archive panel / disclaimer                                       | —        | ✅                                                             |
+| Archive panel / disclaimer                                       | —        | ✅ Archive lists the events / trigger conditions / animations / **particle FX** / lines / voice for the effective config |
 | Debug probe                                                      | —        | ✅ HUD plus CDP snapshot API                                   |
 
 ## Features

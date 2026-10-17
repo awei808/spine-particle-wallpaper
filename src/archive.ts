@@ -34,6 +34,24 @@
  * `resolveTriggerKinds` / `mergeKindPools` / `buildPool` / `findByActionId`），
  * **不另写一套判据** —— 否则文档与行为会慢慢漂移（这正是"新增冗余"最容易出事的地方）。
  *
+ * ## ★★ 新增「特效」列 —— 逐行标出这条动画会拉起哪些粒子组（2026-10-17）
+ *
+ * 动作可能额外拉一簇粒子（游戏侧 `CfgSoulSpineActionTable` 的 `EffectId` / `MarryEffectId`，
+ * 即 `config.actionEffects`，见 `ActionEffectConfig` 的说明）。原先只有调试面板能间接看到，
+ * 档案里查不到 ⇒ 补一列，用户对照"点下去到底有没有出特效"时不必再翻 config。
+ *
+ * ★ 映射**由调用方传入**（`ArchiveOptions.actionEffects`，来自 `index.ts` 的
+ *   `actionEffectNames`）—— 引擎侧那份索引才是唯一权威，本文件**不另建一份**
+ *   （两处各写一遍迟早漂移，正是本文件要避免的事，同上面「池子」那条口径）。
+ *
+ * ## ★ 「触发条件」列**不写事件族**、细则从简（2026-10-17 用户拍板）
+ *
+ * 事件族（`config.subtitle.eventFamilies`）是**配置实现细节**：写进条件列只会让每行变长，
+ * 还容易与设置面板「事件池」页里那个勾选混淆 ⇒ 条件列不再出现「事件族 xxx」。
+ * 条目属于哪一族改由**念白列的角标** `· <族名>` 表达（缺省族不缀，见 `makeRow`）。
+ * 表下的「触发细则」同时由 6 段长句压成 5 句短句 —— WE 不转发滚轮，
+ * 细则越短越不容易把卡片撑到必须滚动。
+ *
  * ## ★ 显示与否只由 WE 属性 `showArchive` 决定（用户 2026-09-30 拍板）
  *
  * 打开 ⇒ 常驻显示；关掉 ⇒ 消失。**热切换，不重载页面**（同 `disclaimer.ts` /
@@ -91,6 +109,17 @@ import {
 } from './dialogue';
 import { UI_SCALE_VAR, fpx, getUiScale, initUiScale, uiPx } from './uiScale';
 
+/**
+ * 「动画名 → 绑定的粒子组名」映射（= `config.actionEffects` 的**扁平形式**）。
+ *
+ * ★ 由调用方（`index.ts` 的 `actionEffectNames`）传入，本文件不自行解析
+ *   `config.actionEffects` —— 引擎那份索引与"到底会不会播"是同一处判据，
+ *   在这里再写一遍必然慢慢漂移（同文件头「不另写一套判据」的口径）。
+ *   （`actionEffectIndex` 的值是完整的 `ActionEffectConfig[]`；档案只要名字，
+ *     所以直接用扁平表，省掉一层 `.map(b => b.particles).flat()`。）
+ */
+export type ActionEffectNames = { [animation: string]: string[] };
+
 export type ArchiveOptions = {
   /** 初始是否显示（WE 属性值 → localStorage 覆盖层，由调用方决定） */
   visible: boolean;
@@ -101,6 +130,13 @@ export type ArchiveOptions = {
    *   不是 `rawConfigs` —— 否则表里显示的是"出厂值"而不是用户当前生效值。
    */
   config: Configs;
+  /**
+   * 「动作特效」映射（动画名 → 粒子组名）。缺省 `{}` ⇒ 特效列全为「—」。
+   *
+   * ★ 传的是 `index.ts` 里那份**已按 `config.actionEffects` 建好的**索引，
+   *   见 `ActionEffectNames` 的说明。
+   */
+  actionEffects?: ActionEffectNames;
 };
 
 export type ArchivePanel = {
@@ -133,8 +169,13 @@ const SWALLOW_EVENTS = [
   'contextmenu',
 ];
 
-/** 表格列宽（百分比）。顺序 = 事件 / 触发条件 / 动作 / 念白 / 语音 */
-const COLS: readonly string[] = ['13%', '23%', '9%', '39%', '16%'];
+/**
+ * 表格列宽（百分比）。顺序 = 事件 / 触发条件 / 动作 / **特效** / 念白 / 语音。
+ *
+ * ★ 2026-10-17 新增「特效」列：念白列从 39% 让到 32%、触发条件列从 23% 让到 20%
+ *   （条件列去掉了事件族那段长文案，本来就变短了）。总宽仍为 100%。
+ */
+const COLS: readonly string[] = ['12%', '20%', '8%', '15%', '32%', '13%'];
 
 const SLOT_LABEL: Record<DialogueSlotKey, string> = {
   morning: '上午',
@@ -150,6 +191,11 @@ type Row = {
   cond: string;
   /** spine 动画名 */
   action: string;
+  /**
+   * 这条动画绑定的粒子组名（`config.actionEffects`），每行一个。
+   * 没绑 / 该行没有动画 ⇒ `—`。见 `fxText`。
+   */
+  fx: string;
   /** 念白标识（`#64005` + 官方动作名） */
   tag: string;
   /** 念白正文 */
@@ -209,13 +255,25 @@ const voiceBase = (voice?: string): string => {
 };
 
 /**
+ * 某条动画绑定的粒子组名 → 「特效」单元格文本。
+ *
+ * ★ 一个组一行（单元格用 `white-space:pre-line`）：组名可能很长（`fx_chat_lizi_san`），
+ *   挤成一行会把 8% 宽的动作列顶开。没绑 / 无动画 ⇒ `—`（与"动作"列的缺省写法一致）。
+ */
+const fxText = (ae: ActionEffectNames, animation?: string): string => {
+  const names = animation ? ae[animation] : undefined;
+  return names && names.length ? names.join('\n') : '—';
+};
+
+/**
  * 造一行。★ 事件族名由**注册表**给（`reg.label`）—— 2026-10-15 起不再是写死的三族表。
  */
 const makeRow = (
   event: string,
   cond: string,
   e: DialogueEntry,
-  reg: FamilyRegistry
+  reg: FamilyRegistry,
+  ae: ActionEffectNames
 ): Row => {
   const short = shortLabel(e.label);
   /**
@@ -232,6 +290,7 @@ const makeRow = (
     event,
     cond,
     action: e.animation,
+    fx: fxText(ae, e.animation),
     tag: '#' + e.actionId + (short ? ' ' + short : '') + phTail,
     text: e.text,
     voice: voiceBase(e.voice),
@@ -249,7 +308,6 @@ type ArchiveState = {
   /** 三张 id 列表（摊平旧口径之后） */
   chatIds: number[];
   greetIds: number[];
-  touchIds: number[];
   /** 三个类别各自的条目池（`buildPool` 的产物；**只含缺省族**，= `index.ts` 的 `KIND_POOLS`） */
   pools: Record<TriggerEventKind, DialogueEntry[]>;
   /**
@@ -260,8 +318,6 @@ type ArchiveState = {
    *   （否则"表里说会播"与"实际会不会播"会不一致，正是本文件要避免的事）。
    */
   touchPools: Record<TriggerEventKind, DialogueEntry[]>;
-  /** 触摸通道勾中的事件族（摊平后） */
-  touchPhases: TriggerPhase[];
   /** 事件族注册表（`config.subtitle.eventFamilies` 归一而来；族名/缺省族/判据都从它取） */
   families: FamilyRegistry;
   /** 三个通道**真正会播**哪些类别（口径 + 可用性，= 运行时同一判据） */
@@ -306,10 +362,8 @@ const resolveState = (cfg: Configs): ArchiveState => {
     dialogues,
     chatIds,
     greetIds,
-    touchIds,
     pools,
     touchPools,
-    touchPhases,
     families,
     channels: {
       // ★ 与 `index.ts` 完全同一组入参 —— 表里显示的"会播哪几类"不可能与实际行为不同
@@ -373,7 +427,11 @@ const kindOfEntry = (
  * 顺序 = 「触发入口」分组，与运行时可能发生的先后无关：
  * 回到壁纸（自动）→ 待机（自动）→ 点击触摸（交互）→ 常驻序列（若启用）→ BGM（环境）。
  */
-const buildRows = (cfg: Configs, st: ArchiveState): Row[] => {
+const buildRows = (
+  cfg: Configs,
+  st: ArchiveState,
+  ae: ActionEffectNames
+): Row[] => {
   const sub = cfg.subtitle;
   const dialogues = st.dialogues;
   const rows: Row[] = [];
@@ -387,9 +445,14 @@ const buildRows = (cfg: Configs, st: ArchiveState): Row[] => {
     0,
     Math.round((sub?.standbyIdleMs ?? 25000) / 1000)
   );
+  /**
+   * 条件列开头的"闸门"。★ 2026-10-17 从简：只留**辨识闸门所需的最短词**，
+   * 具体秒数/前提（如"恢复需离开 ≥ 15 秒"）统一由表下「触发细则」承接
+   * —— 逐行重复长句会把条件列挤到看不清真正有差异的部分。
+   */
   const GATE: Record<TriggerChannel, string> = {
-    resume: '壁纸载入 / 回到桌面 / 回到前台 / WE 恢复（离开 ≥ 15 秒）',
-    standby: '无操作静置 ' + fmtSec(standbySec),
+    resume: '载入 / 页面重新可见 / 窗口重获焦点 / WE 恢复',
+    standby: '静置 ' + fmtSec(standbySec),
     touch: '点击角色热区',
   };
 
@@ -406,9 +469,7 @@ const buildRows = (cfg: Configs, st: ArchiveState): Row[] => {
     /** 勾了多类 ⇒ 合成一个池一起抽（池内每条等概率，所以条目多的类别更容易抽到） */
     const tail =
       kinds.length > 1
-        ? ' · 合成一个池随机（共 ' +
-          mergedPool.length +
-          ' 条，条目多的类别更容易抽到）'
+        ? ' · 并池随机 1 条（共 ' + mergedPool.length + ' 条）'
         : ' · 池内随机 1 条';
     kinds.forEach((k) => {
       if (k === 'chat') {
@@ -420,13 +481,10 @@ const buildRows = (cfg: Configs, st: ArchiveState): Row[] => {
           rows.push(
             makeRow(
               prefix + ' · chat类 #' + (i + 1),
-              GATE[kind] +
-                tail +
-                '（chat 池共 ' +
-                st.pools.chat.length +
-                ' 条）',
+              GATE[kind] + tail + '（chat 池 ' + st.pools.chat.length + ' 条）',
               e,
-              st.families
+              st.families,
+              ae
             )
           );
         });
@@ -464,7 +522,7 @@ const buildRows = (cfg: Configs, st: ArchiveState): Row[] => {
                   ? '（' + hourRangeText(range.start, range.end) + '）'
                   : '')
               : tail);
-          rows.push(makeRow(prefix + ' · ' + name, cond, e, st.families));
+          rows.push(makeRow(prefix + ' · ' + name, cond, e, st.families, ae));
         });
         return;
       }
@@ -475,11 +533,12 @@ const buildRows = (cfg: Configs, st: ArchiveState): Row[] => {
             prefix + ' · touch类（池内随机）',
             GATE[kind] +
               tail +
-              '（touch 池共 ' +
+              '（touch 池 ' +
               st.pools.touch.length +
-              ' 条，与「点击触摸」同一批候选）',
+              ' 条，同「点击触摸」）',
             st.pools.touch[0],
-            st.families
+            st.families,
+            ae
           )
         );
       }
@@ -495,25 +554,16 @@ const buildRows = (cfg: Configs, st: ArchiveState): Row[] => {
   /* ③ 点击触摸 —— 池 = 「触摸可触发的事件」勾中的类别并池，且**先按「可触发的事件族」筛过** */
   const touchKinds = st.channels.touch;
   const touchPool = mergeKindPools(touchKinds, st.touchPools, st.families);
-  const phaseText = st.touchPhases.length
-    ? st.touchPhases.map((p) => st.families.label(p)).join(' / ')
-    : '（未勾任何事件族 ⇒ 抽不出条目）';
   touchPool.forEach((e, i) => {
     const kind = kindOfEntry(e, touchKinds, st.touchPools);
     rows.push(
       makeRow(
         '点击触摸 #' + (i + 1),
-        '点击角色热区 · 事件族 ' +
-          phaseText +
-          ' · 池 #' +
-          (i + 1) +
-          '/' +
-          touchPool.length +
-          '（' +
-          KIND_TEXT[kind] +
-          '）',
+        // ★ 不写事件族（2026-10-17）：属族由念白列角标表达，条件列只留"命中热区 + 池内序号"
+        '点击角色热区 · 池 #' + (i + 1) + '/' + touchPool.length + '（' + KIND_TEXT[kind] + '）',
         e,
-        st.families
+        st.families,
+        ae
       )
     );
   });
@@ -538,12 +588,14 @@ const buildRows = (cfg: Configs, st: ArchiveState): Row[] => {
         gapMs +
         ' ms';
       if (e) {
-        rows.push(makeRow('常驻序列 #' + (i + 1), cond, e, st.families));
+        rows.push(makeRow('常驻序列 #' + (i + 1), cond, e, st.families, ae));
       } else {
         rows.push({
           event: '常驻序列 #' + (i + 1),
           cond,
           action: anim || '—',
+          // 只给动画名、没有念白条目：特效仍按动画名查（与真实播放同口径）
+          fx: fxText(ae, anim),
           tag: '—',
           text: '（只播动作，不出台词、不出语音）',
           voice: '—',
@@ -556,8 +608,9 @@ const buildRows = (cfg: Configs, st: ArchiveState): Row[] => {
   if (cfg.bgm?.enabled !== false && cfg.bgm?.file) {
     rows.push({
       event: '背景音乐',
-      cond: '壁纸加载后自动播放 · 暂停壁纸即暂停',
+      cond: '加载后自动播放 · 暂停壁纸即暂停',
       action: '—',
+      fx: '—',
       tag: '循环',
       text:
         '音量 ' +
@@ -579,20 +632,20 @@ const buildRows = (cfg: Configs, st: ArchiveState): Row[] => {
 const describeChannel = (st: ArchiveState, kind: TriggerChannel): string => {
   const kinds = st.channels[kind];
   if (!kinds.length) {
-    return '一类都没勾（或勾了的类别没有候选）—— 这个入口不会自动播任何东西';
+    return '不播任何东西（一类都没勾，或勾了的类别没有候选）';
   }
   if (kinds.length === 1 && kinds[0] === 'greet') {
     return st.greetMode === 'random'
-      ? '从 greet 列表里随机取 1 条（不看时间）'
-      : '按当前时刻取 greet 列表里对应序号那条（第 1 条=清晨、第 2 条=中午、第 3 条=傍晚）';
+      ? 'greet 列表随机取 1 条'
+      : '按时刻取 greet 列表对应条目（1=清晨 / 2=中午 / 3=傍晚）';
   }
   const pool = mergeKindPools(kinds, st.pools, st.families);
   return (
-    '把「' +
+    '「' +
     kinds.map((k) => KIND_TEXT[k]).join('、') +
-    '」合成一个池，随机抽 1 条（共 ' +
+    '」并池随机 1 条（共 ' +
     pool.length +
-    ' 条，条目多的类别更容易抽到）'
+    ' 条）'
   );
 };
 
@@ -611,41 +664,44 @@ const buildNotes = (cfg: Configs, st: ArchiveState): string[] => {
     Math.round((sub?.standbyIdleMs ?? 25000) / 1000)
   );
 
+  /**
+   * ★ 2026-10-17 从简（用户要求）：原先 6 段长句里塞了太多"为了严谨而重复表格"的内容。
+   *   每条压到 1~2 行 —— 闸门讲到"能分辨"即可，秒数之类的数字留在条件列/表格里。
+   */
   notes.push(
-    '「回到壁纸可触发的事件」管辖四个时机：① 壁纸载入后 ' +
+    '「回到壁纸」：载入后 ' +
       delaySec +
-      ' 秒；② 页面重新变为可见；③ 窗口重新获得焦点；④ Wallpaper Engine 暂停后恢复' +
-      '（恢复这一路还要求离开不少于 15 秒，切一下窗口马上回来不会触发）。' +
-      '当前会播：' +
+      ' 秒 / 页面重新可见 / 窗口重获焦点 / WE 恢复（恢复需离开 ≥ 15 秒）触发；' +
+      '相邻两次至少隔 5 秒，演出中跳过。当前 → ' +
       describeChannel(st, 'resume') +
-      '。相邻两次至少间隔 5 秒；若此刻正在播触摸动作则跳过，等下一个信号。' +
-      '（②③ 在桌面壁纸里通常收不到 —— 壁纸窗口始终"可见"，属尽力而为。）'
+      '。'
   );
   notes.push(
-    '「长时间待机可触发的事件」的计时从壁纸载入起算；只要有任何动作正在播放就重新起算，' +
-      '所以不会在演出中途插话。静置 ' +
+    '「长时间待机」：从载入起算，任何动作播放都重新计时；静置 ' +
       fmtSec(standbySec) +
-      ' 后：' +
+      '后触发。当前 → ' +
       describeChannel(st, 'standby') +
       '。'
   );
   notes.push(
-    '「点击触摸」= 点中任一热区后从池中随机取 1 条；池 = ' +
+    '「点击触摸」：点中任一热区后从池中随机取 1 条' +
       (st.channels.touch.length
-        ? '「触摸可触发的事件」勾中的类别合成一个池，共 ' +
-          mergeKindPools(st.channels.touch, st.pools, st.families).length +
-          ' 条（配置里 touch 列表 ' +
-          st.touchIds.length +
-          ' 条）'
-        : '空（「触摸可触发的事件」一类都没勾，或勾了的类别没有候选）') +
-      '。同一条念白对应的动画只有 5 个（greet / chat / touch1 / touch2 / touch3）——' +
-      '多条念白共用同一个动作是骨架资源本身的情况。'
+        ? /**
+           * ★★ 必须用 `st.touchPools`（**筛过事件族**的那套），不能用 `st.pools`
+           *   —— 后者只含缺省族（那是待机 / 回到壁纸用的口径）。
+           *   2026-10-17 修正：早先误用 `st.pools` ⇒ S8 上细则写「池 3 条」，
+           *   而表格（按 `touchPools` 列）明明有 6 行 ⇒ 表格与细则互相打架，
+           *   正是本文件开头点名要避免的事。
+           */
+          '（池 ' +
+            mergeKindPools(st.channels.touch, st.touchPools, st.families).length +
+            ' 条）'
+        : '（池为空 ⇒ 不播）') +
+      '；多条念白可共用同一动画，属骨架资源本身的情况。'
   );
   notes.push(
-    '念白播放时同时出字幕与语音；字幕停留取「念白标注时长」与「动画实际时长」中较短的那个。'
-  );
-  notes.push(
-    '触摸的动作与语音有「叠加 / 排队」两种模式；若启用了常驻动作序列，触摸会排到序列之后。'
+    '念白播放时同时出字幕与语音，停留时长取标注时长与动画时长的较短者；' +
+      '触摸的动作与语音有「叠加 / 排队」两种模式，启用常驻动作序列时触摸排在序列之后。'
   );
   /**
    * ★ 播放动作期间点击怎么处理（2026-10-08 新增）—— 表格里每一行都受它影响，
@@ -653,17 +709,16 @@ const buildNotes = (cfg: Configs, st: ArchiveState): string[] => {
    */
   const feedbackText =
     sub?.touchFeedbackMode === 'queue'
-      ? '排进播放队列：等当前这条演完自动接上（响应有延迟，但动作都演得完整）'
+      ? '排进播放队列（演完当前这条再接上）'
       : sub?.touchFeedbackMode === 'none'
-      ? '不做任何反馈：演出期间点击不产生任何动作或台词'
+      ? '不做任何反馈（演出期间点击无效）'
       : sub?.touchFeedbackMode === 'immediate'
-      ? '立即播放新动作：不管在演什么都打断当前这条，立刻播新的'
-      : '仅问候/聊天时立即：演问候或闲聊时点击会改播新的，演触摸动作时点击不响应（旧版行为）';
+      ? '立即播放新动作（打断当前这条）'
+      : '仅问候/聊天时立即（演触摸动作时不响应，旧版行为）';
   notes.push(
-    '「播放动作时点击」当前是：' +
+    '「播放动作时点击」：' +
       feedbackText +
-      '（在「设置 → 事件触发」页改）。四档都不影响空闲时的点击 —— 空闲时点击一定立即播。' +
-      '另外两个通道都是自动触发，一律不打断正在演的动作。'
+      '；在「设置 → 事件触发」页改，两路自动触发均不打断动作。'
   );
 
   return notes;
@@ -672,9 +727,11 @@ const buildNotes = (cfg: Configs, st: ArchiveState): string[] => {
 export const createArchive = (options: ArchiveOptions): ArchivePanel => {
   let visible = options.visible === true;
   const cfg = options.config;
+  /** 「动画名 → 粒子组名」映射（缺省空表 ⇒ 特效列全为「—」）。见 `ActionEffectNames`。 */
+  const ae: ActionEffectNames = options.actionEffects ?? {};
   // ★ 口径只算一次，表格与细则共用（见 `ArchiveState` 的注释）
   const st = resolveState(cfg);
-  const rows = buildRows(cfg, st);
+  const rows = buildRows(cfg, st, ae);
   const notes = buildNotes(cfg, st);
 
   // ★ 先初始化 UI 缩放变量（幂等）：下面所有 px 都依赖它
@@ -827,7 +884,7 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
     table
   );
   head.id = 'wb-archive-head';
-  makeCells(head, ['事件', '触发条件', '动作', '念白', '语音'], '');
+  makeCells(head, ['事件', '触发条件', '动作', '特效', '念白', '语音'], '');
   createEl(
     'div',
     'flex:0 0 auto;height:' +
@@ -893,11 +950,25 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
     );
     cAction.textContent = r.action;
 
+    /* 特效：该动画绑定的粒子组名（每行一个，`pre-line` 才会换行），青色与琥珀色动作名区分 */
+    const cFx = createEl(
+      'div',
+      'width:' +
+        COLS[3] +
+        ';flex:0 0 auto;box-sizing:border-box;padding:0 ' +
+        uiPx(7) +
+        ';font-size:' +
+        fpx(11) +
+        ';font-family:Consolas,Menlo,monospace;color:#9fe8d6;white-space:pre-line;word-break:break-all;line-height:1.5',
+      row
+    );
+    cFx.textContent = r.fx;
+
     /* 念白：上标 id/动作名（淡），下面正文 */
     const cLine = createEl(
       'div',
       'width:' +
-        COLS[3] +
+        COLS[4] +
         ';flex:0 0 auto;box-sizing:border-box;padding:0 ' +
         uiPx(7),
       row
@@ -919,7 +990,7 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
     const cVoice = createEl(
       'div',
       'width:' +
-        COLS[4] +
+        COLS[5] +
         ';flex:0 0 auto;box-sizing:border-box;padding:0 ' +
         uiPx(7) +
         ';font-size:' +
