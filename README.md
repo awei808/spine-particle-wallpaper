@@ -31,7 +31,7 @@ This repository grew into a **framework** on top of that rendering core:
 ## Features
 
 - **Layered scenes** — `texture` / `spine` / `particle` / `video` layers ordered by `position.z`, with full-screen fitting (`fitAspect`: height- or width-locked) and DPI awareness (`dpr: "auto"`). Black-bar detection is **real coverage based** (per-side, projected to screen), not an aspect-ratio threshold.
-- **Touch interaction** — rectangular hit zones plus an action sequence; `touch` / `greet` / `standby` sources follow explicit mutual-exclusion and interrupt rules.
+- **Touch interaction** — rectangular hit zones plus an action sequence; `touch` / `greet` / `standby` sources follow explicit mutual-exclusion and interrupt rules. Hit zones are **fully customizable** in `config.json` (`touch.zones`: add/remove/edit, per-zone `enabled`, `priority`); when zones overlap, exactly one wins by `enabled → priority desc → area asc → array index`.
 - **Voice & subtitles** — the bubble follows a character anchor, voice plays through a dedicated player; both are wired into the audio master.
 - **Audio master** (`src/audioMaster.ts`) — BGM and voice no longer subscribe to pause signals on their own; they register with a single master that handles pause/resume for both. Voice resumes from where it was paused.
 - **Particles & trails** — `ParticleAnimator` handles scene particles, `PointerTrail` handles the cursor trail; deliberately separate.
@@ -136,6 +136,7 @@ src/
   voiceBubble.ts           Subtitle bubble
   dialogue.ts              Voice scheduling
   touch.ts                 Hit zones and action gating
+  touchZones.ts            * Hit-zone data layer: normalize / validate / hit-test / overlap resolve
   pointerTrail.ts          Pointer trail
   settingsPanel.ts         Built-in settings panel
   settingsStore.ts         Settings read/write and overrides

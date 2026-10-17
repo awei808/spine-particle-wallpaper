@@ -83,7 +83,7 @@ Notes:
   full 22-layer scene with its own `config.json`, voice/BGM and an `index.html`). Do **not** develop or
   review framing against a hand-made one-background sample config: with `fitAspect: 'height'` a single
   background layer runs out of artwork around aspect 1.65 ~ 1.68, so an ordinary maximised browser
-  window (~2.0) then reports black bars that are *technically correct* while looking like a regression.
+  window (~2.0) then reports black bars that are _technically correct_ while looking like a regression.
   Backgrounds differ per scene, so the numbers do not transfer between configs — always measure on the
   assets you actually ship.
 
@@ -129,17 +129,46 @@ The old boolean `greetInTouchPool` was **removed**; "clicks may also trigger gre
 Every entry is an `actionId` from `subtitle.dialogues`. To add a candidate, append a number
 to the relevant array — no code change required.
 
-**Event families are a config-declared registry** (`subtitle.eventFamilies`, since 2026-10-15).
-The engine used to hardcode `'preMarry' | 'postMarry' | 'normal'`, which made every wallpaper look
-like a vow/wedding skin. Now each wallpaper declares its own families — `[{ id, label, default?,
-fallback?, matchSuffix? }]` — and `subtitle.touchPhases` selects a subset of them (touch channel
-only; the standby/resume channels always use the `fallback` family). An entry's family = explicit
-`DialogueEntry.phase` → per-family `matchSuffix` on the animation name → the `fallback` family.
-**Undeclared ⇒ one built-in family `normal`**; **`[]` ⇒ no event families at all** (the panel row
-is not built and no family filtering happens). Never reintroduce hardcoded family names — see
-`dialogue.ts` (`buildFamilyRegistry` / `resolveDialoguePhase`) and `config.type.ts` (`EventFamily`).
+**Event families are a config-declared registry** (`subtitle.eventFamilies`, since 2026-10-15),
+and since 2026-10-17 they carry **two orthogonal jobs** — do not merge them again:
 
-The **archive panel** (`src/archive.ts`) renders the *effective* config as a table:
+| Job                                | Field                                                             | Scope                                                                    |
+| ---------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Which **families** may fire at all | `subtitle.phases` (panel「事件族」)                               | **global** — every channel; `[]` ⇒ every pool empty, nothing can trigger |
+| Which **animation set** plays      | `subtitle.actionPhase` (panel「spine 动作族显示」, single-select) | **global**: idle / greet / standby / touch / idle-sequence               |
+
+The two gates are **AND**. `phases` used to be `touchPhases` and used to apply to the touch
+channel only (2026-10-17: renamed + widened); the old key is still read **only when `phases` is
+absent**, so old configs and localStorage overrides keep working. One pool set serves all
+channels (`KIND_POOLS`) — do **not** reintroduce a touch-only pool set, and note that
+`pickGreetingEntry` (the single-`greet` path) must be fed `phasedDialogues`, otherwise it
+bypasses the gate.
+
+An entry's family = explicit `DialogueEntry.phase` → per-family `matchSuffix` on the animation
+name → the `fallback` family. A family **with** `matchSuffix` is an _action family_: it is the
+only source of the single-select's options (`FamilyRegistry.actionIds`), and that suffix is the
+rename rule (`greet` → `greet_marry`). Entries that need a non-suffix name (S8's `chat` →
+`chat2_marry`) declare `DialogueEntry.phaseAnimations[<familyId>] = "<name>"`.
+
+`actionPhase` defaults to **the first action family** (`""` = explicit "no rename"), and entries
+belonging to _another_ action family are excluded from every pool (`isEntryVisibleInPhase`)
+⇒ oath wallpapers get 6 touch entries pre-oath (`TouchFeedback`) and 9 post-oath (+`MarryAction`),
+matching the game. The per-line rename, the table projection and the visibility test live in
+`dialogue.ts` (`resolveEntryAnimation` / `projectDialoguesToActionPhase` /
+`isEntryVisibleInPhase`); `archive.ts`, the debug chips and `__WB_DIALOGUE__.trigger` **must**
+reuse that projection — a second copy of the rename logic is how "the archive says `greet_marry`
+but it plays `greet`" happens.
+
+**`preMarry` no longer exists** (2026-10-17): pre-oath and normal share one candidate pool in the
+game, so those entries are plain `normal`. Never reintroduce hardcoded family names — see
+`dialogue.ts` (`buildFamilyRegistry` / `resolveDialoguePhase`) and `config.type.ts`
+(`EventFamily`, `SubtitleConfig.actionPhase`). **Undeclared ⇒ one built-in family `normal`**
+(no action family ⇒ neither panel row is built, nothing is renamed); **`[]` ⇒ no event families
+at all**. Two traps: `AnimationState.addAnimation` **throws** on an unknown name, so renames must
+be validated against the skeleton (`resolveIdleAnimation` + `touch.ts`'s guard), and `isIdle()`
+keys off `idleNames`, so a renamed idle must be passed to `createTouchController` too.
+
+The **archive panel** (`src/archive.ts`) renders the _effective_ config as a table:
 event / trigger condition / animation / **particle FX** / line / voice. Two hard rules:
 
 - **Never re-derive anything locally.** Pools come from `dialogue.*` (`resolveTriggerKinds` /
@@ -151,7 +180,7 @@ event / trigger condition / animation / **particle FX** / line / voice. Two hard
   in the notes is a real bug that shipped once (it said "池 3 条" next to 6 table rows).
 - **Trigger conditions stay terse and family-free** (2026-10-17). Event-family text is
   deliberately absent from the condition column — a line's family is shown by the `#id`
-  badge suffix in the *line* column instead. The note list under the table is kept to
+  badge suffix in the _line_ column instead. The note list under the table is kept to
   ~5 short lines: WE does not forward the wheel, so anything longer just pushes the card
   into overflow.
 
@@ -176,11 +205,11 @@ Other config knobs (meshes, layers, `minAspect` / `maxAspect`, `dpr: "auto"`, pa
    **There is NO aspect gate any more (2026-10-10).** `minAspect` / `maxAspect` are deprecated and
    ignored; the canvas is **always the full viewport** (no clamping, no letterbox). Instead the fit
    computes, per frame, the visible rect and every `texture`/`video` layer's coverage **projected to
-   screen NDC** (each layer divided by *its own* `|z|·tan(fov/2)·aspect` in x and `|z|·tan(fov/2)` in
+   screen NDC** (each layer divided by _its own_ `|z|·tan(fov/2)·aspect` in x and `|z|·tan(fov/2)` in
    y — perspective means a deep layer covers less screen than a near one of the same world size), then
    subtracts per side. Any side short by more than `LEAK_EPS` (0.5 px) raises the red `__fitErr` bar,
    which names the leaking sides in pixels. Never reintroduce an aspect-ratio proxy for this: a
-   mismatch between the proxy and reality is *silent* black at the edges.
+   mismatch between the proxy and reality is _silent_ black at the edges.
 4. **Config and bundle must be updated in pairs.** A `config.json` change that affects framing
    (e.g. `fitAspect`, `fov`, `cameraX`, `dpr`) only takes effect with a matching bundle reload.
 5. **Frame-driven fades freeze on WE pause.** WE web wallpaper stops `requestAnimationFrame`
