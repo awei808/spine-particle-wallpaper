@@ -240,12 +240,10 @@ export type SettingsOverrides = {
    * `true` ⇒ 忽略 `zones`，整屏一块热区。缺省 false（用 `zones`）。
    */
   touchFullscreen?: boolean;
-  /** 右上角设置按钮是否显示（对应 WE 属性面板里的开关） */
-  showSettings?: boolean;
   /**
    * 是否显示居中的「免责声明与许可证要求」弹窗（对应 WE 属性面板里的开关）。
    *
-   * ★ 与 `showSettings` 同类：**UI 门面开关，不是配置项** ——
+   * ★ **UI 门面开关，不是配置项** ——
    * 不在 `config.json` 里、`applyOverrides` 不消费它、`readView` 也产不出它
    * （硬塞进 `SettingsView` 会让每次启动都被 `sameView` 判成"有变化"⇒ 白重载）。
    * 打开 ⇒ 弹窗**常驻**显示；关闭 ⇒ 消失。热切换，见 `index.ts` 的 `applyWePatch`。
@@ -254,7 +252,7 @@ export type SettingsOverrides = {
   /**
    * 是否显示居中的「档案」面板（对应 WE 属性面板里的开关）。
    *
-   * ★ 与 `showSettings` / `showDisclaimer` 同类：**UI 门面开关，不是配置项** ——
+   * ★ 与 `showDisclaimer` 同类：**UI 门面开关，不是配置项** ——
    * 不在 `config.json` 里、`applyOverrides` 不消费它、`readView` 也产不出它
    * （硬塞进 `SettingsView` 会让每次启动都被 `sameView` 判成"有变化"⇒ 白重载）。
    * 打开 ⇒ 面板**常驻**显示（以表格列出壁纸可能触发的事件与触发条件）；关闭 ⇒ 消失。
@@ -262,28 +260,29 @@ export type SettingsOverrides = {
    */
   showArchive?: boolean;
   /**
-   * 左上角**整列入口**（折叠按钮 + 5 个入口）是否显示（对应 WE 属性 `showCornerButtons`）。
+   * 右上角**整列入口**（折叠按钮 + 5 个入口）是否显示 —— WE 属性 `showCornerButtons`，
+   * 即属性面板**第一项**「显示右上角按钮」。
    *
-   * ★ 与 `showSettings` 同类：**UI 门面开关，不是配置项** ——
+   * ★ 与 `showDisclaimer` / `showArchive` 同类：**UI 门面开关，不是配置项** ——
    * 不在 `config.json` 里、`applyOverrides` 不消费它、`readView` 也产不出它
    * （硬塞进 `SettingsView` 会让每次启动都被 `sameView` 判成"有变化"⇒ 白重载）。
-   * ★ 与 `showSettings` 的**分工**（2026-10-17 用户拍板）：
-   *   - `showSettings` 只管**齿轮那一个**按钮（+ 它开出来的设置面板）；
-   *   - 本键管**整列**（含折叠按钮）—— 这是"我不想在桌面上看到任何入口"的开关。
    * 热切换，见 `index.ts` 的 `applyWePatch`。
+   * ★★ 这是入口列**唯一**的显隐开关（2026-10-17 晚口径变更）：原先并存的
+   *   `showSettings`（设置按钮显示，只管齿轮那一个按钮）已随用户拍板撤回而删除。
+   *   ⚠️ 老存档/老 `project.json` 里残留的 `showSettings` 键**不再被读取**（静默忽略）。
    */
   showCornerButtons?: boolean;
   /** 设置面板当前是否展开。仅用于重载后还原 UI 状态 */
   panelOpen?: boolean;
   /**
-   * 调试面板（齿轮下方那个入口）当前是否展开。仅用于重载后还原 UI 状态。
+   * 调试面板（入口列里那个按钮）当前是否展开。仅用于重载后还原 UI 状态。
    *
    * ★ 与 `panelOpen` **互斥**：两个都存了 `true` 时只还原设置面板
    * （见 `settingsPanel.ts` 里 `debugOpen` 的初值）。
    */
   debugPanelOpen?: boolean;
   /**
-   * 左上角入口列是否**收起**（只留折叠按钮）。仅用于重载后还原 UI 状态。
+   * 入口列是否**收起**（只留折叠按钮）。仅用于重载后还原 UI 状态。
    *
    * ★ 与 `panelOpen` / `debugPanelOpen` 同类：UI 状态不是设置项，只是"重载后要还原"，
    *   所以不落进 `config.json`、也不进 `SettingsView`。
@@ -907,17 +906,23 @@ export const toEnum = <T extends string>(
 /**
  * 把 WE 下发的一批属性翻译成覆盖层补丁。**只认已知的键**，其余忽略。
  *
- * ## ★★ WE 属性面板只暴露 **6 项**（2026-09-26 拍板 3 项，09-27 增补第 4 项，09-30 增补第 5 项，
- * 2026-10-17 增补第 6 项）
+ * ## ★★ WE 属性面板只暴露 **5 项**（2026-09-26 拍板 3 项，09-27 增补第 4 项，09-30 增补第 5 项，
+ * 2026-10-17 晚删 1 项 + 首项改为 `showCornerButtons`）
  *
- * | WE 属性键 | 含义 | 落到的覆盖层字段 |
+ * | WE 属性键 | 面板文案 | 落到的覆盖层字段 |
  * |---|---|---|
- * | `showSettings` | 设置按钮显示 | `showSettings`（**只管齿轮那一个按钮**） |
+ * | `showCornerButtons` | **显示右上角按钮**（order 100 = 第一项） | `showCornerButtons`（**整列**入口：折叠按钮 + 5 个入口） |
  * | `muteAll` | 全部静音 | `muteAll` |
  * | `debugEnabled` | 调试总开关 | `probeEnabled`（与**调试面板**里的「调试总开关」同一个字段 ⇒ 两边同源） |
  * | `showDisclaimer` | 显示免责声明与许可证要求 | `showDisclaimer`（居中弹窗，常驻显示） |
  * | `showArchive` | 显示档案 | `showArchive`（居中「档案」面板，常驻显示） |
- * | `showCornerButtons` | 显示左上角按钮 | `showCornerButtons`（**整列**入口：折叠按钮 + 5 个入口） |
+ *
+ * ★★ **`showSettings`（设置按钮显示）已删除**（2026-10-17 晚用户拍板）：它原先只管
+ *   入口列里的齿轮那**一个**按钮，与 `showCornerButtons` 构成"两个开关管同一列"的分治；
+ *   用户认为该决策多余 ⇒ 撤回，**只留一个开关管整列**。齿轮现在与其余 4 个入口
+ *   条件完全一致。<br>
+ *   ⚠️ 因此下面**故意不认** `showSettings` —— 老 `project.json` / 老存档里残留的该键
+ *   会被静默忽略（不会污染覆盖层），不会出现"删了属性但旧值还在起作用"的假象。
  *
  * 其余小项（BGM 开关/音量、字幕显示/位置、念白语音、常驻动作序列）
  * **一律不进 WE 属性面板** —— 它们都在右上角设置面板里，那儿能点选动画名、
@@ -938,16 +943,10 @@ export const overridesFromWeProperties = (
   const b = (key: string): boolean | undefined =>
     key in properties ? toBool(properties[key]) : undefined;
 
-  /** 右上角设置按钮显不显示（UI 门面开关，不是配置项） */
-  const showSettings = b('showSettings');
-  if (showSettings !== undefined) {
-    patch.showSettings = showSettings;
-  }
-
   /**
    * 居中「免责声明与许可证要求」弹窗显不显示。
    *
-   * ★ 与 `showSettings` 同一类：只管一个 DOM 的 `display`，
+   * ★ 只管一个 DOM 的 `display`，
    * 不进 `SettingsView` ⇒ `sameView` 判不出变化 ⇒ 由 `index.ts` 热切换。
    */
   const showDisclaimer = b('showDisclaimer');
@@ -967,12 +966,11 @@ export const overridesFromWeProperties = (
   }
 
   /**
-   * 左上角**整列入口**（折叠按钮 + 5 个入口）显不显示。
+   * 右上角**整列入口**（折叠按钮 + 5 个入口）显不显示。
    *
-   * ★ 与 `showSettings` 同一类：只管 DOM 的 `display`，不进 `SettingsView`
+   * ★ 与 `showDisclaimer` 同一类：只管 DOM 的 `display`，不进 `SettingsView`
    * ⇒ `sameView` 判不出变化 ⇒ 由 `index.ts` 热切换。
-   * ★ 分工（2026-10-17 用户拍板）：`showSettings` 只管齿轮那**一个**按钮，
-   *   本键管**整列**（含折叠按钮）。
+   * ★★ 这是入口列**唯一**的显隐开关（2026-10-17 晚）：原 `showSettings` 已删除。
    */
   const showCornerButtons = b('showCornerButtons');
   if (showCornerButtons !== undefined) {

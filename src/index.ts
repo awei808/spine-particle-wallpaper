@@ -124,11 +124,11 @@ let effectiveViewRef: ReturnType<typeof readView> = null;
 let pendingWePatches: Array<Record<string, unknown>> = [];
 
 /**
- * WE 属性 `showSettings`（右上角齿轮**显不显示**）的最近一次权威值。
+ * WE 属性 `showDisclaimer`（居中「免责声明与许可证要求」弹窗**显不显示**）的最近一次权威值。
  *
  * ## ★为什么单独拎出来，而不是塞进 `SettingsView` / 走重载
  *
- * `showSettings` 不是配置项：它不在 `config.json` 里、`applyOverrides` 不消费它、
+ * `showDisclaimer` 不是配置项：它不在 `config.json` 里、`applyOverrides` 不消费它、
  * `readView` 也产不出它。若硬塞进 `SettingsView` 去比 `sameView`，
  * 重载后 `readView(applyOverrides(...))` 又读不到它 ⇒ 每次启动都会被判成
  * "从无到有" ⇒ **白重载一次**（正是 `sameView` 注释里警告过的坑）。
@@ -139,32 +139,25 @@ let pendingWePatches: Array<Record<string, unknown>> = [];
  * WE 可能在 `main()` 之前就回调 `applyUserProperties`（见 121 行安装点），
  * 所以这里必须能在面板还没建好时生效 —— 建好后再由下面的 `setVisible` 补一刀。
  */
-let weShowSettings: boolean | undefined;
-
-/**
- * WE 属性 `showDisclaimer`（居中「免责声明与许可证要求」弹窗**显不显示**）的最近一次权威值。
- *
- * 与 `showSettings` 完全同构（同为 UI 门面开关、同样不进 `SettingsView`、同样热切换），
- * 理由不再复述，见上面 `weShowSettings` 与 `settingsStore.sameView` 的注释。
- */
 let weShowDisclaimer: boolean | undefined;
 
 /**
  * WE 属性 `showArchive`（居中「档案」面板**显不显示**）的最近一次权威值。
  *
- * 与 `showSettings` / `showDisclaimer` 完全同构（同为 UI 门面开关、同样不进
+ * 与 `showDisclaimer` 完全同构（同为 UI 门面开关、同样不进
  * `SettingsView`、同样热切换），理由不再复述。
  */
 let weShowArchive: boolean | undefined;
 
 /**
- * WE 属性 `showCornerButtons`（左上角**整列入口**显不显示）的最近一次权威值。
+ * WE 属性 `showCornerButtons`（右上角**整列入口**显不显示）的最近一次权威值。
  *
- * 与 `showSettings` / `showDisclaimer` / `showArchive` 完全同构
- * （UI 门面开关、不进 `SettingsView`、热切换），理由不再复述。
+ * 与 `showDisclaimer` / `showArchive` 完全同构（UI 门面开关、不进 `SettingsView`、
+ * 热切换），理由不再复述。
  *
- * ★ 与 `showSettings` 的**分工**（用户 2026-10-17 拍板）：`showSettings` 只管**齿轮那一个**
- *   按钮（以及它开出来的设置面板）；本键管**整列**（折叠按钮 + 5 个入口）。
+ * ★★ 这是入口列**唯一**的显隐开关（2026-10-17 晚）：原先并存的 `showSettings`
+ *   （只管齿轮那一个按钮）已随用户拍板撤回而**全链路删除**。
+ *   ⇒ 这个键在 WE 属性面板里是**第一项**（`order: 100`，文案「显示右上角按钮」）。
  */
 let weShowCornerButtons: boolean | undefined;
 
@@ -173,7 +166,7 @@ let weShowCornerButtons: boolean | undefined;
  *
  * ★★ 声明**必须**早于 `applyWePatch`：WE 可能在 `main()` 执行前就下发属性，
  * 那时 `let settingsUI` 若还停在下面（模块后段）会处在 TDZ ⇒
- * `settingsUI?.setVisible()` 抛 `ReferenceError` ⇒ 属性被静默丢弃。
+ * `settingsUI?.setCornerVisible()` 抛 `ReferenceError` ⇒ 属性被静默丢弃。
  * （原先只有赋值没有读取，所以这个时序坑一直没暴露。）
  */
 let settingsUI: SettingsPanel = null;
@@ -207,20 +200,16 @@ const applyWePatch = (patch: Record<string, unknown>) => {
   writeOverrides(patch as ReturnType<typeof readOverrides>);
 
   /**
-   * ★★ `showSettings` 特例：**热切换，不重载**。
+   * ★★ `showDisclaimer` 特例：**热切换，不重载**。
    *
    * 它不进 `SettingsView`，所以 `sameView` 永远判它"没变化" ⇒ 指望不上 `scheduleReload`。
    * 但它改的只是一个 DOM 元素的 `display`，热切毫无副作用，还比 reload 快得多。
-   * 面板尚未创建时（`settingsUI === null`）先存进 `weShowSettings`，
-   * 等 `createSettingsPanel` 建好时取用（见下面 visible 那一行）。
-   */
-  if (typeof patch.showSettings === 'boolean') {
-    weShowSettings = patch.showSettings;
-    settingsUI?.setVisible(weShowSettings);
-  }
-
-  /**
-   * `showDisclaimer` 同理：**热切换，不重载**。
+   *
+   * ★ 四个 UI 门面键（`showDisclaimer` / `showArchive` / `showCornerButtons`）都走这条
+   *   同一套路：不进 `SettingsView` ⇒ 判据只能自己写。反之 **`muteAll` / `debugEnabled`
+   *   是配置项**（都被开机装配消费：前者让两个音频播放器直接 `null`，后者决定
+   *   `initProbe()` 要不要建 HUD/注册表）⇒ 它们进 `SettingsView`，由下面的
+   *   `sameView` + `scheduleReload` 走重载。
    *
    * 弹窗尚未创建时先存进 `weShowDisclaimer`，等 `createDisclaimer` 建好时取用。
    * 用户拍板（2026-09-27）：开关打开 ⇒ 弹窗**常驻**显示，关掉才消失。
@@ -245,7 +234,11 @@ const applyWePatch = (patch: Record<string, unknown>) => {
   }
 
   /**
-   * `showCornerButtons`（左上角整列入口）同理：**热切换，不重载**。
+   * `showCornerButtons`（右上角**整列入口**，属性面板第一项「显示右上角按钮」）同理：
+   * **热切换，不重载**。
+   *
+   * ★★ 这是入口列**唯一**的显隐开关（2026-10-17 晚）：原 `showSettings` 已删除
+   *   ⇒ 这里**不再**有 `showSettings` 分支（老存档里残留的该键被静默忽略）。
    *
    * 整列尚未创建时先存进 `weShowCornerButtons`，等 `createSettingsPanel` 建好时取用。
    */
@@ -1586,7 +1579,7 @@ const main = async () => {
           overrides: readOverrides(),
           view: readView(configs),
           defaultView: readView(rawConfigs),
-          panelVisible: settingsUI ? settingsUI.isVisible() : false,
+          /** 设置面板当前是否展开（判"入口在不在"用下面的 `cornerVisible`） */
           panelOpen: settingsUI ? settingsUI.isOpen() : false,
           /** 免责声明弹窗当前是否显示（验证脚本断言开关联动用） */
           disclaimerVisible: disclaimerUI ? disclaimerUI.isVisible() : false,
@@ -1594,11 +1587,13 @@ const main = async () => {
           archiveVisible: archiveUI ? archiveUI.isVisible() : false,
           archiveRows: archiveUI ? archiveUI.rowCount() : 0,
           /**
-           * 左上角入口列的状态（验证脚本断言"折叠/静音按钮真的改了东西"用）。
+           * 右上角入口列的状态（验证脚本断言"折叠/静音按钮真的改了东西"用）。
            *
            * ★ 为什么要把这三个读成快照而不是看 DOM：`display` 是**结果**，
            *   而"面板自己的状态变量"才是判据（例如收起时面板应被一起关掉 ——
            *   只看 DOM 也能看出来，但 `open` 状态是持久化的，必须一并核对）。
+           * ★ `cornerVisible` = 整列（含折叠按钮）显不显示 = WE `showCornerButtons`；
+           *   自 2026-10-17 晚起它是**唯一**的入口显隐真值（`panelVisible` 已随之删除）。
            */
           cornerVisible: settingsUI ? settingsUI.isCornerVisible() : false,
           cornerCollapsed: settingsUI ? settingsUI.isCornerCollapsed() : false,
@@ -1681,7 +1676,7 @@ const main = async () => {
        * ★★ 弹窗/面板的**初始可见性**只在这里算一次，下面三处（建弹窗、建面板、
        *   把初值交给入口列的高亮）共用 —— 各写一遍 `weShowX ?? stored === true`
        *   迟早会出现"弹窗开着、按钮不亮"这种两处口径不一致的偏差。
-       * 优先级：**WE 属性 > localStorage 覆盖层**（同 `showSettings`）。
+       * 优先级：**WE 属性 > localStorage 覆盖层**（同 `showCornerButtons`）。
        */
       const disclaimerVisible0 =
         weShowDisclaimer ?? storedSettings.showDisclaimer === true;
@@ -1740,13 +1735,13 @@ const main = async () => {
          *   `dialogue.buildFamilyRegistry` 里做。
          */
         eventFamilies: configs.subtitle?.eventFamilies,
-        // ★ WE 的 `showSettings` 优先于 localStorage：它才是"用户刚才在属性面板里勾的"
-        visible: weShowSettings ?? storedSettings.showSettings !== false,
         /**
-         * ★★ 左上角**整列入口**（折叠按钮 + 5 个入口）是否显示 —— WE 属性 `showCornerButtons`。
+         * ★★ 右上角**整列入口**（折叠按钮 + 5 个入口）是否显示 —— WE 属性 `showCornerButtons`
+         * （属性面板**第一项**「显示右上角按钮」）。
          *
-         * 与 `visible` 的分工（用户 2026-10-17 拍板）：`showSettings` 只管齿轮那**一个**
-         * 按钮，本项管**整列**。缺省 `true`（老存档里没这个键 ⇒ 照常显示）。
+         * ★ 这是入口列**唯一**的显隐开关（2026-10-17 晚）：原来并存的 `showSettings`
+         *   （只管齿轮）已全链路删除 ⇒ 这里不再传 `visible`。
+         * 缺省 `true`（老存档里没这个键 ⇒ 照常显示）。
          */
         cornerVisible: weShowCornerButtons ?? storedSettings.showCornerButtons !== false,
         /** 入口列的展开/收起状态（覆盖层 `cornerCollapsed`；缺省展开） */
@@ -1765,7 +1760,7 @@ const main = async () => {
          * 「免责声明」入口：切换居中弹窗，并把它落回**同一个覆盖层字段**
          * （`showDisclaimer`）⇒ 与 WE 属性同源、重载后状态保持。
          *
-         * ★ 不走 `applyWePatch`：那是"WE 下发属性"的入口，会连 `showSettings` 等一起判。
+         * ★ 不走 `applyWePatch`：那是"WE 下发属性"的入口，会连别的键一起判。
          *   这里只动一个字段，直接改 DOM + `writeOverrides` 最直白，
          *   也不会因为 `sameView` 判"没变化"而白重载（`showDisclaimer` 本就不进视图）。
          */

@@ -55,7 +55,7 @@
  * ## ★ 显示与否只由 WE 属性 `showArchive` 决定（用户 2026-09-30 拍板）
  *
  * 打开 ⇒ 常驻显示；关掉 ⇒ 消失。**热切换，不重载页面**（同 `disclaimer.ts` /
- * `showSettings` 的口径，见 `index.ts` 的 `applyWePatch`）。
+ * `showCornerButtons` 的口径，见 `index.ts` 的 `applyWePatch`）。
  *
  * ## ★★ 遮罩**不吃事件**（与免责弹窗刻意的差异）
  *

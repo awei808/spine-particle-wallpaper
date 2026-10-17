@@ -30,7 +30,7 @@
  * ## ★ 显示与否只由 WE 属性 `showDisclaimer` 决定（用户拍板 2026-09-27）
  *
  * 开关打开 ⇒ 弹窗**常驻**居中显示；关掉 ⇒ 消失。**热切换，不重载页面**
- * （它改的只是一个 DOM 的 `display`，跟 `showSettings` 同一套口径，
+ * （它改的只是一个 DOM 的 `display`，跟 `showArchive` / `showCornerButtons` 同一套口径，
  * 详见 `index.ts` 里 `applyWePatch` 的注释）。
  *
  * ## ★★ 必须 `stopPropagation`

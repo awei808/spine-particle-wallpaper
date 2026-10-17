@@ -18,37 +18,40 @@
  */
 
 /**
- * 左上角**入口列**（6 个按钮）与它开出来的两个面板（**设置** / **调试**）。
+ * 右上角**入口列**（6 个按钮）与它开出来的两个面板（**设置** / **调试**）。
  *
- * ## 入口列（2026-10-17 用户拍板）
+ * ## 入口列（2026-10-17 晚定稿）
  *
- * WE 的属性面板里有 6 项开关，但壁纸里能直接点到的原先只有「设置」「调试」两个。
- * 现在把它们**并成同一列**，放在**左上角纵向排列**，顺序 = WE 属性面板的顺序：
+ * WE 的属性面板里有 5 项开关，但壁纸里能直接点到的原先只有「设置」「调试」两个。
+ * 现在把它们**并成同一列**，放在**右上角纵向排列**，顺序 = WE 属性面板的顺序
+ * （`showCornerButtons` 是属性面板的**第一项**，「设置」不是配置项、只是入口）：
  *
  * ```
  *  ⌃      折叠/展开（唯一常驻的那个按钮）
- *  ⚙      设置        ← WE `showSettings`（★ 只管这一个）
+ *  ⚙      设置        ← 非配置项（原来那个 `showSettings` 已删除，见下）
  *  🔇     静音        ← WE `muteAll`（桌面上"一键闭嘴"，纯运行时不写配置）
  *  🐛     调试        ← WE `debugEnabled`
  *  🛡     免责声明    ← WE `showDisclaimer`
  *  📖     档案        ← WE `showArchive`
  * ```
  *
- * ★ 为什么是**左上角**而不是右上角：右上角是 WE 自己的缓冲区/水印高发区，
- *   而左上角在壁纸上本来就空（探针 HUD 例外，见下）。
+ * ★★ **整列的显隐只有一个开关**：WE 属性 `showCornerButtons`（属性面板第一项
+ *   「显示右上角按钮」）。**历史上**曾有过第二个开关 `showSettings`（设置按钮显示）
+ *   专门管齿轮 —— 2026-10-17 晚用户拍板撤回该"分治"方案（多了个只在开关上打架的
+ *   维度），`showSettings` 已**从 WE 属性表、覆盖层、引擎全链路删除**；
+ *   齿轮现在与其余 4 个入口**条件完全一致**（列可见 && 未收起）。
+ *   ⚠️ 老存档/老 project.json 里残留的 `showSettings` 键会被**静默忽略**（不再被读）。
+ * ★ 为什么是**右上角**：WE 自身的缓冲区/水印在右上角，但壁纸的控件必须避开
+ *   左上角的探针 HUD（开发态 HUD 恒在 `left:0;top:0`）—— 且素材取景是"角色居中偏左"，
+ *   右上角本来就是空场。
  * ★ 图标一律**内联 SVG**（不依赖字体 glyph —— CEF 里缺字会变豆腐块），
  *   尺寸走 `uiPx()` 与整个 UI 同源缩放。
- * ★ 前 4 个按钮是「开/关某个面板」的**互斥切换**，会在激活时高亮；
+ * ★ 4 个按钮是「开/关某个面板」的互斥切换，会在激活时高亮；
  *   「静音」是纯运行时的音量压制，图标随状态在**喇叭/喇叭打叉**之间切换。
  * ★ 折叠按钮**永远可见**（只要整列没被 WE 关掉），其余 5 个由它统一收起/展开，
  *   状态持久化在覆盖层的 `cornerCollapsed`（默认展开）。
  * ★★ 收起时会把两个面板**一起关掉**：设置面板**没有自己的关闭按钮**
  *   （开关都靠齿轮），齿轮一藏就再也关不掉 ⇒ 会留在屏幕上出不去。
- * ★★ `showSettings`（WE 属性）现在**只管齿轮那一个按钮**；整列的显隐归
- *   WE 新属性 `showCornerButtons`（见 `settingsStore.ts`）。
- * ⚠️ 探针构建里左上角还有 `probeHud`（开发态 HUD，`pointer-events:none`）。
- *   两者都在左上角 ⇒ 视觉上会叠。本列挂得比 HUD 晚、同 z-index ⇒ 画在 HUD 之上，
- *   点击也不受影响（HUD 不吃事件）；验收脚本跑之前把 `probeHud` 关掉即可。
  *
  * ## ★★ 调试为什么从设置面板里独立出来（用户 2026-10-15 拍板）
  *
@@ -161,11 +164,12 @@ export type SettingsPanelOptions = {
    *   （与 `wallpaperSettings` 同一口径：没有事件族的皮肤不该多出一个点不动的控件）。
    */
   eventFamilies?: EventFamily[];
-  /** 齿轮按钮是否显示（对应 WE 属性 `showSettings`）。★ 只管齿轮那一个按钮 */
-  visible: boolean;
   /**
-   * 左上角**整列入口**（折叠按钮 + 5 个入口）是否显示（对应 WE 属性 `showCornerButtons`）。
-   * 缺省 `true`。与 `visible` 的分工见 `settingsStore.SettingsOverrides.showCornerButtons`。
+   * 右上角**整列入口**（折叠按钮 + 5 个入口）是否显示 —— WE 属性 `showCornerButtons`
+   * （属性面板**第一项**「显示右上角按钮」）。缺省 `true`。
+   *
+   * ★★ 这是**唯一**的入口显隐开关（2026-10-17 晚）：原「设置按钮显示」（`showSettings`）
+   *   已删除 ⇒ 齿轮不再有单独开关，与其余 4 个入口同进同出。
    */
   cornerVisible?: boolean;
   /**
@@ -229,10 +233,13 @@ export type SettingsPanelOptions = {
 };
 
 export type SettingsPanel = {
-  /** 齿轮（=「设置」入口）显不显示（对应 WE 属性 `showSettings`） */
-  setVisible: (v: boolean) => void;
-  isVisible: () => boolean;
-  /** 左上角整列入口显不显示（对应 WE 属性 `showCornerButtons`） */
+  /**
+   * 入口列（= 右上角整列，含折叠按钮）显不显示 —— WE 属性 `showCornerButtons`。
+   *
+   * ★ 这是**唯一**的入口显隐 API：原 `setVisible` / `isVisible`（只控制齿轮）随
+   *   WE 属性 `showSettings` 一起于 2026-10-17 晚删除。要判"入口在不在"用
+   *   `isCornerVisible()`，要判"设置面板开没开"用 `isOpen()`。
+   */
   setCornerVisible: (v: boolean) => void;
   isCornerVisible: () => boolean;
   /** 入口列当前是否收起（只留折叠按钮） */
@@ -617,9 +624,14 @@ export const createSettingsPanel = (
    *   否则一进壁纸就两个面板叠在一起。
    */
   let debugOpen = options.debugOpen === true && !open;
-  /** 齿轮（「设置」入口）显不显示 —— WE 属性 `showSettings`，只管这一个按钮 */
-  let visible = options.visible !== false;
-  /** 整列入口显不显示 —— WE 属性 `showCornerButtons` */
+  /**
+   * 入口列显不显示 —— WE 属性 `showCornerButtons`（属性面板**第一项**「显示右上角按钮」）。
+   *
+   * ★★ 2026-10-17 晚口径变更：**不再有"单独控制齿轮显隐"的开关**。
+   *   原 WE 属性 `showSettings`（设置按钮显示）已删除 —— 用户拍板撤回"面板里只露一个
+   *   开关"的分治方案，改回"**一个开关管整列**"。齿轮的显隐现与其余 4 个入口完全一样
+   *   （= 整列可见 && 未收起）。
+   */
   let cornerVisible = options.cornerVisible !== false;
   /** 入口列是否收起（只留折叠按钮）—— 覆盖层 `cornerCollapsed` */
   let collapsed = options.cornerCollapsed === true;
@@ -658,13 +670,14 @@ export const createSettingsPanel = (
     );
   });
 
-  /* ── 左上角入口列 ─────────────────────────────
+  /* ── 右上角入口列 ─────────────────────────────
    *
-   * ★ 几何：单独一个 `position:fixed;top:0;left:0` 的零尺寸盒（`corner`），
-   *   与右上角的 `root` **分开**。为什么不复用 `root`：`root` 钉在
-   *   `top:0;right:0`（零尺寸盒 ⇒ 子元素原点 =**视口右上角**），
-   *   要在它里面摆左上角得写成 `right:calc(100vw - …)`，既绕又容易算错；
-   *   开一个自己的锚点，`left/top` 就是"距视口左/上缘"，一目了然。
+   * ★ 几何：直接挂在 `root`（`position:fixed;top:0;right:0` 的零尺寸盒）下、
+   *   绝对定位到 `top/right = CORNER_TOP` ⇒ 这组 `top/right` 就是"距视口上/右缘"，
+   *   与原来的齿轮/调试按钮同一套坐标口径（`syncScrollbar` 也是这么算的）。
+   * ★ 为什么单独一层容器而不是 6 个按钮各自绝对定位：纵向排列 + 统一间距交给
+   *   `flex-direction:column` 管，加/减按钮不用重算每一颗的 `top`
+   *   （这正是原来自绘 `CORNER_TOP + (CORNER_BTN + CORNER_GAP) * n` 的毛病）。
    * ★ 容器自己 `pointer-events:none`（不吃事件、不挡画面），只有按钮吃。
    */
   const CORNER_BTN = 38;
@@ -674,34 +687,24 @@ export const createSettingsPanel = (
   const corner = createEl(
     'div',
     [
-      'position:fixed',
-      'top:0',
-      'left:0',
-      'z-index:2147483647',
+      'position:absolute',
+      'top:' + uiPx(CORNER_TOP),
+      'right:' + uiPx(CORNER_TOP),
       'display:flex',
       'flex-direction:column',
       'gap:' + uiPx(CORNER_GAP),
-      'align-items:flex-start',
-      // 内边距 = 距视口上/左缘的间距 ⇒ 按钮本身不需要再各写一份 top/left
-      'padding:' + uiPx(CORNER_TOP),
-      'box-sizing:border-box',
+      // 靠右对齐：按钮的右缘一致 ⇒ 与原来的齿轮保持同一个贴边位置
+      'align-items:flex-end',
       'pointer-events:none',
       'font-family:' + FONT,
       'user-select:none',
       '-webkit-user-select:none',
-    ].join(';')
+    ].join(';'),
+    root
   );
   corner.id = 'wb-corner';
-  // ★ 同 root：事件从这里往上冒泡到 document，不拦就会顺带触发一次"点角色"
-  SWALLOW_EVENTS.forEach((evt) => {
-    corner.addEventListener(
-      evt,
-      (e: Event) => {
-        e.stopPropagation();
-      },
-      false
-    );
-  });
+  // ★ 事件不用在这里再拦一遍：监听挂在 target 上的按钮处理器先跑，
+  //   随后冒泡到 `root`，root 的 SWALLOW_EVENTS 会统一 stopPropagation。
 
   /**
    * 造一个入口按钮（**统一的圆钮外观**，6 个按钮共用）。
@@ -801,7 +804,7 @@ export const createSettingsPanel = (
       'transform:translate(-50%,-50%)',
       'width:80vw',
       'height:80vh',
-      'display:' + (visible && open ? 'flex' : 'none'),
+      'display:' + (cornerVisible && open ? 'flex' : 'none'),
       'flex-direction:column',
       'box-sizing:border-box',
       'padding:' + uiPx(16) + ' ' + uiPx(20) + ' ' + uiPx(14),
@@ -1012,7 +1015,7 @@ export const createSettingsPanel = (
    */
   const syncScrollbar = () => {
     const over = tabBody.scrollHeight - tabBody.clientHeight;
-    const show = visible && open && over > 1;
+    const show = cornerVisible && open && over > 1;
     sbTrack.style.display = show ? 'block' : 'none';
     if (!show) {
       return;
@@ -1052,7 +1055,7 @@ export const createSettingsPanel = (
    * 幂等：`panelK` 不变时**不写样式** ⇒ 不会和 `ResizeObserver` 互相触发形成抖动。
    */
   const fitPanelScale = () => {
-    if (!visible || !open) {
+    if (!cornerVisible || !open) {
       return;
     }
     const s = getUiScale();
@@ -2094,11 +2097,11 @@ export const createSettingsPanel = (
     [
       'pointer-events:auto',
       'position:fixed',
-      // ★ 挂在入口列的**右侧**、与列顶对齐（不是"挂在调试按钮正下方"）：
+      // ★ 挂在入口列的**左侧**、与列顶对齐（不是"挂在调试按钮正下方"）：
       //   列本身有 6 个按钮（≈278 设计px）够高，面板若接在列尾就只剩半屏可用高度，
       //   而调试面板里有两组 chips（全部动画 + 全部念白），是全工程最高的浮层。
       'top:' + uiPx(CORNER_TOP),
-      'left:' + uiPx(CORNER_TOP + CORNER_BTN + CORNER_GAP),
+      'right:' + uiPx(CORNER_TOP + CORNER_BTN + CORNER_GAP),
       'width:' + uiPx(300),
       'box-sizing:border-box',
       'padding:' + uiPx(14) + ' ' + uiPx(16) + ' ' + uiPx(12),
@@ -2558,25 +2561,25 @@ export const createSettingsPanel = (
   /**
    * 刷新入口列与两个面板的显隐/高亮。**所有状态变化都只走这一处**。
    *
-   * ## 显隐口径（2026-10-17）
+   * ## 显隐口径（2026-10-17 晚口径变更后）
    *
    * | 元素 | 显示条件 |
    * |---|---|
-   * | 入口列容器 | `cornerVisible`（WE `showCornerButtons`） |
+   * | 入口列容器 | `cornerVisible`（WE `showCornerButtons` =「显示右上角按钮」） |
    * | 折叠按钮 | 跟着容器（容器没了它也没意义） |
-   * | 设置/静音/调试/免责/档案 | 容器 && **未收起**（设置那个再多一个 `visible`） |
-   * | 设置面板 | `visible && cornerVisible && open` |
+   * | 设置/静音/调试/免责/档案（5 个） | 容器 && **未收起** |
+   * | 设置面板 | `cornerVisible && open` |
    * | 调试面板 | `cornerVisible && debugOpen` |
    *
+   * ★ 5 个入口**条件完全一致**：`showSettings` 删除后齿轮不再有单独开关
+   *   （用户 2026-10-17 晚拍板撤回"分治"，改回"一个开关管整列"）。
    * ★ 为什么两个面板都要带 `cornerVisible`：整列被 WE 关掉后按钮就点不到了，
    *   面板若还留在屏幕上，**设置面板连关都关不掉**（它没有自己的关闭按钮）。
-   * ★ 调试面板**不再**跟着 `showSettings`：`showSettings` 现在只管齿轮那一个按钮
-   *   （用户 2026-10-17 拍板），调试有它自己的入口与自己的关闭按钮。
    */
   const applyVisibility = () => {
     corner.style.display = cornerVisible ? 'flex' : 'none';
     const entries = cornerVisible && !collapsed;
-    gear.style.display = entries && visible ? 'flex' : 'none';
+    gear.style.display = entries ? 'flex' : 'none';
     muteBtn.style.display = entries ? 'flex' : 'none';
     debugBtn.style.display = entries ? 'flex' : 'none';
     disclaimerBtn.style.display = entries ? 'flex' : 'none';
@@ -2587,7 +2590,7 @@ export const createSettingsPanel = (
     setEntryActive(disclaimerBtn, disclaimerVisible);
     setEntryActive(archiveBtn, archiveVisible);
     // ★ 'flex'（不是 'block'）：面板是 flex column（header/tabBar/tabBody/foot）
-    panel.style.display = visible && cornerVisible && open ? 'flex' : 'none';
+    panel.style.display = cornerVisible && open ? 'flex' : 'none';
     debugPanel.style.display = cornerVisible && debugOpen ? 'block' : 'none';
     // 展开/收起后面板尺寸变了 ⇒ 重新自适应 + 对齐兜底滚动条
     relayoutPanel();
@@ -2893,16 +2896,9 @@ export const createSettingsPanel = (
   // ★ 初始化 tab 选中态（同时触发一次自适应缩放）
   setTab(activeTab);
   document.body.appendChild(root);
-  // ★ 入口列有**自己的**锚点盒（左上角，与右上角的 root 分开）；挂在 root 之后 ⇒
-  //   同 z-index 时画在探针 HUD（也是左上角）之上
-  document.body.appendChild(corner);
+  // ★ `corner` 是 `root` 的子元素（右上角绝对定位），随 root 一起进退 ⇒ 不用单独挂
 
   return {
-    setVisible: (v: boolean) => {
-      visible = v !== false;
-      applyVisibility();
-    },
-    isVisible: () => visible,
     setCornerVisible: (v: boolean) => {
       cornerVisible = v !== false;
       applyVisibility();
@@ -2932,11 +2928,9 @@ export const createSettingsPanel = (
     dispose: () => {
       sbObserver.disconnect();
       window.removeEventListener('resize', onWindowResize, false);
+      // `corner` 是 root 的子元素 ⇒ 摘掉 root 就一起没了
       if (root.parentElement) {
         root.parentElement.removeChild(root);
-      }
-      if (corner.parentElement) {
-        corner.parentElement.removeChild(corner);
       }
     },
   };

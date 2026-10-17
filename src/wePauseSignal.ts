@@ -107,6 +107,8 @@ declare global {
  *     `applyGeneralProperties` 并**真的调用**，实测入参含
  *     `bgmEnabled / bgmVolume / showSettings / subtitleEnabled / subtitlePosition / voiceEnabled`
  *     全部自定义键，重载一次后依然有效。
+ *     （★ 这是**当时**实测到的入参快照 —— 其中 `showSettings` 已于 2026-10-17 晚从属性表删除；
+ *      该列表只作为"WE 确实会把自定义键全量下发"的证据，**不是**当前属性表的清单。）
  *
  * ## 为什么用 `___wpxUnpause` 当"是否跑在 WE 里"的闸门
  *
