@@ -38,6 +38,7 @@ npx ts-node --transpile-only _regress/<脚本名>.ts [参数...]
 | `72_回归_按速度与力.ts` | 同上（P2 六个模块靠覆盖字段合成，不要求 config 真有） | `WK_CONFIG` | `public/assets/config.json` |
 | `73_回归_渲染侧.ts` | 同上（P3 的 `renderer` 段靠覆盖字段合成，不要求 config 真有） | `WK_CONFIG` | `public/assets/config.json` |
 | `74_回归_UV与噪声.ts` | 同上（P4 的 `uv` / `noise` 新字段靠覆盖字段合成，不要求 config 真有） | `WK_CONFIG` | `public/assets/config.json` |
+| `75_回归_子发射器结构.ts` | 同上（**P5-a 只校验结构、不跑渲染**：直接 import `src/subEmitterConfig` 的纯函数，不依赖 config 真有这些字段） | `WK_CONFIG` | `public/assets/config.json` |
 
 例：
 
@@ -73,6 +74,7 @@ npx ts-node --transpile-only _regress/64_回归_触摸通道并池.ts
 | `71` | **形状族补充（P1，2026-10-16）** —— obsolete 变体折叠（`1→0/3→2/7→4/9→8/11→10`，逐位相同）、**圆盘族等价**（Sphere/Hemisphere 位置与 Circle 逐位相同）、**方向 = 径向**、`arc` 扇形与 BurstSpread、**Edge 的线段几何与本地 +Y 方向**、`m_Position`/`m_Rotation` 的形状通用性（平移不被旋转 + `rotZ` 与 `nodeRotZ` 同轴相加）、既有形状零回归与"未实现类型仍走锥形兜底"的现状钉扎 |
 | `73` | **P3「补渲染侧」（2026-10-17）** —— `renderMode` 五档（Billboard 轴对齐 / Stretched **长轴沿速度**（`长度 = \|v\|·velocityScale + lengthScale·size`，含`lengthScale=0 ⇒ 长度 0`）/ Horizontal **正视相机下高度为 0** / Vertical **正视相机下 ≡ Billboard** / Mesh **顶点 × 直径、不归一化** / None **不生成四边形但仍在模拟**）、`alignment=Velocity`（唯一有实感的一档）、`pivot`（**直径倍数**的旋转中心；`[0,0.5]` ⇒ 包围盒中心上移半个直径）、`allowRoll=false`（屏幕自转整体作废）、`flip`（UV 按条目自己的包围盒镜像）、`sortingFudge × fudgeToZ`（只动 `mesh.position.z`）、`min/maxParticleSize`（仅 Billboard 档生效）；Mesh 档在 **缺 mesh / 索引越界** 时静默回退 quad；以及**零回归**（无 `renderer` ≡ 有但全默认） |
 | `74` | **P4「UV / Noise 细节」（2026-10-17）** —— UV 的 `timeMode` 三档（Lifetime 现状 / **Speed = 按当前速度静态选帧**（官方 ScriptReference 逐字：慢于下界取首帧、快于上界取末帧）/ **FPS = ⌊年龄×fps⌋**，且后两档**不消费** `frameOverTime`/`cycles`）、`startFrame`（帧号、加在帧号上再回绕）、`animationType=1 Single Row` + `rowMode` 三档（Custom / Random 逐粒子抽行 / MeshIndex ≡ 第 0 行）、`flipU/flipV`（★ Unity **已废弃**的同义字段 ⇒ 只作 `renderer.flip` 的回退）；Noise 的 `octaves`/`octaveMultiplier`/`octaveScale`（势场 fBm 叠层，**逐层步长随频率自适应** ⇒ 叠层场仍**无源无汇**，用数值散度判据钉住）、`scrollSpeed`（采样点加 `速度 × 系统时间`）、`sizeAmount`（第 4 路**有界标量场**调制尺寸）、`rotationAmount`（curl 的 z 分量，**度/秒**）、`separateAxes`/`strengthY/Z`（逐轴强度）；以及**零回归**（无新字段 ≡ 有但全默认，含真实产物逐位相同） |
+| `75` | **P5-a「Sub Emitters · config 结构」（2026-10-17）** —— ⚠️ **只钉结构契约、不钉渲染**（引擎 P5-b 才接线，三个产物实测 0 个用例）：① **零回归**（现有 config 不含 `subEmitters`/`subOnly` ⇒ 校验器零警告）；② 合法配置与 `effectiveSubEmitterTargets()` 的 父→子 映射（含「同一目标被多个父共用」与「链式嵌套」）；③ **9 条 `severity: 'error'`** 逐条（target 缺失 / 找不到 / 自引用、trigger 非法、`collision`·`trigger` 未实现、inherit 非法、probability / instances / instanceMaxNum 越界）；④ **4 条 `severity: 'warn'`** 逐条（`z.mismatch`、`emission.notBurstOnly`（手册逐字：Death/Collision/Trigger/Manual 只能用 burst）、`subOnly.unreferenced`、`cycle` 成环）；⑤ 缺省值（trigger=birth / inherit=[] / probability=1 / instances=4）与 5 个继承位、5 档触发；⑥ 畸形输入不抛异常；⑦ ★ **P5-a 的边界**：`dist/bundle.js` 里**不含**校验器字符串 ⇒ 证明「未接线、对壁纸零影响」（**P5-b 接线后本条应改成反向断言**） |
 
 > ⚠️ `65` 的 D 段有一条**早已失配**的断言（找面板文案「旧版「touch触发greet事件」开关打开的效果」，
 > 该短语在 `src/` 里根本不存在、且注释不会进 bundle）⇒ 它会稳定报 1 条 FAIL，与本次改动无关。

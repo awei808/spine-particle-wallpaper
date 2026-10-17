@@ -525,3 +525,91 @@ curl 量级的贡献相等 ⇒ 叠层**不放大**场量级（3.66 → 4.18，�
 6. **`mode = Sprites` 未实现** —— 本作**无一使用**（全 Grid）。
 7. **仍未部署 WE、未发布**：与 P0~P3 同，本轮只落源码 + 回归 + 文档 + 数据层脚本（演练）。
    下次部署会把 P0 / P1 / P2 / P3 / P4 **一并带上**。
+
+---
+
+### 2.11 ✅ P5-a「Sub Emitters · 定 config 结构」已交付（2026-10-17）
+
+> 设计全文（含三个候选方案与"为什么否掉另外两个"）：`_work_SubEmitters/DESIGN_P5子发射器config结构_2026-10-17.md`
+> 证据：`_work_SubEmitters/01_全包P5普查.py`（756 条边 / 261 个父 / 117 个目标）+
+> `02_目标形态普查.py`（目标形态与实例化成本）。
+> 官方依据：`docx/RESEARCH_粒子系统复刻参考.md` **§4.16**（逐字 + 枚举 + 全包用量）。
+> 回归：`_regress/75_回归_子发射器结构.ts`（**37 断言**）。
+
+#### 用户拍板（2026-10-17）
+
+| # | 决策点 | 定案 |
+|---|---|---|
+| 1 | 结构位置 | ✅ **方案 A** —— 定义仍在扁平的 `meshes[]`、父 mesh 用 `name` 引用、被引用方加 `subOnly: true` |
+| 2 | 落地范围 | ✅ **只做 P5-a**（结构 + 类型 + 校验器 + 回归 + 留档）；**P5-b/c 等真要用到某个皮肤时再做** |
+| 3 | 实例池形态 | ✅ **每实例一个独立 `ParticleAnimator`**（各自 mesh、共享贴图）—— P5-b 时按此实现 |
+
+#### 结构（已落进 `src/config.type.ts`）
+
+```jsonc
+"meshes": [
+  {
+    "type": "particle", "name": "fx_touch1_glow",
+    "subEmitters": [
+      { "target": "fx_spark",        // ★ 引用 meshes[].name
+        "trigger": "death",          // birth | death | collision | trigger | manual（缺省 birth）
+        "inherit": ["size", "color"],// 5 位；也可写 "all" / "nothing"（缺省 []）
+        "probability": 0.5,          // [0,1]，每次触发事件掷一次（缺省 1）
+        "instances": 6,              // ★ 同屏实例池大小（缺省 4）—— 工程侧旋钮
+        "instanceMaxNum": 8 }        // ★ 每实例粒子上限（缺省由数据层按 burst/rate 反推）
+    ]
+  },
+  { "type": "particle", "name": "fx_spark", "subOnly": true }   // 只作模板，不独立发射
+]
+```
+
+* 位置与 z **不由 config 表达**：实例位置 = `父 mesh.position + 父粒子的 (x,y)`、`z` = 父系统的 z。
+  依据 = UI 的 reparent 分支 `localPosition = Vector3.zero; localRotation = identity`。
+* `subOnly` 与 `autoplay: false` **不重叠**：前者"永不独立跑，只当模板"，后者"建出来但等 `restart()`"。
+
+#### 校验器（`src/subEmitterConfig.ts`，纯函数、不依赖 three.js）
+
+`validateSubEmitters(configs)` → 警告列表，每条带 `severity`：`'error'` = **该条绑定作废**、
+`'warn'` = **仍然生效但有话要说**。`effectiveSubEmitterTargets(configs)` 给出摊平后的 父→子 映射
+（只排除 `error` 档 ⇒ 与校验器共用同一套判定，避免两处口径漂移 —— `archive.ts` 有过这个教训）。
+
+| code | severity | 触发条件 |
+|---|---|---|
+| `target.missing` / `target.notFound` / `target.selfRef` | error | 引用缺失 / 找不到 / 指向自己（全包实测**有 9 条自引用**脏数据） |
+| `trigger.invalid` | error | 不是 5 档之一 |
+| `trigger.unimplemented` | error | `collision` / `trigger` —— 依赖本项目**明确不复刻**的模块（§2.4）；**声明合法但被忽略，不静默吞掉** |
+| `inherit.invalid` | error | 不在 5 位内 / 既不是数组也不是 `all`·`nothing` |
+| `probability.range` / `instances.range` / `instanceMaxNum.range` | error | 越界（`instances` 上限 **64**，防"159 个父共用一个目标"时爆内存） |
+| `emission.notBurstOnly` | warn | 手册逐字：*"Collision, Trigger, Death and Manual events can only use burst emission"* ⇒ 那四档下子系统 `rateOverTime ≠ 0` 会报 |
+| `z.mismatch` | warn | target 的 z 与父不同（Unity 里子发射器是父的子物体 ⇒ z 应相同；实测 29 条脏数据） |
+| `cycle` | warn | 引用成环（Unity 有 `CheckCircularReferences` 并**移除**该引用） |
+| `subOnly.unreferenced` | warn | `subOnly: true` 却没人引用 ⇒ 永远不会出现在画面上 |
+
+#### ⛔ 本轮**不做**（P5-b/c）
+
+* 引擎消费这两个字段：**出生/死亡事件出口**、**继承注入 API**、**实例池 `src/subEmitters.ts`**、`subOnly` 的装配期处理。
+* 因此 `index.ts` **不 import** 校验器 ⇒ 它**不进产物**（`_regress/75_` 第 [7] 组钉住：
+  `dist/bundle.js` 里搜不到 `subOnly.unreferenced` / `instanceMaxNum` 两个字符串 ⇒ 对壁纸零影响；
+  **P5-b 接线后要改成反向断言**）。
+  ⚠️ 不要写成「bundle 逐字节不变」—— 那**不可检**：并行的面板改动也会改 bundle
+  （实测本轮 bundle md5 由 `266971f0…` 变成 `c1550e45…`，那是并行改动带来的，与本模块无关）。
+  所以钉的是「**本轮产物没进 bundle**」。
+* 三个产物 **0 个**子发射器（S9/S8/S6 六个 prefab、39 个节点实测）⇒ 现在是纯能力建设。
+
+#### 👉 P5-b 开工时照这张表机械补（typetree → config）
+
+| typetree（顶层 `tt`） | config |
+|---|---|
+| `tt.SubModule.enabled` | 先判它！`false` ⇒ **整个模块不看**（模板默认值会骗人） |
+| `tt.SubModule.subEmitters[].emitter.m_PathID` | `subEmitters[].target`（反查该 pathID 的 GameObject 名 → `meshes[].name`） |
+| `tt.SubModule.subEmitters[].type` | `subEmitters[].trigger`（`0→birth 1→collision 2→death 3→trigger 4→manual`） |
+| `tt.SubModule.subEmitters[].properties` | `subEmitters[].inherit`（`1<<0 color / 1<<1 size / 1<<2 rotation / 1<<3 lifetime / 1<<4 duration`；`0→"nothing"`、`31→"all"`） |
+| `tt.SubModule.subEmitters[].emitProbability` | `subEmitters[].probability` |
+| 目标节点本身是 `SubEmitter*` 或**只**被别人引用 | 该 mesh 加 `subOnly: true` |
+| `target.InitialModule.maxNumParticles` + `EmissionModule.m_Bursts[].countCurve` + `rateOverTime` | 反推 `instanceMaxNum`（**不能照搬 `maxNumParticles`**：实测 367 条是模板值 1000，照搬 ⇒ Σ 3.02M 粒子槽；按 `min(maxNum, ceil(1.5×max(Σburst, rate×存活秒数)))` 收敛后 ⇒ Σ 34.2k） |
+| `tt.lengthInSec` / `tt.looping` / `tt.prewarm` | ⚠️ 在**顶层**（不在 `InitialModule`）—— 决定实例"跑多久" |
+| `EmissionModule.m_Bursts`（**不是** `bursts`）、每次的 `countCurve` | 实例的 burst 表 |
+
+⚠️ 三个生成链（`10_wallpaper_engine/_构建_配置生成.py`、`_work_芙丽希娅_蝶语吟花/21_生成配置.py`、
+`_work_星语心恋/190_生成S8动作特效.py`）目前都会把子树里**所有** `ParticleSystem` 收进 `meshes[]`
+⇒ 真接入子发射器时，必须同时给"子专用节点"打 `subOnly`，否则它们会被当成独立系统也播一遍。

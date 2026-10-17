@@ -2508,6 +2508,167 @@ export type ParticleMeshConfig = MeshConfig & {
      */
     maxPoints?: number;
   } | null;
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+   * ── P5「Sub Emitters」· 结构定案（2026-10-17）─────────────────────────────
+   *
+   * ⚠️ **本轮只定结构与校验（P5-a），引擎尚未消费这两个字段**（P5-b 才接线）。
+   *    但类型即契约：数据层可以照此产出，校验器 `src/subEmitterConfig.ts` 会拦住
+   *    引用缺失 / 自引用 / 成环 / 枚举非法；`_regress/75_回归_子发射器结构.ts` 钉住这些规则。
+   *
+   * ## 依据（官方逐字，见 `docx/RESEARCH_粒子系统复刻参考.md` §4.16）
+   *
+   * · 模块作用：*"additional particle emitters that are **created at a particle's position
+   *   at certain stages of its lifetime**"*
+   * · 实例是什么：*"Sub-emitters are **ordinary Particle System objects** created in the
+   *   scene… This means that sub-emitters **can have sub-emitters of their own**"*
+   * · 五档触发：Birth *"When the particles are created."* / Death *"…destroyed."* /
+   *   Collision *"…collide with an object."* / Trigger *"…interact with a Trigger collider."* /
+   *   Manual *"Only triggered when requested via script."*
+   * · ★ 限制：*"Note that the **Collision, Trigger, Death and Manual** events can only use
+   *   **burst emission** in the Emission module."*
+   * · 继承：手册 *"you can transfer properties from the parent particle to each newly created
+   *   particle using the Inherit options. The transferrable properties are size, rotation,
+   *   color and lifetime."*；逐位说明见 `SubEmitterInherit` 的定义
+   * · 概率：*"Determines the proportion of sub-emitter spawn events that successfully triggers
+   *   the associated sub-emitter."*
+   *
+   * ## 序列化字段（要映射到本 config 的**全集**）
+   *
+   * ```
+   * SubModule = { enabled, subEmitters: [{ emitter(PPtr<ParticleSystem>), type, properties, emitProbability }] }
+   * type       ∈ { Birth=0, Collision=1, Death=2, Trigger=3, Manual=4 }
+   * properties = 位掩码 { Color=1<<0, Size=1<<1, Rotation=1<<2, Lifetime=1<<3, Duration=1<<4 }
+   * ```
+   * ★★ **判据必须是 `enabled`**：全包 41977 个 `ParticleSystem` **每一个**都带一个模板默认条目
+   *   `subEmitters: [{emitter: null, type: 0, properties: 0, emitProbability: 1.0}]`、`enabled: false`
+   *   ⇒ 按"数组非空即命中"会把整包算成命中（本项目第 1 条铁律的又一例）。
+   *
+   * ## ★ 为什么绑定写在**父 mesh** 上、而不是另开一张顶层注册表
+   *
+   *   1. **数据流的现实**：S6/S8 的生成链是"遍历 prefab 子树、收集所有 `ParticleSystem`
+   *      （滤掉 `Effect` 分组容器）"⇒ Unity 自动建的 `SubEmitter*`
+   *      （`SubModuleUI.CreateSubEmitter` 的命名规则）**天然会落在 `meshes[]` 里**。
+   *      另开注册表就得把同一份粒子参数写两遍 ⇒ 违反本工程的"单一真源"。
+   *   2. 与既有惯例一致：`actionEffects[].particles`、`cabinGroups` 都是**按 `name` 引用**。
+   *
+   * ## 全包实测（`_work_SubEmitters/`，41996 个 ParticleSystem）
+   *
+   *   子发射器条目 **756**（`enabled` 才算数）、父系统 **261**、被引用目标 **117**；
+   *   类型 `Birth 637 / Death 101 / Collision 13 / Manual 5`；继承位 **`Nothing` 占 88%**；
+   *   `emitProbability` 只有 `1.0(750) / 0.5(6)`；**68 个目标被 ≥2 个父共用（最多 159 个父）**；
+   *   15 个目标自己也是父（嵌套）；9 条自引用（脏数据）。
+   *   ★ **本工程三个产物（S9/S8/S6 六个 prefab、39 个节点）一个子发射器都没有**
+   *     ⇒ P5 对本作是纯能力建设。
+   */
+
+  /**
+   * 本系统作为**父**时声明的子发射器绑定。缺省 / `[]` ⇒ 无（现状）。
+   *
+   * 触发时机 = 父**粒子**的 Birth / Death（引擎侧在 `spawn()` 与死亡判定处取事件），
+   * 每次事件按 `probability` 掷一次骰子，命中则在**该粒子所在位置**实例化 `target`。
+   */
+  subEmitters?: SubEmitterBinding[];
+
+  /**
+   * `true` ⇒ **本系统永不独立发射**，只作为子发射器的**实例模板**被克隆
+   * （不进 `index.ts` 的 `meshUpdateCallbacks`、不按自己的 `emission` 跑）。
+   * 缺省 `false` ⇒ 现状。
+   *
+   * ⚠️ 与 `autoplay: false` **不重叠、不合并**：
+   *   · `autoplay: false` = "建出来但先不跑，等 `restart()`"（动作特效那批用的，S8/S6 正在用）；
+   *   · `subOnly: true` = "**永不**独立跑，只当模板"。
+   *   两者可同时出现（子专用系统又由动作触发），语义仍是两件事。
+   *
+   * ★ 为什么必须有它：现有生成链会把子树里的**所有** `ParticleSystem` 收进 `meshes[]`
+   *   ⇒ 子专用节点（`SubEmitter0/1/2`）会被当成独立系统也播一遍。
+   */
+  subOnly?: boolean;
+};
+
+/**
+ * P5 · 子发射器的触发时机（官方 `ParticleSystemSubEmitterType`）。
+ *
+ * ⚠️ `'collision'` / `'trigger'` 依赖的 **Collision / Trigger 模块本工程明确不复刻**
+ * （见 `docx/TODO.md` §2.4）⇒ 这两个值**声明合法但引擎只警告忽略**，
+ * 绝不静默吞掉（否则 config 里写着"有碰撞子发射器"而实际什么都不发生）。
+ */
+export type SubEmitterTrigger =
+  | 'birth'
+  | 'death'
+  | 'collision'
+  | 'trigger'
+  | 'manual';
+
+/**
+ * P5 · 继承位（官方 `ParticleSystemSubEmitterProperties`，5 位逐字见下）。
+ *
+ * ```
+ * InheritColor    "When spawning new particles, **multiply the start color** by the color
+ *                  of the parent particles."
+ * InheritSize     "When spawning new particles, **multiply the start size** by the size
+ *                  of the parent particles."
+ * InheritRotation "When spawning new particles, **add the start rotation** to the rotation
+ *                  of the parent particles."
+ * InheritLifetime "**New particles will have a shorter lifespan, the closer their parent
+ *                  particles are to death.**"
+ * InheritDuration "When spawning new particles, **use the duration and age properties from
+ *                  the parent system, when sampling MainModule curves in the Sub-Emitter**."
+ * ```
+ *
+ * ⚠️ `'duration'` 的口径很怪（"子粒子采样自己的 MainModule 曲线时改用**父系统**的
+ *   duration/age"）但**是逐字**的 ⇒ 实现时按它做，并在代码里标为**低优先级/存疑**。
+ */
+export type SubEmitterInherit =
+  | 'color'
+  | 'size'
+  | 'rotation'
+  | 'lifetime'
+  | 'duration';
+
+/**
+ * P5 · 一条"父 → 子"的绑定。对应 Unity `SubModule.subEmitters[]` 的一条。
+ *
+ * 位置与 z 的口径（**不由 config 表达**，引擎固定按下述规则做）：
+ *   · 实例位置 = `父 mesh.position + 父粒子的 (x, y)`；
+ *   · 实例 `z` = **父系统的 z**。
+ *   依据：Unity 的 UI 建子发射器时会 `localPosition = Vector3.zero; localRotation = identity`
+ *   （`SubModuleUI.CheckIfChild` 的 reparent 分支）⇒ 实例**挂在父系统的变换上**，
+ *   位置与 z 都跟父。若数据层给出的 target `position.z` 与父不同 ⇒ 校验器**报警**
+ *   （实测全包有 29 条"目标不是父系统后代"的脏数据）。
+ */
+export type SubEmitterBinding = {
+  /**
+   * 被实例化的系统：引用 `meshes[].name`（**必须存在且是 `type: 'particle'`**）。
+   * 对应 Unity 的 `emitter` PPtr。缺失 ⇒ 校验报错并忽略该条（不抛异常）。
+   */
+  target: string;
+  /** 触发时机，缺省 `'birth'`。 */
+  trigger?: SubEmitterTrigger;
+  /**
+   * 继承位，缺省 `[]`（= `InheritNothing`）。可写 `'all'`（= 全 5 位）/ `'nothing'`。
+   * 实测全包 756 条里 **667 条是 `Nothing`（88%）**，非空只有 89 条
+   * （`Size 53` / `Rotation 13` / `Size|Rotation 7` / `Color|Size|Rotation|Duration 6` …）。
+   */
+  inherit?: SubEmitterInherit[] | 'all' | 'nothing';
+  /** `[0,1]`，**每次触发事件**掷一次骰子。缺省 `1`。实测只有 `1.0` 与 `0.5` 两档。 */
+  probability?: number;
+  /**
+   * ★ **同屏实例池大小**（最多同时存在几个实例）。缺省 **4**。
+   *
+   * 为什么必须显式给：实测**68 个目标被 ≥2 个父共用、最多的一个被 159 个父共用**
+   * ⇒ 池必须**按绑定（每父一份）**，不给上限就是性能炸弹（见 §成本）。
+   */
+  instances?: number;
+  /**
+   * 每个实例的**粒子上限**（工程侧旋钮，不是 Unity 字段）。缺省 ⇒ 由数据层按
+   * `min(target.maxNumParticles, ceil(1.5 × max(Σburst, rateOverTime × 实例存活秒数)))` 反推。
+   *
+   * ⚠️ **不能照搬 target 的 `maxNumParticles`**：实测该字段 `1000 → 367` 条
+   *   （1000 是 Unity 模板默认值）⇒ 照搬会让"每边 `instances: 8`"的代价达到
+   *   **Σ 3 023 472 个粒子槽**；按上式收敛后是 **Σ 34 200（均值 6.8/边）**。
+   */
+  instanceMaxNum?: number;
 };
 
 /**

@@ -68,7 +68,7 @@ CustomData / Renderer（+ Burst、顶层 ParticleSystem）。
 | **Noise** | ✅ **P4 已补齐**（`octaves`/`octaveMultiplier`/`octaveScale` 势场 fBm 叠层、`scrollSpeed`、`sizeAmount`、`rotationAmount`、`separateAxes`+`strengthY/Z`）；⚠️ 仍缺 `quality`(Low/Medium 的跨轴复用手法未公开) / `remap*`（全包无一启用） | ✅ | ✅ | ❌ |
 | Collision | ❌ | ❌ | ❌ | ❌ |
 | Trigger | ❌ | ❌ | ❌ | ❌ |
-| **Sub Emitters** | ❌ | ✅（模块文件齐备，实现程度待核） | ❌ | ❌ |
+| **Sub Emitters** | ⚠️ **P5-a 已定结构**（`meshes[].subEmitters[]` 按 name 引用 + `subOnly`，类型与校验器已落地，见 `docx/TODO.md` §2.11）；**引擎未接线**（P5-b 才实现"实例化 + 继承 + 池"） | ✅（模块文件齐备，实现程度待核） | ❌ | ❌ |
 | Lights | ❌ | ❌ | ❌ | ❌ |
 | **Trail** | ⚠️ 仅丝带（textureMode=Stretch），无宽/色 over trail 之外的模式 | ✅ 字段齐 | ✅ `ParticleTrailMode` | ❌ |
 | **UV / Texture Sheet Animation** | ✅ **P4 已补齐**（`timeMode` 三档 Lifetime/Speed/FPS + `fps` + `speedRange`、`startFrame`、`animationType=SingleRow` + `rowMode` 三档 + `rowIndex`、`flipU/flipV` 作为已废弃别名并入 `renderer.flip`）；⚠️ 仍缺 `uvChannelMask`（全包全是 −1 ⇒ 无信息可表达）/ `mode=Sprites`（本作无一使用） | ✅ | ✅ `texture-animation.ts` | ✅ |
@@ -554,6 +554,95 @@ Cocos 的 `noise-module.ts` 的 `animate()` **只有位置**一项：
 `remapEnabled` **0**。
 ⇒ **octaves 是纯能力建设**；`scrollSpeed` / `sizeAmount` 才是真有用的两个。
 
+### 4.16 ★★ P5 依据：`SubEmittersModule`（2026-10-17 定结构，引擎未实现）
+
+> 全包普查（41996 个 `ParticleSystem`）与结构设计全文见
+> `_work_SubEmitters/DESIGN_P5子发射器config结构_2026-10-17.md` + `01_/02_` 两个普查脚本。
+> **本节只收录"官方逐字"这份依据**，便于将来实现时不必再翻网络。
+
+#### ① 序列化字段（要映射到 config 的**全集**）
+
+```csharp
+// Modules/ParticleSystem/ScriptBindings/ParticleSystemModules.bindings.cs @2021.3
+public partial struct SubEmittersModule {
+    extern public bool enabled { get; set; }
+    extern public int subEmittersCount { get; }
+    // AddSubEmitter(ParticleSystem subEmitter, ParticleSystemSubEmitterType type,
+    //                ParticleSystemSubEmitterProperties properties, float emitProbability)
+}
+// ParticleSystemEditor/ParticleSystemModules/SubModuleUI.cs
+//   m_SubEmitters = GetProperty("subEmitters");   // 元素 = {emitter(PPtr), type, properties, emitProbability}
+//   注释："Keep in sync with enum in ParticleSystemCommmon.h" / "SubModule::InheritedProperties"
+```
+
+```
+type       ∈ { Birth=0, Collision=1, Death=2, Trigger=3, Manual=4 }
+properties = 位掩码 { Color=1<<0, Size=1<<1, Rotation=1<<2, Lifetime=1<<3, Duration=1<<4 }
+             UI 的 propertyTypes = { "Color", "Size", "Rotation", "Lifetime", "Duration" }
+emitProbability ∈ [0,1]
+```
+
+★★ **判据必须是 `enabled`**：全包 **41977 个 `ParticleSystem` 每一个**都带一个模板默认条目
+`subEmitters: [{emitter: null, type: 0, properties: 0, emitProbability: 1.0}]`、`enabled: false`（探针实测）
+⇒ 按"数组非空即命中"会把整包算成命中（本项目第 1 条铁律的又一例）。
+
+#### ② 语义（手册 + ScriptReference **逐字**）
+
+| 项 | 逐字 | 含义 |
+|---|---|---|
+| 模块作用 | *"This module allows you to set up sub-emitters. These are additional particle emitters that are **created at a particle's position at certain stages of its lifetime**."* | 在父粒子的位置**实例化** |
+| 实例是什么 | *"Sub-emitters are **ordinary Particle System objects** created in the scene… This means that sub-emitters **can have sub-emitters of their own** (this type of arrangement can be useful for complex effects like fireworks)."* | 普通粒子系统的实例 ⇒ 嵌套天然成立 |
+| 触发时机 | Birth *"When the particles are created."* / Collision *"When the particles collide with an object."* / Death *"When the particles are destroyed."* / Trigger *"When the particles interact with a Trigger collider."* / Manual *"Only triggered when requested via script. See `ParticleSystem.TriggerSubEmitter`."* | 5 档 |
+| ★ 硬限制 | *"Note that the **Collision, Trigger, Death and Manual** events can only use **burst emission** in the Emission module."* | 这四档下子系统的 `rateOverTime` 不生效 |
+| 继承 | *"you can transfer properties from the parent particle to each newly created particle using the Inherit options. The transferrable properties are size, rotation, color and lifetime. To control how velocity is inherited, configure the **Inherit Velocity module** on the sub-emitter system."* | 见下表 5 位 |
+| 概率 | *"It is also possible to configure a probability that a sub-emitter event will trigger, by setting the Emit Probability property. A value of 1 guarantees that the event will trigger, whereas lower values reduce the probability."* | **每次触发事件**掷一次骰子 |
+| 层级约束 | `SubModuleUI.CheckIfChild`：子发射器必须是**同根**的后代（否则弹窗问要不要 reparent）；`CheckCircularReferences` 检测**循环引用**并**移除**该引用 | config 需校验"引用存在 + 无环" |
+| 建出来的实例 | `CheckIfChild` 的 reparent 分支：`localPosition = Vector3.zero; localRotation = Quaternion.identity` | ⇒ 实例**挂在父系统的变换上**（位置与 z 都跟父） |
+| UI tooltip | *"Sub emission of particles. This allows **each particle to emit particles in another system**."*／Inherit: *"Determines what properties to inherit from the Parent System."*／Emit Probability: *"Determines the proportion of sub-emitter spawn events that successfully triggers the associated sub-emitter."* | — |
+
+```csharp
+// ScriptReference/ParticleSystemSubEmitterProperties —— 五个继承位的**逐字**说明
+//   （2019.4 / 2022.1 / 6000.0 / 6000.7 四版比对，措辞一致）
+InheritColor    "When spawning new particles, **multiply the start color** by the color of the parent particles."
+InheritSize     "When spawning new particles, **multiply the start size** by the size of the parent particles."
+InheritRotation "When spawning new particles, **add the start rotation** to the rotation of the parent particles."
+InheritLifetime "**New particles will have a shorter lifespan, the closer their parent particles are to death.**"
+InheritDuration "When spawning new particles, **use the duration and age properties from the parent system,
+                 when sampling MainModule curves in the Sub-Emitter**."
+InheritNothing  "When spawning new particles, do not inherit any properties from the parent particles."
+InheritEverything "When spawning new particles, inherit all available properties from the parent particles."
+```
+
+⚠️ `InheritDuration` 的口径很怪（"子粒子采样自己的 MainModule 曲线时改用**父系统**的 duration/age"）
+**但是逐字**⇒ 实现时按它做并标为**低优先级/存疑**。
+
+#### ③ 全包用量（`_work_SubEmitters/01_全包P5普查.py`）
+
+`SubModule.enabled` 的**条目 756**（父系统 **261**、被引用目标 **117**）；
+类型 `Birth 637 / Death 101 / Collision 13 / Trigger 0 / Manual 5`；
+继承位 **`Nothing` 667（88%）**、非空 89 条（`Size 53` 最多）；
+`emitProbability` 只有 `1.0(750) / 0.5(6)`；
+**68 个目标被 ≥2 个父共用（最多的一个被 159 个父共用）**、15 个目标自己也是父（嵌套）、
+9 条自引用（脏数据）、29 条"目标不是父系统后代"（脏数据）、242 个 `SubEmitter*`（Unity 自动命名）。
+★ **本工程三个产物（S9/S8/S6 六个 prefab、39 个节点）一个都没有** ⇒ P5 对本作是纯能力建设。
+
+#### ④ 目标形态（`02_目标形态普查.py`，决定"能不能简化成'父多发几颗粒子'"）
+
+`InitialModule.maxNumParticles`：`1000 → 367`（Unity 模板默认值，多为残留）、`100 → 82`、`1 → 38`…
+`rateOverTime`：`const=0 → 490`，**其余 135 条是持续发射（10~40/s 或曲线）**；
+`m_Bursts`：`0 → 330`、`1 → 289`、`2 → 4`、`8 → 2`；目标**自己**还开 SubModule **17**、带 Trail **6**；
+形态"简单"（burst≤3 且无 trail/无嵌套）只有 **259/625（41%）**。
+
+⇒ **≥59% 的边无法用"父系统多发几颗粒子"表达**（持续发射 / 带丝带 / 自己有子发射器）
+⇒ 必须按"**实例化子系统**"实现（`§2.2` 亦给出成本：天真做法的 Σ 粒子槽为 3.02M，按 burst/rate
+收敛后 34.2k ⇒ **必须有 `instances` 与 `instanceMaxNum` 两个工程侧旋钮**）。
+
+#### ⑤ 结构定案（用户 2026-10-17 拍板）
+
+**方案 A**：定义仍在扁平的 `meshes[]` 里、父 mesh 用 `name` 引用、被引用方加 `subOnly: true`；
+**本轮只做 P5-a**（类型 + 校验器 + 回归 + 留档，引擎不接线）；实例池形态定为
+"**每实例一个独立 `ParticleAnimator`**"（P5-b 时按此实现）。详见 `docx/TODO.md` §2.11。
+
 ## 5. 可直接读的关键文件（取文件命令已备）
 
 ```bash
@@ -632,5 +721,6 @@ gh api repos/Unity-Technologies/UnityCsReference/contents/Modules/ParticleSystem
    Noise 的 `octaves`/`octaveMultiplier`/`octaveScale`（势场 fBm 叠层，**逐层步长随频率自适应**）、
    `scrollSpeed`、`sizeAmount`、`rotationAmount`、`separateAxes`/`strengthY/Z`。
    依据见本节 §4.14 / §4.15；落地与验证见 `docx/TODO.md` §2.10 与 `_regress/74_回归_UV与噪声.ts`（65 断言）。
-6. **P5（可选）SubEmitters**：需先定 config 结构。
+6. **P5（可选）SubEmitters** —— ✅ **结构已定案（2026-10-17，P5-a 已交付）**：定义仍在 `meshes[]`、父侧写 `subEmitters: [{target, trigger, inherit, probability, instances, instanceMaxNum}]`、被引用方加 `subOnly: true`；落地了 `src/config.type.ts` 的类型 + `src/subEmitterConfig.ts` 校验器 + `_regress/75_回归_子发射器结构.ts`（37 断言）。依据见本节 §4.16，设计与全包普查见 `_work_SubEmitters/DESIGN_P5子发射器config结构_2026-10-17.md`。
+   ⬜ **P5-b**（引擎实现：出生/死亡事件出口 + 继承注入 + 实例池 + `subOnly`）与 **P5-c**（找真皮肤验收）按用户 2026-10-17 的决定**留到真要用到时再做** —— 本工程三个产物 0 用例。
 7. **明确不复刻**：Collision / Trigger / Lights / ExternalForces / LifetimeByEmitterSpeed（留档说明）。
