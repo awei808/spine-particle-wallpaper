@@ -158,6 +158,17 @@ let weShowDisclaimer: boolean | undefined;
 let weShowArchive: boolean | undefined;
 
 /**
+ * WE 属性 `showCornerButtons`（左上角**整列入口**显不显示）的最近一次权威值。
+ *
+ * 与 `showSettings` / `showDisclaimer` / `showArchive` 完全同构
+ * （UI 门面开关、不进 `SettingsView`、热切换），理由不再复述。
+ *
+ * ★ 与 `showSettings` 的**分工**（用户 2026-10-17 拍板）：`showSettings` 只管**齿轮那一个**
+ *   按钮（以及它开出来的设置面板）；本键管**整列**（折叠按钮 + 5 个入口）。
+ */
+let weShowCornerButtons: boolean | undefined;
+
+/**
  * 右上角设置面板。未到"资源就绪"时为 `null`。
  *
  * ★★ 声明**必须**早于 `applyWePatch`：WE 可能在 `main()` 执行前就下发属性，
@@ -217,6 +228,8 @@ const applyWePatch = (patch: Record<string, unknown>) => {
   if (typeof patch.showDisclaimer === 'boolean') {
     weShowDisclaimer = patch.showDisclaimer;
     disclaimerUI?.setVisible(weShowDisclaimer);
+    // ★ 把「免责声明」入口按钮的高亮也同步过去（同 showArchive 那条）
+    settingsUI?.setDisclaimerVisible(weShowDisclaimer);
   }
 
   /**
@@ -227,6 +240,18 @@ const applyWePatch = (patch: Record<string, unknown>) => {
   if (typeof patch.showArchive === 'boolean') {
     weShowArchive = patch.showArchive;
     archiveUI?.setVisible(weShowArchive);
+    // ★ 把「档案」入口按钮的高亮也同步过去（面板不持有弹窗状态，只按真值刷）
+    settingsUI?.setArchiveVisible(weShowArchive);
+  }
+
+  /**
+   * `showCornerButtons`（左上角整列入口）同理：**热切换，不重载**。
+   *
+   * 整列尚未创建时先存进 `weShowCornerButtons`，等 `createSettingsPanel` 建好时取用。
+   */
+  if (typeof patch.showCornerButtons === 'boolean') {
+    weShowCornerButtons = patch.showCornerButtons;
+    settingsUI?.setCornerVisible(weShowCornerButtons);
   }
 
   if (sameView(curView, nextView)) {
@@ -442,6 +467,40 @@ const main = async () => {
   if (voicePlayer) {
     audioMaster.register('voice', voicePlayer);
   }
+
+  /**
+   * 运行时静音（入口列里的「静音」按钮，2026-10-17）。
+   *
+   * ## ★★ 为什么不走配置（用户拍板）
+   *
+   * WE 属性里的 `muteAll` 是**配置层**静音：改覆盖层 → 重载页面才生效
+   * （`settingsStore.applyOverrides` 里 `muteAll` 直接把 `bgm.enabled` /
+   * `subtitle.audio.enabled` 压成 false）。那是"我这张壁纸就是不要声音"。
+   * 而这个按钮的诉求是**"我现在要让壁纸闭嘴"**这一下的临时动作 ⇒ 不落盘、不重载，
+   * 直接把两路音频的音量压到 0，再点还原。
+   *
+   * ## 口径
+   *
+   * - 基准音量在**创建时各取一次**（= 配置里生效的音量）。之后靠面板改音量是
+   *   "保存 → 重载"，会连同这里一起重建 ⇒ 不存在"基准过期"的窗口。
+   * - 播放器可能为 `null`（没配 BGM / 语音被配置关掉）⇒ 逐个判空，不假设它们存在。
+   * - 只压音量、**不动 `enabled`**：`voicePlayer.setVolume` 会把值记住，
+   *   下次 `ensure()` 建元素时写进去 ⇒ 静音期间新起的语音也是静音的。
+   * - ⚠️ 与 WE 的暂停**正交**：暂停走 `audioMaster`（`pause()` 保进度），
+   *   本开关走音量 ⇒ 恢复播放时音量仍是 0，符合"我按了静音"的预期。
+   */
+  const bgmBaseVolume = bgmPlayer ? bgmPlayer.getVolume() : 0;
+  const voiceBaseVolume = voicePlayer ? voicePlayer.getVolume() : 0;
+  let runtimeMuted = false;
+  const applyRuntimeMute = (v: boolean): void => {
+    runtimeMuted = v;
+    if (bgmPlayer) {
+      bgmPlayer.setVolume(runtimeMuted ? 0 : bgmBaseVolume);
+    }
+    if (voicePlayer) {
+      voicePlayer.setVolume(runtimeMuted ? 0 : voiceBaseVolume);
+    }
+  };
 
   /**
    * 骨架动画名 → 时长（秒）。用来把字幕停留夹到"动作播完"为止。
@@ -1534,6 +1593,17 @@ const main = async () => {
           /** 档案面板当前是否显示 + 表格行数（验证脚本断言开关联动与内容渲染用） */
           archiveVisible: archiveUI ? archiveUI.isVisible() : false,
           archiveRows: archiveUI ? archiveUI.rowCount() : 0,
+          /**
+           * 左上角入口列的状态（验证脚本断言"折叠/静音按钮真的改了东西"用）。
+           *
+           * ★ 为什么要把这三个读成快照而不是看 DOM：`display` 是**结果**，
+           *   而"面板自己的状态变量"才是判据（例如收起时面板应被一起关掉 ——
+           *   只看 DOM 也能看出来，但 `open` 状态是持久化的，必须一并核对）。
+           */
+          cornerVisible: settingsUI ? settingsUI.isCornerVisible() : false,
+          cornerCollapsed: settingsUI ? settingsUI.isCornerCollapsed() : false,
+          /** 运行时静音当前是否生效（= `runtimeMuted`，不是配置里的 `muteAll`） */
+          muted: runtimeMuted,
         }),
         idleSeq: () => (idleSequence ? idleSequence.snapshot() : null),
         /** 手动把常驻序列推到下一条（验证脚本用，避免干等动画播完） */
@@ -1607,8 +1677,19 @@ const main = async () => {
        * ★ 缺省 **false**（不显示）：弹窗会盖住画面，默认不打扰；
        *   需要对外分发（如上传创意工坊）时再在属性面板里勾开。
        */
+      /**
+       * ★★ 弹窗/面板的**初始可见性**只在这里算一次，下面三处（建弹窗、建面板、
+       *   把初值交给入口列的高亮）共用 —— 各写一遍 `weShowX ?? stored === true`
+       *   迟早会出现"弹窗开着、按钮不亮"这种两处口径不一致的偏差。
+       * 优先级：**WE 属性 > localStorage 覆盖层**（同 `showSettings`）。
+       */
+      const disclaimerVisible0 =
+        weShowDisclaimer ?? storedSettings.showDisclaimer === true;
+      const archiveVisible0 =
+        weShowArchive ?? storedSettings.showArchive === true;
+
       disclaimerUI = createDisclaimer({
-        visible: weShowDisclaimer ?? storedSettings.showDisclaimer === true,
+        visible: disclaimerVisible0,
         /**
          * ★ 文案里要不要点名素材来源（`《XXX》官方…`），由使用者在 `assets/config.json`
          *   的 `disclaimer` 段配置。**不配就不点名** —— 仓库默认不含任何作品名。
@@ -1625,7 +1706,7 @@ const main = async () => {
        * ★ 显示与否的优先级同上：**WE 属性 > localStorage 覆盖层**；缺省 false。
        */
       archiveUI = createArchive({
-        visible: weShowArchive ?? storedSettings.showArchive === true,
+        visible: archiveVisible0,
         config: configs,
         /**
          * ★ 把「动画 → 特效」映射交给档案面板显示「特效」列（2026-10-17）。
@@ -1661,6 +1742,54 @@ const main = async () => {
         eventFamilies: configs.subtitle?.eventFamilies,
         // ★ WE 的 `showSettings` 优先于 localStorage：它才是"用户刚才在属性面板里勾的"
         visible: weShowSettings ?? storedSettings.showSettings !== false,
+        /**
+         * ★★ 左上角**整列入口**（折叠按钮 + 5 个入口）是否显示 —— WE 属性 `showCornerButtons`。
+         *
+         * 与 `visible` 的分工（用户 2026-10-17 拍板）：`showSettings` 只管齿轮那**一个**
+         * 按钮，本项管**整列**。缺省 `true`（老存档里没这个键 ⇒ 照常显示）。
+         */
+        cornerVisible: weShowCornerButtons ?? storedSettings.showCornerButtons !== false,
+        /** 入口列的展开/收起状态（覆盖层 `cornerCollapsed`；缺省展开） */
+        cornerCollapsed: storedSettings.cornerCollapsed === true,
+        /** 运行时静音初值（本轮会话才有效，重载即回到配置值） */
+        muted: runtimeMuted,
+        /** 「免责声明」「档案」入口的高亮初值（与上面两个 `*Visible0` 同源，不另算） */
+        disclaimerVisible: disclaimerVisible0,
+        archiveVisible: archiveVisible0,
+        /** 「静音」入口：运行时压/还原两路音量，返回切换后的状态 */
+        onToggleMute: () => {
+          applyRuntimeMute(!runtimeMuted);
+          return runtimeMuted;
+        },
+        /**
+         * 「免责声明」入口：切换居中弹窗，并把它落回**同一个覆盖层字段**
+         * （`showDisclaimer`）⇒ 与 WE 属性同源、重载后状态保持。
+         *
+         * ★ 不走 `applyWePatch`：那是"WE 下发属性"的入口，会连 `showSettings` 等一起判。
+         *   这里只动一个字段，直接改 DOM + `writeOverrides` 最直白，
+         *   也不会因为 `sameView` 判"没变化"而白重载（`showDisclaimer` 本就不进视图）。
+         */
+        onToggleDisclaimer: () => {
+          const next = !(disclaimerUI && disclaimerUI.isVisible());
+          if (disclaimerUI) {
+            disclaimerUI.setVisible(next);
+          }
+          writeOverrides({ showDisclaimer: next });
+          return next;
+        },
+        /** 「档案」入口：同「免责声明」，对应覆盖层字段 `showArchive` */
+        onToggleArchive: () => {
+          const next = !(archiveUI && archiveUI.isVisible());
+          if (archiveUI) {
+            archiveUI.setVisible(next);
+          }
+          writeOverrides({ showArchive: next });
+          return next;
+        },
+        /** 入口列收起/展开 ⇒ 落盘（重载后保持原样） */
+        onCornerCollapsedChange: (collapsed) => {
+          writeOverrides({ cornerCollapsed: collapsed });
+        },
         open: storedSettings.panelOpen === true,
         /**
          * 调试面板的展开状态（**入口在齿轮下方**，2026-10-15 从设置面板里独立出来）。

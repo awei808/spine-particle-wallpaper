@@ -261,6 +261,18 @@ export type SettingsOverrides = {
    * 热切换，见 `index.ts` 的 `applyWePatch`；内容由 `archive.ts` 从运行时 config 现算。
    */
   showArchive?: boolean;
+  /**
+   * 左上角**整列入口**（折叠按钮 + 5 个入口）是否显示（对应 WE 属性 `showCornerButtons`）。
+   *
+   * ★ 与 `showSettings` 同类：**UI 门面开关，不是配置项** ——
+   * 不在 `config.json` 里、`applyOverrides` 不消费它、`readView` 也产不出它
+   * （硬塞进 `SettingsView` 会让每次启动都被 `sameView` 判成"有变化"⇒ 白重载）。
+   * ★ 与 `showSettings` 的**分工**（2026-10-17 用户拍板）：
+   *   - `showSettings` 只管**齿轮那一个**按钮（+ 它开出来的设置面板）；
+   *   - 本键管**整列**（含折叠按钮）—— 这是"我不想在桌面上看到任何入口"的开关。
+   * 热切换，见 `index.ts` 的 `applyWePatch`。
+   */
+  showCornerButtons?: boolean;
   /** 设置面板当前是否展开。仅用于重载后还原 UI 状态 */
   panelOpen?: boolean;
   /**
@@ -270,6 +282,14 @@ export type SettingsOverrides = {
    * （见 `settingsPanel.ts` 里 `debugOpen` 的初值）。
    */
   debugPanelOpen?: boolean;
+  /**
+   * 左上角入口列是否**收起**（只留折叠按钮）。仅用于重载后还原 UI 状态。
+   *
+   * ★ 与 `panelOpen` / `debugPanelOpen` 同类：UI 状态不是设置项，只是"重载后要还原"，
+   *   所以不落进 `config.json`、也不进 `SettingsView`。
+   * 缺省（`undefined` / `false`）= **展开**（用户 2026-10-17 拍板：默认展开 + 记忆）。
+   */
+  cornerCollapsed?: boolean;
 };
 
 /** 合并后的"当前生效值"，给面板渲染用（永远有值，无 undefined） */
@@ -887,15 +907,17 @@ export const toEnum = <T extends string>(
 /**
  * 把 WE 下发的一批属性翻译成覆盖层补丁。**只认已知的键**，其余忽略。
  *
- * ## ★★ WE 属性面板只暴露 **5 项**（2026-09-26 拍板 3 项，09-27 增补第 4 项，09-30 增补第 5 项）
+ * ## ★★ WE 属性面板只暴露 **6 项**（2026-09-26 拍板 3 项，09-27 增补第 4 项，09-30 增补第 5 项，
+ * 2026-10-17 增补第 6 项）
  *
  * | WE 属性键 | 含义 | 落到的覆盖层字段 |
  * |---|---|---|
- * | `showSettings` | 设置按钮显示 | `showSettings` |
+ * | `showSettings` | 设置按钮显示 | `showSettings`（**只管齿轮那一个按钮**） |
  * | `muteAll` | 全部静音 | `muteAll` |
  * | `debugEnabled` | 调试总开关 | `probeEnabled`（与**调试面板**里的「调试总开关」同一个字段 ⇒ 两边同源） |
  * | `showDisclaimer` | 显示免责声明与许可证要求 | `showDisclaimer`（居中弹窗，常驻显示） |
  * | `showArchive` | 显示档案 | `showArchive`（居中「档案」面板，常驻显示） |
+ * | `showCornerButtons` | 显示左上角按钮 | `showCornerButtons`（**整列**入口：折叠按钮 + 5 个入口） |
  *
  * 其余小项（BGM 开关/音量、字幕显示/位置、念白语音、常驻动作序列）
  * **一律不进 WE 属性面板** —— 它们都在右上角设置面板里，那儿能点选动画名、
@@ -942,6 +964,19 @@ export const overridesFromWeProperties = (
   const showArchive = b('showArchive');
   if (showArchive !== undefined) {
     patch.showArchive = showArchive;
+  }
+
+  /**
+   * 左上角**整列入口**（折叠按钮 + 5 个入口）显不显示。
+   *
+   * ★ 与 `showSettings` 同一类：只管 DOM 的 `display`，不进 `SettingsView`
+   * ⇒ `sameView` 判不出变化 ⇒ 由 `index.ts` 热切换。
+   * ★ 分工（2026-10-17 用户拍板）：`showSettings` 只管齿轮那**一个**按钮，
+   *   本键管**整列**（含折叠按钮）。
+   */
+  const showCornerButtons = b('showCornerButtons');
+  if (showCornerButtons !== undefined) {
+    patch.showCornerButtons = showCornerButtons;
   }
 
   /** 全部静音（BGM + 念白一起关） */

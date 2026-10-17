@@ -18,7 +18,37 @@
  */
 
 /**
- * 右上角两个入口 —— **设置**（齿轮按钮 + 展开面板）与**调试**（齿轮**下方**的按钮 + 小面板）。
+ * 左上角**入口列**（6 个按钮）与它开出来的两个面板（**设置** / **调试**）。
+ *
+ * ## 入口列（2026-10-17 用户拍板）
+ *
+ * WE 的属性面板里有 6 项开关，但壁纸里能直接点到的原先只有「设置」「调试」两个。
+ * 现在把它们**并成同一列**，放在**左上角纵向排列**，顺序 = WE 属性面板的顺序：
+ *
+ * ```
+ *  ⌃      折叠/展开（唯一常驻的那个按钮）
+ *  ⚙      设置        ← WE `showSettings`（★ 只管这一个）
+ *  🔇     静音        ← WE `muteAll`（桌面上"一键闭嘴"，纯运行时不写配置）
+ *  🐛     调试        ← WE `debugEnabled`
+ *  🛡     免责声明    ← WE `showDisclaimer`
+ *  📖     档案        ← WE `showArchive`
+ * ```
+ *
+ * ★ 为什么是**左上角**而不是右上角：右上角是 WE 自己的缓冲区/水印高发区，
+ *   而左上角在壁纸上本来就空（探针 HUD 例外，见下）。
+ * ★ 图标一律**内联 SVG**（不依赖字体 glyph —— CEF 里缺字会变豆腐块），
+ *   尺寸走 `uiPx()` 与整个 UI 同源缩放。
+ * ★ 前 4 个按钮是「开/关某个面板」的**互斥切换**，会在激活时高亮；
+ *   「静音」是纯运行时的音量压制，图标随状态在**喇叭/喇叭打叉**之间切换。
+ * ★ 折叠按钮**永远可见**（只要整列没被 WE 关掉），其余 5 个由它统一收起/展开，
+ *   状态持久化在覆盖层的 `cornerCollapsed`（默认展开）。
+ * ★★ 收起时会把两个面板**一起关掉**：设置面板**没有自己的关闭按钮**
+ *   （开关都靠齿轮），齿轮一藏就再也关不掉 ⇒ 会留在屏幕上出不去。
+ * ★★ `showSettings`（WE 属性）现在**只管齿轮那一个按钮**；整列的显隐归
+ *   WE 新属性 `showCornerButtons`（见 `settingsStore.ts`）。
+ * ⚠️ 探针构建里左上角还有 `probeHud`（开发态 HUD，`pointer-events:none`）。
+ *   两者都在左上角 ⇒ 视觉上会叠。本列挂得比 HUD 晚、同 z-index ⇒ 画在 HUD 之上，
+ *   点击也不受影响（HUD 不吃事件）；验收脚本跑之前把 `probeHud` 关掉即可。
  *
  * ## ★★ 调试为什么从设置面板里独立出来（用户 2026-10-15 拍板）
  *
@@ -27,8 +57,8 @@
  * 而调试是**诊断工具**（排查时反复开关、每次改完都要重载）。
  * ⇒ 塞在同一面板里 ⇒ 每次排查都要"开面板 → 翻到调试页 → 改 → 保存"四步。
  *
- * 改法：调试页整个撤掉，改成**齿轮正下方**的一个入口按钮 + 一个常驻小面板，
- * 一步点到、改完就地保存。两者**互斥展开**（见 `setDebugOpen`）。
+ * 改法：调试页整个撤掉，改成入口列里的一个按钮 + 一个常驻小面板，
+ * 一步点到、改完就地保存。它与设置面板**互斥展开**（见 `setDebugOpen`）。
  *
  * ⚠️ 只是**搬了入口**，字段没变：4 个开关仍落在 `probeEnabled / probeHud /
  * probeCrosshair / probeZones`，存盘格式与 WE 属性面板的「调试总开关」
@@ -37,24 +67,24 @@
  * ## ★★ 必须 `stopPropagation` 的理由（不做的话会发生什么）
  *
  * `touch.ts` 把 mousedown 监听挂在 **`document`** 上，而本工程的热区是
- * **整屏一个区**（`touch.zones` 覆盖全画面）。⇒ 点齿轮/面板会被判定成
+ * **整屏一个区**（`touch.zones` 覆盖全画面）。⇒ 点入口按钮/面板会被判定成
  * "点了角色"，触摸动画照播、字幕照弹。这类"顺带触发"很容易被当成 WE 的玄学 bug。
  *
  * 而且 `SpineAnimator` 也在 `document` 上挂了 mousedown（带 `preventDefault()`），
  * 不拦的话连 focus 都可能被吃掉 ⇒ 复选框点不动。
  *
- * ⇒ 在**面板根节点**上对鼠标/触摸事件 `stopPropagation`，让事件到不了 `document`。
- *    （监听器都在冒泡阶段，目标阶段的 stopPropagation 正好能挡住。）
+ * ⇒ 在**入口列容器**与**面板根节点**上对鼠标/触摸事件 `stopPropagation`，
+ *   让事件到不了 `document`。（监听器都在冒泡阶段，目标阶段的 stopPropagation 正好能挡住。）
  *
  * ## z-index 口径
  *
- * 气泡 `2147483640` < 热区调试框 `2147483645` < **本面板 `2147483647`**。
+ * 气泡 `2147483640` < 热区调试框 `2147483645` < 免责弹窗 `2147483646` < **本面板 `2147483647`**。
  * 设置必须盖在所有东西之上，否则被气泡挡住就点不到了。
  *
  * ## DOM 锚点
  *
- * 每个元素都带 `id`（`wb-settings-*`）并用 **`data-wb-set` 属性**而不是下标取元素 ——
- * 改一次结构就让一堆验证脚本同时失效的教训已经有过一次了。
+ * 每个元素都带 `id`（`wb-settings-*` / `wb-corner-*`）并用 **`data-wb-set` 属性**
+ * 而不是下标取元素 —— 改一次结构就让一堆验证脚本同时失效的教训已经有过一次了。
  *
  * ## ★★ 禁用 `backdrop-filter`（WE CEF 渲染进程 SIGILL，2026-09-25 实锤）
  *
@@ -71,7 +101,7 @@
  * 且 `panelOpen` 会被持久化 ⇒ 崩一次后 localStorage 残留 `panelOpen:true`，
  * 下次加载直接展开面板 ⇒ **加载即崩的自锁循环**（表现为"导入必崩 0.2s"）。
  *
- * ⇒ 面板/齿轮一律用**实色半透明背景**代替毛玻璃。气泡模糊不受影响。
+ * ⇒ 面板/入口按钮一律用**实色半透明背景**代替毛玻璃。气泡模糊不受影响。
  */
 
 import {
@@ -131,8 +161,41 @@ export type SettingsPanelOptions = {
    *   （与 `wallpaperSettings` 同一口径：没有事件族的皮肤不该多出一个点不动的控件）。
    */
   eventFamilies?: EventFamily[];
-  /** 齿轮按钮是否显示（对应 WE 属性 `showSettings`） */
+  /** 齿轮按钮是否显示（对应 WE 属性 `showSettings`）。★ 只管齿轮那一个按钮 */
   visible: boolean;
+  /**
+   * 左上角**整列入口**（折叠按钮 + 5 个入口）是否显示（对应 WE 属性 `showCornerButtons`）。
+   * 缺省 `true`。与 `visible` 的分工见 `settingsStore.SettingsOverrides.showCornerButtons`。
+   */
+  cornerVisible?: boolean;
+  /**
+   * 入口列是否**收起**（只留折叠按钮）。缺省 = 展开。
+   * ★ 由调用方从覆盖层 `cornerCollapsed` 读出来传进来，变化时用
+   *   `onCornerCollapsedChange` 回调落盘。
+   */
+  cornerCollapsed?: boolean;
+  /**
+   * 「静音」入口的初始状态（运行时静音，不是配置项）。
+   *
+   * ★ 面板只把它当**显示用初值**：真正的静音状态由调用方持有
+   *   （`onToggleMute` 返回切换后的值），面板不自己猜。
+   */
+  muted?: boolean;
+  /** 「免责声明」弹窗当前是否显示（仅用于入口按钮的高亮） */
+  disclaimerVisible?: boolean;
+  /** 「档案」面板当前是否显示（仅用于入口按钮的高亮） */
+  archiveVisible?: boolean;
+  /** 点「静音」入口 ⇒ 切换运行时静音，返回切换后的状态 */
+  onToggleMute?: () => boolean;
+  /**
+   * 点「免责声明」入口 ⇒ 切换弹窗显示（并落盘），返回切换后的状态。
+   *
+   * ★ 弹窗本体不归面板所有（`disclaimer.ts` 是独立模块，由 `index.ts` 建）
+   *   ⇒ 面板只发指令、拿回真值刷新高亮，不自己持有第二份状态。
+   */
+  onToggleDisclaimer?: () => boolean;
+  /** 点「档案」入口 ⇒ 同 `onToggleDisclaimer` */
+  onToggleArchive?: () => boolean;
   /** 面板是否初始展开 */
   open?: boolean;
   /**
@@ -149,6 +212,8 @@ export type SettingsPanelOptions = {
   onOpenChange?: (open: boolean) => void;
   /** 调试面板展开/收起变化时回调（用于把 `debugPanelOpen` 也持久化） */
   onDebugOpenChange?: (open: boolean) => void;
+  /** 入口列收起/展开变化时回调（用于把 `cornerCollapsed` 也持久化） */
+  onCornerCollapsedChange?: (collapsed: boolean) => void;
   /**
    * 调试面板「触发动作」：播**指定动画名**（不带台词/语音）。
    *
@@ -164,8 +229,22 @@ export type SettingsPanelOptions = {
 };
 
 export type SettingsPanel = {
+  /** 齿轮（=「设置」入口）显不显示（对应 WE 属性 `showSettings`） */
   setVisible: (v: boolean) => void;
   isVisible: () => boolean;
+  /** 左上角整列入口显不显示（对应 WE 属性 `showCornerButtons`） */
+  setCornerVisible: (v: boolean) => void;
+  isCornerVisible: () => boolean;
+  /** 入口列当前是否收起（只留折叠按钮） */
+  isCornerCollapsed: () => boolean;
+  /**
+   * 外部改了免责弹窗的显示（WE 属性热切换）后，把入口按钮的高亮同步过来。
+   *
+   * ★ 与「档案」那条对称：面板不持有弹窗状态，只按调用方给的真值刷高亮。
+   */
+  setDisclaimerVisible: (v: boolean) => void;
+  /** 同 `setDisclaimerVisible`，对应「档案」入口 */
+  setArchiveVisible: (v: boolean) => void;
   isOpen: () => boolean;
   /** 外部把 Séance 值改了之后刷新 UI（WE 属性下发时用） */
   refresh: (view: SettingsView) => void;
@@ -253,6 +332,95 @@ const BTN_GHOST = [
 
 const FONT =
   '"Microsoft YaHei","PingFang SC","Noto Sans CJK SC",system-ui,sans-serif';
+
+/* ── 入口按钮的外观与图标（6 个按钮共用一套） ─────────────────────
+ *
+ * ★★ 图标为什么是**内联 SVG**而不是字符/图标字体：
+ *   WE 的 CEF 里字体供给不可控，`⚙` 之类的码位会渲染成**豆腐块**；
+ *   内联 SVG 只依赖几何路径，且能跟着 `uiPx()` 一起缩放。
+ * ★ 图标取自最常见的通行画法（齿轮 / 喇叭 / 虫子 / 盾牌 / 书 / 箭头），
+ *   统一 24×24 viewBox、`fill:none` + `stroke:currentColor`、线宽 1.9，
+ *   与面板其它控件同一套视觉语言。
+ */
+const iconSvg = (inner: string, size = 19): string =>
+  '<svg width="' +
+  size +
+  '" height="' +
+  size +
+  '" style="width:' +
+  uiPx(size) +
+  ';height:' +
+  uiPx(size) +
+  '" viewBox="0 0 24 24" fill="none" ' +
+  'stroke="currentColor" stroke-width="1.9" stroke-linecap="round" ' +
+  'stroke-linejoin="round">' +
+  inner +
+  '</svg>';
+
+/** 设置（齿轮） */
+const ICON_GEAR =
+  '<circle cx="12" cy="12" r="3.2"/>' +
+  '<path d="M19.4 15a1.6 1.6 0 0 0 .33 1.77l.06.06a2 2 0 1 1-2.83 2.83' +
+  'l-.06-.06a1.6 1.6 0 0 0-1.77-.33 1.6 1.6 0 0 0-1 1.47V21a2 2 0 1 1-4 ' +
+  '0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.77.33l-.06.06a2 2 0 1 ' +
+  '1-2.83-2.83l.06-.06A1.6 1.6 0 0 0 4.6 15a1.6 1.6 0 0 0-1.47-1H3a2 2 ' +
+  '0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.33-1.77l-.06-.06a2 2 ' +
+  '0 1 1 2.83-2.83l.06.06A1.6 1.6 0 0 0 9 4.6h.07A1.6 1.6 0 0 0 10 3.13V3a2 ' +
+  '2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.47 1.6 1.6 0 0 0 1.77-.33l.06-.06a2 2 ' +
+  '0 1 1 2.83 2.83l-.06.06A1.6 1.6 0 0 0 19.4 9v.07a1.6 1.6 0 0 0 1.47 ' +
+  '1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.47 1z"/>';
+
+/** 调试（虫子 = 诊断，通行画法） */
+const ICON_BUG =
+  // 虫身 + 头
+  '<rect x="6.5" y="7.5" width="11" height="12" rx="5.5"/>' +
+  '<path d="M9.5 7.5 8 5.2M14.5 7.5 16 5.2"/>' +
+  // 六条腿
+  '<path d="M4 11h2.5M17.5 11H20M4 16h2.5M17.5 16H20M6.5 19.5 5 21.5M17.5 19.5 19 21.5"/>';
+
+/** 未静音（喇叭 + 两道声波） */
+const ICON_VOLUME_ON =
+  '<path d="M11 5.5 7.2 8.9H4v6.2h3.2L11 18.5z"/>' +
+  '<path d="M14.6 9.6a3.4 3.4 0 0 1 0 4.8"/>' +
+  '<path d="M17.3 7.2a7.2 7.2 0 0 1 0 9.6"/>';
+
+/** 已静音（喇叭 + 叉） */
+const ICON_VOLUME_OFF =
+  '<path d="M11 5.5 7.2 8.9H4v6.2h3.2L11 18.5z"/>' +
+  '<path d="M15.2 9.9 20 14.1M20 9.9 15.2 14.1"/>';
+
+/** 免责声明 / 许可证（盾牌 + 勾） */
+const ICON_SHIELD =
+  '<path d="M12 3.2 19 6v5.6c0 4.2-2.9 7.7-7 8.7-4.1-1-7-4.5-7-8.7V6z"/>' +
+  '<path d="m9 11.9 2.1 2.1 3.9-4"/>';
+
+/** 档案（翻开的书） */
+const ICON_BOOK =
+  '<path d="M4 19.3A2.6 2.6 0 0 1 6.6 16.7H20"/>' +
+  '<path d="M6.6 3H20v18H6.6A2.6 2.6 0 0 1 4 18.4V5.6A2.6 2.6 0 0 1 6.6 3z"/>';
+
+/** 收起（向上箭头）/ 展开（向下箭头）—— 箭头指向"点下去会发生什么" */
+const ICON_CHEVRON_UP = '<path d="m6 14.5 6-6 6 6"/>';
+const ICON_CHEVRON_DOWN = '<path d="m6 9.5 6 6 6-6"/>';
+
+/** 入口按钮的常态 / 激活态配色（实色，不用毛玻璃 —— 见文件头） */
+const ENTRY_BG_IDLE = 'rgba(20,22,30,0.82)';
+const ENTRY_BG_ACTIVE = 'rgba(74,144,226,0.92)';
+const ENTRY_BD_IDLE = 'rgba(255,255,255,0.28)';
+const ENTRY_BD_ACTIVE = 'rgba(176,210,255,0.95)';
+
+/**
+ * 给入口按钮写「标题 + `aria-label`」。
+ *
+ * ★ 两处**必须同写**：`title` 是鼠标悬停提示，`aria-label` 是无障碍名字；
+ *   只写一个就会出现"看得见提示、读屏软件读不到（或反之）"的偏差。
+ *   `title` 还会在状态变化时被重写（如静音 ⇄ 取消静音），所以统一从这一个函数走。
+ */
+const setEntryLabel = (btn: HTMLElement, label: string): void => {
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
+};
+
 
 /* ── 自绘控件的样式（★ 一律 `appearance:none` + 纯 DOM，不用原生 widget） ── */
 const TOGGLE_BASE = [
@@ -449,7 +617,18 @@ export const createSettingsPanel = (
    *   否则一进壁纸就两个面板叠在一起。
    */
   let debugOpen = options.debugOpen === true && !open;
+  /** 齿轮（「设置」入口）显不显示 —— WE 属性 `showSettings`，只管这一个按钮 */
   let visible = options.visible !== false;
+  /** 整列入口显不显示 —— WE 属性 `showCornerButtons` */
+  let cornerVisible = options.cornerVisible !== false;
+  /** 入口列是否收起（只留折叠按钮）—— 覆盖层 `cornerCollapsed` */
+  let collapsed = options.cornerCollapsed === true;
+  /** 运行时静音（显示用；真值由调用方持有，见 `muted` 的注释） */
+  let muted = options.muted === true;
+  /** 「免责声明」弹窗当前是否显示（只为高亮；真值在 `disclaimer.ts`） */
+  let disclaimerVisible = options.disclaimerVisible === true;
+  /** 「档案」面板当前是否显示（只为高亮；真值在 `archive.ts`） */
+  let archiveVisible = options.archiveVisible === true;
 
   // ★ 先初始化 UI 缩放变量（幂等）：下面所有 px 都依赖它
   initUiScale();
@@ -461,7 +640,7 @@ export const createSettingsPanel = (
       'top:0',
       'right:0',
       'z-index:2147483647',
-      // 根节点不吃事件，只有齿轮与面板本体吃
+      // 根节点不吃事件，只有入口按钮与面板本体吃
       'pointer-events:none',
       'font-family:' + FONT,
       'user-select:none',
@@ -479,109 +658,125 @@ export const createSettingsPanel = (
     );
   });
 
-  /* ── 右上角按钮列的几何（齿轮在上、调试在它**正下方**）─────────
+  /* ── 左上角入口列 ─────────────────────────────
    *
-   * ★ root 是 `position:fixed;top:0;right:0` 的零尺寸盒 ⇒ 绝对定位子元素的原点
-   *   就是**视口右上角**，所以这里的 top/right 直接就是"距视口上/右缘"的距离。
+   * ★ 几何：单独一个 `position:fixed;top:0;left:0` 的零尺寸盒（`corner`），
+   *   与右上角的 `root` **分开**。为什么不复用 `root`：`root` 钉在
+   *   `top:0;right:0`（零尺寸盒 ⇒ 子元素原点 =**视口右上角**），
+   *   要在它里面摆左上角得写成 `right:calc(100vw - …)`，既绕又容易算错；
+   *   开一个自己的锚点，`left/top` 就是"距视口左/上缘"，一目了然。
+   * ★ 容器自己 `pointer-events:none`（不吃事件、不挡画面），只有按钮吃。
    */
   const CORNER_BTN = 38;
   const CORNER_TOP = 14;
   const CORNER_GAP = 10;
 
-  /* ── 齿轮按钮 ─────────────────────────────── */
-  const gear = createEl(
-    'button',
+  const corner = createEl(
+    'div',
     [
-      'pointer-events:auto',
-      'position:absolute',
-      'top:' + uiPx(CORNER_TOP),
-      'right:' + uiPx(CORNER_TOP),
-      'width:' + uiPx(CORNER_BTN),
-      'height:' + uiPx(CORNER_BTN),
-      'padding:0',
-      'border:' + uiPx(1) + ' solid rgba(255,255,255,0.28)',
-      'border-radius:50%',
-      'background:rgba(20,22,30,0.82)',
-      'color:#fff',
-      'cursor:pointer',
+      'position:fixed',
+      'top:0',
+      'left:0',
+      'z-index:2147483647',
       'display:flex',
-      'align-items:center',
-      'justify-content:center',
-      // ★ 不用 backdrop-filter —— WE CEF 上会崩渲染进程，见文件头注释
-      'transition:background .18s ease,transform .18s ease',
-    ].join(';'),
-    root
+      'flex-direction:column',
+      'gap:' + uiPx(CORNER_GAP),
+      'align-items:flex-start',
+      // 内边距 = 距视口上/左缘的间距 ⇒ 按钮本身不需要再各写一份 top/left
+      'padding:' + uiPx(CORNER_TOP),
+      'box-sizing:border-box',
+      'pointer-events:none',
+      'font-family:' + FONT,
+      'user-select:none',
+      '-webkit-user-select:none',
+    ].join(';')
   );
-  gear.id = 'wb-settings-gear';
-  gear.title = '壁纸设置';
-  gear.setAttribute('aria-label', '壁纸设置');
-  // 内联 SVG 齿轮：不依赖字体里的 glyph，避免 CEF 里显示成豆腐块
-  // ★ 图标跟着按钮缩放：style 里的 calc 会覆盖上面的 width/height 属性
-  gear.innerHTML =
-    '<svg width="19" height="19" style="width:' +
-    uiPx(19) +
-    ';height:' +
-    uiPx(19) +
-    '" viewBox="0 0 24 24" fill="none" ' +
-    'stroke="currentColor" stroke-width="1.9" stroke-linecap="round" ' +
-    'stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/>' +
-    '<path d="M19.4 15a1.6 1.6 0 0 0 .33 1.77l.06.06a2 2 0 1 1-2.83 2.83' +
-    'l-.06-.06a1.6 1.6 0 0 0-1.77-.33 1.6 1.6 0 0 0-1 1.47V21a2 2 0 1 1-4 ' +
-    '0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.77.33l-.06.06a2 2 0 1 ' +
-    '1-2.83-2.83l.06-.06A1.6 1.6 0 0 0 4.6 15a1.6 1.6 0 0 0-1.47-1H3a2 2 ' +
-    '0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.33-1.77l-.06-.06a2 2 ' +
-    '0 1 1 2.83-2.83l.06.06A1.6 1.6 0 0 0 9 4.6h.07A1.6 1.6 0 0 0 10 3.13V3a2 ' +
-    '2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.47 1.6 1.6 0 0 0 1.77-.33l.06-.06a2 2 ' +
-    '0 1 1 2.83 2.83l-.06.06A1.6 1.6 0 0 0 19.4 9v.07a1.6 1.6 0 0 0 1.47 ' +
-    '1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.47 1z"/></svg>';
+  corner.id = 'wb-corner';
+  // ★ 同 root：事件从这里往上冒泡到 document，不拦就会顺带触发一次"点角色"
+  SWALLOW_EVENTS.forEach((evt) => {
+    corner.addEventListener(
+      evt,
+      (e: Event) => {
+        e.stopPropagation();
+      },
+      false
+    );
+  });
 
-  /* ── 调试入口按钮（齿轮**正下方**）─────────────────────────────
+  /**
+   * 造一个入口按钮（**统一的圆钮外观**，6 个按钮共用）。
    *
-   * ★ 几何：与齿轮同列、紧跟其下（`CORNER_TOP + CORNER_BTN + CORNER_GAP`）。
-   * ★ 图标 = bug（诊断），同样内联 SVG + 跟着 `uiPx` 缩放，理由同齿轮。
-   * ★ 显隐跟随 `visible`（= WE 属性 `showSettings`）：它是"桌面 UI"的一员，
-   *   用户把设置按钮藏起来时不该再多出一个按钮。
+   * ★ 抽成工厂函数：图标/标题/状态各不相同，但外观必须一模一样 ——
+   *   各写一份样式串就是"改了 5 处漏了 1 处"的经典来源。
+   * ★ `flex:0 0 auto`：列是 flex column，不写的话按钮在窄容器里会被压扁。
    */
-  const debugBtn = createEl(
-    'button',
-    [
-      'pointer-events:auto',
-      'position:absolute',
-      'top:' + uiPx(CORNER_TOP + CORNER_BTN + CORNER_GAP),
-      'right:' + uiPx(CORNER_TOP),
-      'width:' + uiPx(CORNER_BTN),
-      'height:' + uiPx(CORNER_BTN),
-      'padding:0',
-      'border:' + uiPx(1) + ' solid rgba(255,255,255,0.28)',
-      'border-radius:50%',
-      'background:rgba(20,22,30,0.82)',
-      'color:#fff',
-      'cursor:pointer',
-      'display:flex',
-      'align-items:center',
-      'justify-content:center',
-      // ★ 不用 backdrop-filter —— WE CEF 上会崩渲染进程，见文件头注释
-      'transition:background .18s ease,transform .18s ease',
-    ].join(';'),
-    root
+  const makeEntryBtn = (id: string, label: string, svg: string): HTMLButtonElement => {
+    const btn = createEl(
+      'button',
+      [
+        'pointer-events:auto',
+        'flex:0 0 auto',
+        'width:' + uiPx(CORNER_BTN),
+        'height:' + uiPx(CORNER_BTN),
+        'padding:0',
+        'border:' + uiPx(1) + ' solid ' + ENTRY_BD_IDLE,
+        'border-radius:50%',
+        'background:' + ENTRY_BG_IDLE,
+        'color:#fff',
+        'cursor:pointer',
+        'display:flex',
+        'align-items:center',
+        'justify-content:center',
+        // ★ 不用 backdrop-filter —— WE CEF 上会崩渲染进程，见文件头注释
+        'transition:background .18s ease,transform .18s ease',
+      ].join(';'),
+      corner
+    ) as HTMLButtonElement;
+    btn.id = id;
+    setEntryLabel(btn, label);
+    btn.innerHTML = svg;
+    return btn;
+  };
+
+  /** 按钮的激活态（=它对应的面板/弹窗正在显示）高亮：改背景与描边，不动图标 */
+  const setEntryActive = (btn: HTMLElement, active: boolean): void => {
+    btn.style.background = active ? ENTRY_BG_ACTIVE : ENTRY_BG_IDLE;
+    btn.style.borderColor = active ? ENTRY_BD_ACTIVE : ENTRY_BD_IDLE;
+  };
+
+  const toggleBtn = makeEntryBtn('wb-corner-toggle', '', iconSvg(ICON_CHEVRON_UP));
+  const gear = makeEntryBtn('wb-settings-gear', '壁纸设置', iconSvg(ICON_GEAR));
+  const muteBtn = makeEntryBtn('wb-mute-btn', '静音', iconSvg(ICON_VOLUME_ON));
+  const debugBtn = makeEntryBtn('wb-debug-btn', '调试', iconSvg(ICON_BUG));
+  const disclaimerBtn = makeEntryBtn(
+    'wb-disclaimer-btn',
+    '免责声明与许可证',
+    iconSvg(ICON_SHIELD)
   );
-  debugBtn.id = 'wb-debug-btn';
-  debugBtn.title = '调试';
-  debugBtn.setAttribute('aria-label', '调试');
-  debugBtn.innerHTML =
-    '<svg width="19" height="19" style="width:' +
-    uiPx(19) +
-    ';height:' +
-    uiPx(19) +
-    '" viewBox="0 0 24 24" fill="none" ' +
-    'stroke="currentColor" stroke-width="1.9" stroke-linecap="round" ' +
-    'stroke-linejoin="round">' +
-    // 虫身 + 头
-    '<rect x="6.5" y="7.5" width="11" height="12" rx="5.5"/>' +
-    '<path d="M9.5 7.5 8 5.2M14.5 7.5 16 5.2"/>' +
-    // 六条腿
-    '<path d="M4 11h2.5M17.5 11H20M4 16h2.5M17.5 16H20M6.5 19.5 5 21.5M17.5 19.5 19 21.5"/>' +
-    '</svg>';
+  const archiveBtn = makeEntryBtn('wb-archive-btn', '档案', iconSvg(ICON_BOOK));
+
+  /**
+   * 刷「折叠/展开」按钮的图标与提示语。
+   *
+   * ★ 展开时显示**向上**的箭头（点了就收起）、收起时显示**向下**的箭头（点了就下拉）——
+   *   箭头指向"点下去会发生什么"，这是折叠控件最通行的读法。
+   */
+  const renderToggleBtn = () => {
+    toggleBtn.innerHTML = iconSvg(
+      collapsed ? ICON_CHEVRON_DOWN : ICON_CHEVRON_UP
+    );
+    setEntryLabel(toggleBtn, collapsed ? '展开入口' : '收起入口');
+  };
+
+  /** 刷「静音」按钮：图标在**喇叭**与**喇叭打叉**之间切换，并同步高亮 */
+  const renderMuteBtn = () => {
+    muteBtn.innerHTML = iconSvg(muted ? ICON_VOLUME_OFF : ICON_VOLUME_ON);
+    setEntryLabel(muteBtn, muted ? '取消静音' : '静音');
+    setEntryActive(muteBtn, muted);
+  };
+  renderToggleBtn();
+  renderMuteBtn();
+
 
   /* ── 面板本体（居中 + 屏幕 80% + 分 tab） ─────────
    *
@@ -688,7 +883,7 @@ export const createSettingsPanel = (
     { id: 'sequence', label: '事件触发' },
     { id: 'touch', label: '事件池' },
     { id: 'view', label: '画面调整' },
-    // ★ 这里**没有**「调试」页了：2026-10-15 起调试独立成齿轮下方的入口
+    // ★ 这里**没有**「调试」页了：2026-10-15 起调试独立成入口列里的一个按钮
     //   （见文件头与「调试面板」段）；字段仍是 `probeEnabled` 那四个，没改名。
     // ★ 2026-10-11 新增：**只对本壁纸生效**的设置（用户拍板放在**标签条最末**）。
     //   本页里的项由 `config.wallpaperSettings` 声明，没声明就连这个 tab 都没有（见上）。
@@ -1868,7 +2063,7 @@ export const createSettingsPanel = (
     '指针在桌面移动时沿轨迹留下等距发光粒子；粒子随寿命收缩到消失'
   );
 
-  /* ── 调试面板（**独立**小面板，入口 = 齿轮下方那个按钮）──────────────
+  /* ── 调试面板（**独立**小面板，入口 = 入口列里的「调试」按钮）──────────────
    *
    * ## 为什么不再做成设置面板的一个分页
    *
@@ -1899,9 +2094,11 @@ export const createSettingsPanel = (
     [
       'pointer-events:auto',
       'position:fixed',
-      // 挂在调试按钮**下方**（与齿轮同一列）
-      'top:' + uiPx(CORNER_TOP + (CORNER_BTN + CORNER_GAP) * 2),
-      'right:' + uiPx(CORNER_TOP),
+      // ★ 挂在入口列的**右侧**、与列顶对齐（不是"挂在调试按钮正下方"）：
+      //   列本身有 6 个按钮（≈278 设计px）够高，面板若接在列尾就只剩半屏可用高度，
+      //   而调试面板里有两组 chips（全部动画 + 全部念白），是全工程最高的浮层。
+      'top:' + uiPx(CORNER_TOP),
+      'left:' + uiPx(CORNER_TOP + CORNER_BTN + CORNER_GAP),
       'width:' + uiPx(300),
       'box-sizing:border-box',
       'padding:' + uiPx(14) + ' ' + uiPx(16) + ' ' + uiPx(12),
@@ -2358,14 +2555,72 @@ export const createSettingsPanel = (
     relayoutPanel();
   };
 
+  /**
+   * 刷新入口列与两个面板的显隐/高亮。**所有状态变化都只走这一处**。
+   *
+   * ## 显隐口径（2026-10-17）
+   *
+   * | 元素 | 显示条件 |
+   * |---|---|
+   * | 入口列容器 | `cornerVisible`（WE `showCornerButtons`） |
+   * | 折叠按钮 | 跟着容器（容器没了它也没意义） |
+   * | 设置/静音/调试/免责/档案 | 容器 && **未收起**（设置那个再多一个 `visible`） |
+   * | 设置面板 | `visible && cornerVisible && open` |
+   * | 调试面板 | `cornerVisible && debugOpen` |
+   *
+   * ★ 为什么两个面板都要带 `cornerVisible`：整列被 WE 关掉后按钮就点不到了，
+   *   面板若还留在屏幕上，**设置面板连关都关不掉**（它没有自己的关闭按钮）。
+   * ★ 调试面板**不再**跟着 `showSettings`：`showSettings` 现在只管齿轮那一个按钮
+   *   （用户 2026-10-17 拍板），调试有它自己的入口与自己的关闭按钮。
+   */
   const applyVisibility = () => {
-    gear.style.display = visible ? 'flex' : 'none';
-    debugBtn.style.display = visible ? 'flex' : 'none';
+    corner.style.display = cornerVisible ? 'flex' : 'none';
+    const entries = cornerVisible && !collapsed;
+    gear.style.display = entries && visible ? 'flex' : 'none';
+    muteBtn.style.display = entries ? 'flex' : 'none';
+    debugBtn.style.display = entries ? 'flex' : 'none';
+    disclaimerBtn.style.display = entries ? 'flex' : 'none';
+    archiveBtn.style.display = entries ? 'flex' : 'none';
+    // 「开/关某个面板」的四个入口在对应面板可见时高亮，一眼看出当前状态
+    setEntryActive(gear, open);
+    setEntryActive(debugBtn, debugOpen);
+    setEntryActive(disclaimerBtn, disclaimerVisible);
+    setEntryActive(archiveBtn, archiveVisible);
     // ★ 'flex'（不是 'block'）：面板是 flex column（header/tabBar/tabBody/foot）
-    panel.style.display = visible && open ? 'flex' : 'none';
-    debugPanel.style.display = visible && debugOpen ? 'block' : 'none';
+    panel.style.display = visible && cornerVisible && open ? 'flex' : 'none';
+    debugPanel.style.display = cornerVisible && debugOpen ? 'block' : 'none';
     // 展开/收起后面板尺寸变了 ⇒ 重新自适应 + 对齐兜底滚动条
     relayoutPanel();
+  };
+
+  /**
+   * 收起 / 展开入口列。
+   *
+   * ★★ 收起时**必须把两个面板一起关掉**：设置面板没有自己的关闭按钮
+   *   （开关都靠齿轮），齿轮一藏，面板就永远留在屏幕上出不去。
+   *   调试面板虽有自己的「关闭」，但一起关掉行为更一致（"收起 = 桌面清空"）。
+   */
+  const setCollapsed = (v: boolean) => {
+    collapsed = v;
+    if (collapsed) {
+      if (open) {
+        open = false;
+        if (options.onOpenChange) {
+          options.onOpenChange(false);
+        }
+      }
+      if (debugOpen) {
+        debugOpen = false;
+        if (options.onDebugOpenChange) {
+          options.onDebugOpenChange(false);
+        }
+      }
+    }
+    renderToggleBtn();
+    applyVisibility();
+    if (options.onCornerCollapsedChange) {
+      options.onCornerCollapsedChange(collapsed);
+    }
   };
 
   cbMuteAll.addEventListener('change', () => {
@@ -2524,6 +2779,49 @@ export const createSettingsPanel = (
   });
   debugBtn.addEventListener('click', () => setDebugOpen(!debugOpen));
   btnDebugClose.addEventListener('click', () => setDebugOpen(false));
+
+  /* ── 入口列：收起/展开、静音、免责声明、档案 ────────────────── */
+  toggleBtn.addEventListener('click', () => setCollapsed(!collapsed));
+
+  /**
+   * 「静音」入口：**纯运行时**切换（不写配置、不重载）。
+   *
+   * ★★ 为什么不落盘（用户 2026-10-17 拍板）：WE 属性里的 `muteAll` 走的是
+   *   "改配置 → 重载页面"，点一下桌面就黑一秒；而这个按钮的诉求是
+   *   **"我现在要让壁纸闭嘴"**这个临时动作 ⇒ 由调用方把手头两路音频的音量压到 0、
+   *   再点还原，重载后回到 WE 属性/配置的值。
+   * ★ 状态真值在调用方（它才知道音量），面板只拿 `onToggleMute()` 的返回值刷图标 ——
+   *   面板若自己 `muted = !muted` 就是第二份真值，迟早和实际音量不符。
+   */
+  muteBtn.addEventListener('click', () => {
+    const next = options.onToggleMute ? options.onToggleMute() : !muted;
+    muted = next === true;
+    renderMuteBtn();
+  });
+
+  /**
+   * 「免责声明」入口：切换居中的免责弹窗（弹窗本体在 `disclaimer.ts`，
+   * 由 `index.ts` 建 ⇒ 面板只发指令并拿回真值刷高亮）。
+   *
+   * ★ 与 WE 属性 `showDisclaimer` 落到**同一个覆盖层字段** ⇒ 点它等于在属性面板里勾选，
+   *   reload 后状态保持；WE 下次下发属性时又会覆盖回来（属性面板是权威，与既有口径一致）。
+   */
+  disclaimerBtn.addEventListener('click', () => {
+    const next = options.onToggleDisclaimer
+      ? options.onToggleDisclaimer()
+      : !disclaimerVisible;
+    disclaimerVisible = next === true;
+    applyVisibility();
+  });
+
+  /** 「档案」入口：同「免责声明」，对应覆盖层字段 `showArchive` */
+  archiveBtn.addEventListener('click', () => {
+    const next = options.onToggleArchive
+      ? options.onToggleArchive()
+      : !archiveVisible;
+    archiveVisible = next === true;
+    applyVisibility();
+  });
   /**
    * 调试面板的保存：**只下发这 4 个键**（合并写 ⇒ 不会动别的设置）。
    *
@@ -2566,7 +2864,7 @@ export const createSettingsPanel = (
       touchFeedbackMode: draft.touchFeedbackMode,
       greetMode: draft.greetMode,
       /**
-       * ★ 4 个调试开关**故意不带**（2026-10-15）：它们已归齿轮下方的调试面板管，
+       * ★ 4 个调试开关**故意不带**（2026-10-15）：它们已归入口列里的调试面板管，
        *   那边保存时只下发这 4 个键 ⇒ 两边各写各的、互不覆盖。
        *   （`writeOverrides` 是合并写 ⇒ 这里不带 = 覆盖层里的调试值原样保留。）
        */
@@ -2595,6 +2893,9 @@ export const createSettingsPanel = (
   // ★ 初始化 tab 选中态（同时触发一次自适应缩放）
   setTab(activeTab);
   document.body.appendChild(root);
+  // ★ 入口列有**自己的**锚点盒（左上角，与右上角的 root 分开）；挂在 root 之后 ⇒
+  //   同 z-index 时画在探针 HUD（也是左上角）之上
+  document.body.appendChild(corner);
 
   return {
     setVisible: (v: boolean) => {
@@ -2602,6 +2903,20 @@ export const createSettingsPanel = (
       applyVisibility();
     },
     isVisible: () => visible,
+    setCornerVisible: (v: boolean) => {
+      cornerVisible = v !== false;
+      applyVisibility();
+    },
+    isCornerVisible: () => cornerVisible,
+    isCornerCollapsed: () => collapsed,
+    setDisclaimerVisible: (v: boolean) => {
+      disclaimerVisible = v === true;
+      applyVisibility();
+    },
+    setArchiveVisible: (v: boolean) => {
+      archiveVisible = v === true;
+      applyVisibility();
+    },
     isOpen: () => open,
     refresh: (next: SettingsView) => {
       draft = {
@@ -2619,6 +2934,9 @@ export const createSettingsPanel = (
       window.removeEventListener('resize', onWindowResize, false);
       if (root.parentElement) {
         root.parentElement.removeChild(root);
+      }
+      if (corner.parentElement) {
+        corner.parentElement.removeChild(corner);
       }
     },
   };

@@ -33,8 +33,15 @@ src/
   pointerTrail.ts   Cursor trail (deliberately separate from scene particles)
   settingsPanel.ts  Built-in settings panel (6 tabs — the last one, "壁纸独立设置", is
                     config-gated: only built when config.wallpaperSettings declares items)
-                    + the separate debug panel (entry button right below the gear, with
-                    trigger chips for every animation / dialogue entry)
+                    + the separate debug panel (with trigger chips for every animation /
+                    dialogue entry). Both are opened from the top-left ENTRY COLUMN this
+                    module also owns: a collapse/expand toggle plus five round buttons in
+                    the SAME ORDER as the WE property list — settings (gear), mute,
+                    debug (bug), disclaimer (shield), archive (book). Each button is an
+                    inline SVG (CEF has no reliable icon font) and highlights while its
+                    panel is open; the mute one only swaps volume, it does NOT write config.
+                    The column's visibility is its own WE property `showCornerButtons`;
+                    WE `showSettings` now only governs the gear button.
   settingsStore.ts  Settings read/write + overrides
   uiScale.ts        Panel scaling
   archive.ts        Archive panel
