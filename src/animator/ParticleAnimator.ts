@@ -225,16 +225,115 @@ function perlin3(x: number, y: number, z: number): number {
  * 三轴互不相关的偏移，用来构造向量势场 Ψ = (perlin(q+O₁), perlin(q+O₂), perlin(q+O₃))。
  * 官方 NoiseModule 文档明说算法基于 **Curl Noise**，内部由多个 Perlin 样本合成。
  */
-const NOISE_OFFSET_X = [0, 31.416, -53.21];
-const NOISE_OFFSET_Y = [0, 47.853, 19.66];
-const NOISE_OFFSET_Z = [0, 12.793, 71.3];
+/**
+ * 三轴互不相关的偏移，用来构造向量势场 Ψ = (perlin(q+O₁), perlin(q+O₂), perlin(q+O₃))。
+ * 官方 NoiseModule 文档明说算法基于 **Curl Noise**，内部由多个 Perlin 样本合成。
+ *
+ * ★ P4 加了**第 4 组**偏移（`i = 3`）：它是 `sizeAmount` / `rotationAmount` 的
+ *   **标量调制源**（见 `noiseScalar`）。加在数组尾部 ⇒ `i = 0/1/2` 的取值一字未动。
+ */
+const NOISE_OFFSET_X = [0, 31.416, -53.21, 8.771];
+const NOISE_OFFSET_Y = [0, 47.853, 19.66, -66.394];
+const NOISE_OFFSET_Z = [0, 12.793, 71.3, 41.05];
 
-function psi(i: number, x: number, y: number, z: number): number {
+/**
+ * **单层**势场：第 `i` 路、频率缩放 `f`。
+ * `f = 1` 时与 P4 之前的原式 `perlin3(x + O_i, …)` **逐位相同**（`x × 1 ≡ x`，IEEE754 精确）。
+ */
+function psiLayer(
+  i: number,
+  x: number,
+  y: number,
+  z: number,
+  f: number
+): number {
   return perlin3(
-    x + NOISE_OFFSET_X[i],
-    y + NOISE_OFFSET_Y[i],
-    z + NOISE_OFFSET_Z[i]
+    x * f + NOISE_OFFSET_X[i],
+    y * f + NOISE_OFFSET_Y[i],
+    z * f + NOISE_OFFSET_Z[i]
   );
+}
+
+/**
+ * 势场 Ψ 的第 `i` 路（`i = 0/1/2`），**单层**（`octaveCount = 1`，= P4 之前的原式）。
+ * 三路各用一组互不相同的偏移 ⇒ 三路互不相关。
+ */
+function psi(i: number, x: number, y: number, z: number): number {
+  return psiLayer(i, x, y, z, 1);
+}
+
+/**
+ * ★ P4：**标量噪声场**（第 4 路势场）—— `sizeAmount` / `rotationAmount` 的取值来源。
+ *
+ * ★ 为什么另开一路、而不用 curl 的某个分量：
+ *   ① **量级有界**：Perlin 本身大致落在 ±0.7，`sizeAmount` 可以直接当"幅度"用
+ *      （`尺寸乘子 = 1 + 标量 × sizeAmount`），不会像 curl 分量（实测 |N| 可达 ~3.7）
+ *      那样把尺寸乘成负数；
+ *   ② **与可见位移不相关**：位置推力只消费 curl 的 x/y，另开一路就不会出现
+ *      "往哪边推就往哪边胀"的假相关。
+ *   ⚠️ Unity 内部取的是哪一路**未公开** ⇒ 这是**本项目口径**，如实标注为存疑项。
+ *
+ * `oct > 1` ⇒ 与 curl 一样在**势场**上做 fBm 叠层（振幅 `mul^k`、频率 `scale^k`、
+ * 除以 `Σ振幅` 归一化）。
+ */
+function noiseScalar(
+  x: number,
+  y: number,
+  z: number,
+  oct: number,
+  mul: number,
+  scale: number
+): number {
+  if (oct <= 1) {
+    return psiLayer(3, x, y, z, 1);
+  }
+  let amp = 1;
+  let f = 1;
+  let range = 1;
+  let sum = psiLayer(3, x, y, z, 1);
+  for (let k = 1; k < oct; k++) {
+    amp *= mul;
+    f *= scale;
+    range += amp;
+    sum += psiLayer(3, x, y, z, f) * amp;
+  }
+  return sum / range;
+}
+
+/** `curl3` 叠层支路的暂存（避免每次调用 new） */
+const CURL_ACC = new THREE.Vector3();
+
+/**
+ * 把**一层**势场的 curl 累加进 `out`。
+ *
+ * ★ 差分步长 `h = NOISE_EPS / f` **必须与频率匹配**：高频层若仍用基频步长，
+ *   截断误差 `O(h²·f³)` 会与该层本身的量级同阶 ⇒ 叠层里的高频层其实是一堆噪声垃圾
+ *   （第一版实现就是这样，`_regress/74_` 的散度判据直接把这个问题抓了出来）。
+ *   `f = 1` 时 `h = NOISE_EPS`、`amp/(2h)` 与单层支路**逐位相同**。
+ */
+function addLayerCurl(
+  x: number,
+  y: number,
+  z: number,
+  f: number,
+  amp: number,
+  out: THREE.Vector3
+): void {
+  const h = NOISE_EPS / f;
+  const inv = amp / (2 * h);
+  const nx =
+    psiLayer(2, x, y + h, z, f) -
+    psiLayer(2, x, y - h, z, f) -
+    (psiLayer(1, x, y, z + h, f) - psiLayer(1, x, y, z - h, f));
+  const ny =
+    psiLayer(0, x, y, z + h, f) -
+    psiLayer(0, x, y, z - h, f) -
+    (psiLayer(2, x + h, y, z, f) - psiLayer(2, x - h, y, z, f));
+  const nz =
+    psiLayer(1, x + h, y, z, f) -
+    psiLayer(1, x - h, y, z, f) -
+    (psiLayer(0, x, y + h, z, f) - psiLayer(0, x, y - h, z, f));
+  out.set(nx * inv, ny * inv, nz * inv);
 }
 
 /**
@@ -244,13 +343,44 @@ function psi(i: number, x: number, y: number, z: number): number {
  * 暴露为 static 是为了让验收脚本能**直接调用真身**跑散度判据
  * （`_验证_粒子.py`：随机采样 2000 点算 max|∇·N|，应远小于场量级）。
  * 这条判据是 curl 的**定义性质**，比"看着像湍流"可靠得多。
+ *
+ * ★ P4：`oct > 1` ⇒ 逐层累加（每层用自己的步长，见 `addLayerCurl`），
+ *   最后除以 `Σ振幅` 归一化（Cocos `ParticleNoise.getNoise` 同式）。
+ *   `oct <= 1` ⇒ 走下面的**原式**，逐位不变。
+ *   ⚠️ `mul = 0` 时高层的振幅全 0、`Σ振幅 = 1` ⇒ 结果退回单层（用 `k === 0` 直接
+ *   `copy` + `range !== 1` 才除 ⇒ 连浮点结合顺序都不引入差异）。
  */
 function curl3(
   x: number,
   y: number,
   z: number,
-  out: THREE.Vector3
+  out: THREE.Vector3,
+  oct = 1,
+  omul = 0.5,
+  oscale = 2
 ): THREE.Vector3 {
+  if (oct > 1) {
+    let amp = 1;
+    let f = 1;
+    let range = 1;
+    for (let k = 0; k < oct; k++) {
+      if (k > 0) {
+        amp *= omul;
+        f *= oscale;
+        range += amp;
+      }
+      addLayerCurl(x, y, z, f, amp, CURL_ACC);
+      if (k === 0) {
+        out.copy(CURL_ACC);
+      } else {
+        out.add(CURL_ACC);
+      }
+    }
+    if (range !== 1) {
+      out.multiplyScalar(1 / range);
+    }
+    return out;
+  }
   const h = NOISE_EPS;
   const inv = 1 / (2 * h);
   const nx =
@@ -268,13 +398,27 @@ function curl3(
   return out.set(nx * inv, ny * inv, nz * inv);
 }
 
-/** 数值散度 ∇·N（验收判据用） */
-function divCurlNumerical(x: number, y: number, z: number, h: number): number {
+/** 数值散度 ∇·N（验收判据用；`oct > 1` 时同样取叠层势场） */
+function divCurlNumerical(
+  x: number,
+  y: number,
+  z: number,
+  h: number,
+  oct = 1,
+  omul = 0.5,
+  oscale = 2
+): number {
   const a = new THREE.Vector3();
   const b = new THREE.Vector3();
-  const d0 = curl3(x + h, y, z, a).x - curl3(x - h, y, z, b).x;
-  const d1 = curl3(x, y + h, z, a).y - curl3(x, y - h, z, b).y;
-  const d2 = curl3(x, y, z + h, a).z - curl3(x, y, z - h, b).z;
+  const d0 =
+    curl3(x + h, y, z, a, oct, omul, oscale).x -
+    curl3(x - h, y, z, b, oct, omul, oscale).x;
+  const d1 =
+    curl3(x, y + h, z, a, oct, omul, oscale).y -
+    curl3(x, y - h, z, b, oct, omul, oscale).y;
+  const d2 =
+    curl3(x, y, z + h, a, oct, omul, oscale).z -
+    curl3(x, y, z - h, b, oct, omul, oscale).z;
   return (d0 + d1 + d2) / (2 * h);
 }
 
@@ -339,8 +483,14 @@ function modPos(a: number, n: number): number {
  * `pre` / `post` 缺省 = 0（Constant），与旧行为逐位一致 ⇒ 对不带这两个字段的旧 config **零影响**。
  * `headSlope` / `tailSlope` = 首键 `inSlope` / 末键 `outSlope`（Linear 模式要用）。
  */
-function curveAt(keys: number[][], t: number, pre = 0, post = 0,
-                 headSlope = 0, tailSlope = 0): number {
+function curveAt(
+  keys: number[][],
+  t: number,
+  pre = 0,
+  post = 0,
+  headSlope = 0,
+  tailSlope = 0
+): number {
   if (!keys || keys.length === 0) {
     return 1;
   }
@@ -399,7 +549,9 @@ function curveOf(mm: ParticleMinMax | undefined, t: number): number | null {
   if (!mm || !mm.keysA || mm.keysA.length === 0) {
     return null;
   }
-  return mm.a * curveAt(mm.keysA, t, mm.pre, mm.post, mm.headSlope, mm.tailSlope);
+  return (
+    mm.a * curveAt(mm.keysA, t, mm.pre, mm.post, mm.headSlope, mm.tailSlope)
+  );
 }
 
 /**
@@ -466,7 +618,8 @@ function lifeMulMix(mm: ParticleMinMax, t: number, mix: number): number {
   if (!(mm.keysB && mm.keysB.length > 0)) {
     return lifeMul(mm, t, mix);
   }
-  const hi = mm.keysA && mm.keysA.length > 0 ? mm.a * keysAt(mm.keysA, t) : mm.a;
+  const hi =
+    mm.keysA && mm.keysA.length > 0 ? mm.a * keysAt(mm.keysA, t) : mm.a;
   const lo = mm.b * keysAt(mm.keysB, t);
   return lo + (hi - lo) * mix;
 }
@@ -750,7 +903,12 @@ function alphaCurve(keys: number[][], t: number): number {
  *   min 侧 `0.166→0.972 / 1→0`（**单次平滑起伏**）。只取 max 会让全体粒子一起急闪，
  *   实录里则是"闪一下的"和"缓缓亮灭的"混在一起（2026-10-13 用户报"闪得太快"）。
  */
-function alphaAt(keys: number[][], t: number, keysMin?: number[][], mix = 0): number {
+function alphaAt(
+  keys: number[][],
+  t: number,
+  keysMin?: number[][],
+  mix = 0
+): number {
   const a = alphaCurve(keys, t);
   if (!keysMin || keysMin.length === 0) {
     return a;
@@ -823,7 +981,10 @@ function pickStartColor(
   u01: number
 ): [number, number, number, number] {
   const g = c.startColorGradient;
-  if (g && ((g.colorKeys && g.colorKeys.length) || (g.alphaKeys && g.alphaKeys.length))) {
+  if (
+    g &&
+    ((g.colorKeys && g.colorKeys.length) || (g.alphaKeys && g.alphaKeys.length))
+  ) {
     const hi = sampleGradient(g.colorKeys, g.alphaKeys, u01);
     if (g.mode === 3 && g.minAlphaKeys && g.minAlphaKeys.length) {
       const lo = sampleGradient(g.minColorKeys, g.minAlphaKeys, u01);
@@ -871,8 +1032,39 @@ type Particle = {
    * ★ 由 `buildGeometry()` **写回**，所以它**就是渲染真值本身**。
    *   验收脚本读它即可判断"同一颗粒子是否始终同一帧"（`qiqiu` 应恒定、`niao` 应遍历），
    *   而不必在测试里重抄一份公式 —— 那样就成了自证。
+   *
+   * ⚠️ P4：`uv.animationType = 1`（Single Row）时它是**行内**帧号（`0 … tilesX−1`）；
+   *   整表档则是**整表**帧号（`0 … tilesX×tilesY−1`）。两种口径下都等于"该粒子的第 n 帧"。
    */
   uvFrame: number;
+  /**
+   * ★ P4：Single Row 档该粒子**播哪一行**（`0 … tilesY−1`）。
+   *
+   * 出生时定、终生不变（官方 `rowMode = Random` 逐字：*"Randomly select a row for each
+   * particle **when producing the animation**"*）。
+   * `rowMode = 1`（Random）⇒ 出生时用 `rng` 抽一次（**只在真正会出现随机行时才抽**，
+   * 见 `spawn()` ⇒ 既有产物的抽签序列零回归）；其余（Custom / MeshIndex）⇒ `rowIndex`
+   * （MeshIndex 在本引擎恒等于 0 —— 每套系统只用一个 mesh、只有一个子网格）。
+   */
+  uvRow: number;
+
+  /**
+   * ★ P4：本帧**标量噪声场**的取值（第 4 路势场，见 `noiseScalar`）。
+   *
+   * 用途 = `NoiseModule.sizeAmount` 的调制源（`buildGeometry` 读它算尺寸乘子）。
+   * ★ 为什么是"另一路标量场"而不是 curl 的某个分量：
+   *   ① Perlin 天然有界（约 ±0.7）⇒ `1 + 标量 × sizeAmount` 不会把尺寸乘成负数；
+   *   ② 与可见位移（只消费 curl 的 x/y）**不相关** ⇒ 不会出现"往哪边推就往哪边胀"。
+   *   ⚠️ Unity 未公开它的取值来源 ⇒ 本项目口径，存疑项。
+   * `sizeAmount` / `rotationAmount` 都缺省时恒为 0（且**连采样都不做**）。
+   */
+  nzS: number;
+
+  /**
+   * ★ P4：本帧 curl 场的 **z 分量** —— 供 `rotationAmount` 用（2D 渲染丢弃的那一路）。
+   * 缺省（`rotationAmount` 未声明）时恒为 0、无人读。
+   */
+  nzRot: number;
 
   /* ── 丝带轨迹（仅 `trail.enabled` 时使用，见 ParticleMeshConfig.trail）── */
 
@@ -1043,6 +1235,51 @@ export class ParticleAnimator {
   private rbsOn = false;
   private rbsR0 = 0;
   private rbsR1 = 0;
+
+  /* ══════════════════════════════════════════════════════════════════════════
+   * P4「UV / Noise 细节」—— 构造期预计算（2026-10-17）
+   *
+   * ★ 全部**缺省 = 与 P4 之前逐位一致**：
+   *   `nzOct = 1`（单层势场）、`nzScrollOn = false`（不加滚动偏移）、
+   *   `nzSizeOn = false`（尺寸乘子恒 1）、`nzRotOn = false`（不产生自转）、
+   *   `uvTimeMode = 0`（按寿命曲线）、`uvSingleRow = false`（整表）、
+   *   `uvStart = null`（起始帧 0）。
+   * 依据（官方逐字 + Cocos 逐行 + 全包普查）见 `config.type.ts` 的 `uv` / `noise` 段
+   * 与 `docx/RESEARCH_粒子系统复刻参考.md` §4.14 / §4.15。
+   * ══════════════════════════════════════════════════════════════════════════ */
+
+  /** `octaveCount`（≥1）与两层叠层的振幅/频率倍率（缺省 0.5 / 2.0，= Unity 模板值） */
+  private nzOct = 1;
+  private nzOctMul = 0.5;
+  private nzOctScale = 2;
+  /** `scrollSpeed` 非零 ⇒ 采样点加"系统时间 × 该速度"的偏移（见 `config.type.ts` 的 ①②） */
+  private nzScrollOn = false;
+  /** `sizeAmount` 非空 ⇒ `buildGeometry` 用 `p.nzS` 调制尺寸 */
+  private nzSizeOn = false;
+  /** `rotationAmount` 非空 ⇒ `step()` 用 `p.nzRot` 产生自转（度/秒） */
+  private nzRotOn = false;
+  /** `separateAxes` ⇒ 位置推力逐轴改用 `strength / strengthY / strengthZ` */
+  private nzSep = false;
+  /** 逐轴有效强度（`damping` 与 `strength*` 已折进来；三轴相等 ⇒ 与 P4 之前同式） */
+  private nzEffX = 0;
+  private nzEffY = 0;
+  private nzEffZ = 0;
+  /** `timeMode`：0 Lifetime / 1 Speed / 2 FPS */
+  private uvTimeMode = 0;
+  /** `timeMode = 2` 的帧率（帧/秒） */
+  private uvFps = 30;
+  /** `timeMode = 1` 的速度区间（**世界单位/秒**，已乘 `localScale × unitScale`） */
+  private uvSpdR0 = 0;
+  private uvSpdR1 = 1;
+  /** `startFrame`（帧号；`null` ⇒ 恒 0 = 现状） */
+  private uvStart: ParticleMinMax | null = null;
+  /** `animationType === 1`（Single Row） */
+  private uvSingleRow = false;
+  /** SingleRow 档的行源：0 Custom（`rowIndex`）/ 1 Random（出生抽）/ 2 MeshIndex（≡ 0） */
+  private uvRowMode = 0;
+  private uvRowIndex = 0;
+  /** SingleRow 档的**行数**（= `tilesY`，出生抽行用） */
+  private uvRows = 1;
 
   /* ══════════════════════════════════════════════════════════════════════════
    * P3「渲染侧」—— `ParticleSystemRenderer` 的**预计算**（2026-10-17）
@@ -1270,6 +1507,73 @@ export class ParticleAnimator {
     this.rbsR0 = (rbs && rbs.range ? rbs.range[0] : 0) * s2w;
     this.rbsR1 = (rbs && rbs.range ? rbs.range[1] : 1) * s2w;
 
+    /* ── P4「UV / Noise 细节」的预计算 ────────────────────────────────────
+     * 缺省（旧 config 没有这些字段）⇒ 下面每一个量都停在"与 P4 之前等价"的值上
+     *（`nzOct=1` / `nzScrollOn=false` / `nzSizeOn=false` / `nzRotOn=false` /
+     *  `nzSep=false` / `uvTimeMode=0` / `uvStart=null` / `uvSingleRow=false`）。
+     */
+    const nz = meshConfig.noise;
+    if (nz && nz.enabled) {
+      const oct = Math.floor(
+        Number.isFinite(nz.octaves as number) ? (nz.octaves as number) : 1
+      );
+      this.nzOct = oct >= 1 ? oct : 1;
+      this.nzOctMul = Number.isFinite(nz.octaveMultiplier as number)
+        ? (nz.octaveMultiplier as number)
+        : 0.5;
+      this.nzOctScale = Number.isFinite(nz.octaveScale as number)
+        ? (nz.octaveScale as number)
+        : 2;
+      this.nzScrollOn = !!nz.scrollSpeed;
+      this.nzSizeOn = !!nz.sizeAmount;
+      this.nzRotOn = !!nz.rotationAmount;
+      /**
+       * `separateAxes` ⇒ 逐轴强度；缺省 `strengthY/Z` 回退到 `strength`。
+       * `damping` 逐轴同样折算（官方 *"When enabled, strength is proportional to
+       * frequency"* —— 对每条强度分量都成立），但**乘数只用一条 frequency**。
+       */
+      this.nzSep = nz.separateAxes === true;
+      const k = nz.damping ? nz.frequency : 1;
+      this.nzEffX = nz.strength * k;
+      this.nzEffY =
+        (this.nzSep
+          ? Number.isFinite(nz.strengthY as number)
+            ? (nz.strengthY as number)
+            : nz.strength
+          : nz.strength) * k;
+      this.nzEffZ =
+        (this.nzSep
+          ? Number.isFinite(nz.strengthZ as number)
+            ? (nz.strengthZ as number)
+            : nz.strength
+          : nz.strength) * k;
+    }
+
+    const uvc = meshConfig.uv;
+    if (uvc) {
+      const tm = uvc.timeMode;
+      this.uvTimeMode = tm === 1 || tm === 2 ? tm : 0;
+      this.uvFps = Number.isFinite(uvc.fps as number)
+        ? (uvc.fps as number)
+        : 30;
+      /**
+       * ★ `speedRange` 是**世界单位/秒**（与本引擎 `p.spd` 同口径）⇒ 与三个 by-speed
+       *   模块一样乘 `localScale × unitScale`；缺省 `[0, 1]`（Unity 模板值）。
+       */
+      const sr = uvc.speedRange;
+      this.uvSpdR0 = (sr ? sr[0] : 0) * s2w;
+      this.uvSpdR1 = (sr ? sr[1] : 1) * s2w;
+      this.uvStart = uvc.startFrame ? uvc.startFrame : null;
+      this.uvSingleRow = uvc.animationType === 1;
+      this.uvRowMode = uvc.rowMode === 1 ? 1 : uvc.rowMode === 2 ? 2 : 0;
+      this.uvRowIndex = Number.isFinite(uvc.rowIndex as number)
+        ? Math.max(0, Math.floor(uvc.rowIndex as number))
+        : 0;
+      this.uvRows = Math.max(1, Math.floor(uvc.tilesY) || 1);
+      // ★ `uv.flipU / flipV`（Unity 已废弃的同义字段）的解析见 `rd` 段**之后** ——
+      //   要先知道 `renderer.flip` 给没给值，才知道该不该回退。
+    }
+
     /* ── P3 渲染侧（`ParticleSystemRenderer`）──────────────────────────────
      * 整段 `if (rd)` 包住 ⇒ 缺省（无 `renderer` 字段）时下面这些量一个都不改，
      * 与 P3 之前逐位一致（Billboard + 绕中心枢轴 + 不自转开关 + 无 mesh）。
@@ -1290,19 +1594,36 @@ export class ParticleAnimator {
       this.pvY = rd.pivot && isFinite(rd.pivot[1]) ? rd.pivot[1] : 0;
       this.rRoll = rd.allowRoll !== false;
       this.rAlignVel = rd.alignment === 4;
-      this.rVelScale = isFinite(rd.velocityScale as number) ? (rd.velocityScale as number) : 0;
-      this.rLenScale = isFinite(rd.lengthScale as number) ? (rd.lengthScale as number) : 0;
-      this.rMinSize = isFinite(rd.minParticleSize as number) ? Math.max(0, rd.minParticleSize as number) : 0;
-      this.rMaxSize = isFinite(rd.maxParticleSize as number) ? Math.max(0, rd.maxParticleSize as number) : 0;
-      this.rFlipX = rd.flip && isFinite(rd.flip[0]) ? Math.min(1, Math.max(0, rd.flip[0])) : 0;
-      this.rFlipY = rd.flip && isFinite(rd.flip[1]) ? Math.min(1, Math.max(0, rd.flip[1])) : 0;
+      this.rVelScale = isFinite(rd.velocityScale as number)
+        ? (rd.velocityScale as number)
+        : 0;
+      this.rLenScale = isFinite(rd.lengthScale as number)
+        ? (rd.lengthScale as number)
+        : 0;
+      this.rMinSize = isFinite(rd.minParticleSize as number)
+        ? Math.max(0, rd.minParticleSize as number)
+        : 0;
+      this.rMaxSize = isFinite(rd.maxParticleSize as number)
+        ? Math.max(0, rd.maxParticleSize as number)
+        : 0;
+      this.rFlipX =
+        rd.flip && isFinite(rd.flip[0])
+          ? Math.min(1, Math.max(0, rd.flip[0]))
+          : 0;
+      this.rFlipY =
+        rd.flip && isFinite(rd.flip[1])
+          ? Math.min(1, Math.max(0, rd.flip[1]))
+          : 0;
       /**
        * 排序偏差 → **整个系统**的 z 微调。
        * ★ 必须显式给 `fudgeToZ`：Unity 如何把无量纲 fudge 折进排序距离**未公开**，
        *   而本引擎的透明排序完全由 `mesh.position.z` 决定 ⇒ 换算只能由数据层给出。
        *   缺省 `fudgeToZ = 0` ⇒ `zShift = 0` ⇒ 现有产物的 z 序逐位不变。
        */
-      if (isFinite(rd.sortingFudge as number) && isFinite(rd.fudgeToZ as number)) {
+      if (
+        isFinite(rd.sortingFudge as number) &&
+        isFinite(rd.fudgeToZ as number)
+      ) {
         this.zShift = -(rd.sortingFudge as number) * (rd.fudgeToZ as number);
       }
       /**
@@ -1323,7 +1644,9 @@ export class ParticleAnimator {
           this.rMeshPos = new Float32Array(msh.positions);
           this.rMeshUv = new Float32Array(msh.uv0);
           this.rMeshIdx = new Uint16Array(msh.indices);
-          this.rMeshScale = isFinite(msh.scale as number) ? (msh.scale as number) : 1;
+          this.rMeshScale = isFinite(msh.scale as number)
+            ? (msh.scale as number)
+            : 1;
           // UV 包围盒（`flip` 要"在条目自己的范围内镜像"，不能一律按 [0,1] 算）
           let u0m = Infinity;
           let u1m = -Infinity;
@@ -1342,6 +1665,25 @@ export class ParticleAnimator {
           this.rMeshVMin = v0m;
           this.rMeshVMax = v1m;
         }
+      }
+    }
+
+    /**
+     * ★★ P4：`uv.flipU / flipV` 作为 **`renderer.flip` 的回退**。
+     *
+     * 依据（ScriptReference 逐字）：*"flipU property is deprecated. Use
+     * `ParticleSystemRenderer.flip.x` instead."* ⇒ 两者是**同一份数据的两个入口**。
+     * 本引擎以 `renderer.flip` 为准（P3 已实现），只有在它**没给**（= 0）而 UV 段给了
+     * 非零值时，才把 UV 的值拿来用 —— 这样对"只用旧字段打包的工程"也能保真，
+     * 而本工程三个产物两者都是 0 / `[1,0,0]`（renderer 有值、UV 为 0）
+     * ⇒ **逐位与 P3 一致**。
+     */
+    if (uvc) {
+      if (this.rFlipX === 0 && isFinite(uvc.flipU as number)) {
+        this.rFlipX = Math.min(1, Math.max(0, uvc.flipU as number));
+      }
+      if (this.rFlipY === 0 && isFinite(uvc.flipV as number)) {
+        this.rFlipY = Math.min(1, Math.max(0, uvc.flipV as number));
       }
     }
 
@@ -1380,7 +1722,8 @@ export class ParticleAnimator {
      * ⚠️ 缺省（无 `renderer.mesh`）⇒ 仍是 6，逐位不变。
      */
     const meshVpp = this.rMeshIdx ? this.rMeshIdx.length : 0;
-    const vpp = Math.max(6, meshVpp) + (this.trailOn ? this.trailMaxPts * 6 : 0);
+    const vpp =
+      Math.max(6, meshVpp) + (this.trailOn ? this.trailMaxPts * 6 : 0);
     /**
      * 一个 mesh 承载本系统的全部粒子（动态四边形）。这样 z 排序只需给这一个
      * mesh 一个 `position.z`，与分层背景 / 角色共用同一套
@@ -1390,7 +1733,10 @@ export class ParticleAnimator {
      *   `_Texture` 走 `texUV`（含 CustomData / `_UV_t` 的平移）、`_mask` 走 `maskUV`
      *   （`in_TEXCOORD0`，不动）。合成"预乘成品图"的做法会丢掉这个区别。
      */
-    this.posAttr = new THREE.BufferAttribute(new Float32Array(max * vpp * 3), 3);
+    this.posAttr = new THREE.BufferAttribute(
+      new Float32Array(max * vpp * 3),
+      3
+    );
     this.uvTexAttr = new THREE.BufferAttribute(
       new Float32Array(max * vpp * 2),
       2
@@ -1409,7 +1755,10 @@ export class ParticleAnimator {
      *   "所有光圈一样亮"的来源。旧 config 没有梯度时，每个顶点写的就是常量
      *   `startColor` ⇒ 与旧的 uniform 路径逐位等价。
      */
-    this.startColAttr = new THREE.BufferAttribute(new Float32Array(max * vpp * 4), 4);
+    this.startColAttr = new THREE.BufferAttribute(
+      new Float32Array(max * vpp * 4),
+      4
+    );
     this.geometry = new THREE.BufferGeometry();
     this.geometry.setAttribute('position', this.posAttr);
     this.geometry.setAttribute('uv', this.uvTexAttr);
@@ -1589,8 +1938,9 @@ export class ParticleAnimator {
      *     （代价：`gravity` 档由 −15° 变 +15°，镜像了；S9 用到该档需重看一次。）
      */
     const rotDeg =
-      -(this.cabinMode === 'game' ? 0 : spawnValue(c.startRotation, r) / DEG2RAD) +
-      this.spriteTiltDeg;
+      -(this.cabinMode === 'game'
+        ? 0
+        : spawnValue(c.startRotation, r) / DEG2RAD) + this.spriteTiltDeg;
 
     const p: Particle = {
       x: 0,
@@ -1615,6 +1965,25 @@ export class ParticleAnimator {
       uvFrameOver: c.uv.frameOverTime ? spawnValue(c.uv.frameOverTime, r) : 0,
       /** 由 buildGeometry 每帧写回（见 Particle.uvFrame） */
       uvFrame: -1,
+      /**
+       * ★ P4：Single Row 档播哪一行。
+       * `rowMode = 1`(Random) ⇒ 出生时抽（官方 *"Randomly select a row for each
+       * particle when producing the animation"*）。
+       *
+       * ⚠️ **只有真正会出现随机行时才消耗 rng**（`animationType = 1` **且**
+       *   `rowMode = 1`）：否则会整体挪动既有系统的抽签序列 ⇒ 现有产物分布全变。
+       *   （同 P1 里 `Circle` 首次消费 `startSpeed` 那次的教训 —— 当时如实记录为
+       *   "位置重新随机、分布不变"。）实测本工程三个产物全部是 WholeSheet ⇒ 不抽。
+       */
+      uvRow:
+        this.uvSingleRow && this.uvRowMode === 1
+          ? Math.min(this.uvRows - 1, Math.floor(r.next() * this.uvRows))
+          : this.uvRowMode === 2
+          ? 0
+          : Math.min(Math.max(0, this.uvRowIndex), this.uvRows - 1),
+      /** P4：噪声标量 / 噪声 z 分量（由 step() 每帧写回；见 Particle.nzS / nzRot） */
+      nzS: 0,
+      nzRot: 0,
       /* 丝带轨迹：下面按出生速度补齐（见 spawn 末尾） */
       trail: [],
       tstep: 0,
@@ -1730,7 +2099,10 @@ export class ParticleAnimator {
       let phi: number;
       let rho: number;
       if (sh.arcMode === 3) {
-        phi = (this.emittedInBatch / Math.max(1, this.batchCount)) * (sh.arc ?? 360) * DEG2RAD;
+        phi =
+          (this.emittedInBatch / Math.max(1, this.batchCount)) *
+          (sh.arc ?? 360) *
+          DEG2RAD;
         rho = rad;
       } else {
         // Radius Thickness：0 = 外表面、1 = 整个体积；其间按面积比例
@@ -1740,7 +2112,15 @@ export class ParticleAnimator {
         // 弧内随机（官方 "Random: Unity generates particles randomly around the arc"）
         phi = r.next() * (sh.arc ?? 360) * DEG2RAD;
       }
-      const wp = shapeXform(Math.cos(phi) * rho, Math.sin(phi) * rho, scX, scY, rot, offX, offY);
+      const wp = shapeXform(
+        Math.cos(phi) * rho,
+        Math.sin(phi) * rho,
+        scX,
+        scY,
+        rot,
+        offX,
+        offY
+      );
       p.x = wp.x;
       p.y = wp.y;
       // 径向方向（本地 φ → 世界 = φ + rot）；速度量级不因形状变化
@@ -1949,9 +2329,19 @@ export class ParticleAnimator {
        */
       const phi =
         sh.arcMode === 3
-          ? (this.emittedInBatch / Math.max(1, this.batchCount)) * (sh.arc ?? 360) * DEG2RAD
+          ? (this.emittedInBatch / Math.max(1, this.batchCount)) *
+            (sh.arc ?? 360) *
+            DEG2RAD
           : r.next() * (sh.arc ?? 360) * DEG2RAD;
-      const wp = shapeXform(Math.cos(phi) * rho, Math.sin(phi) * rho, scX, scY, rot, offX, offY);
+      const wp = shapeXform(
+        Math.cos(phi) * rho,
+        Math.sin(phi) * rho,
+        scX,
+        scY,
+        rot,
+        offX,
+        offY
+      );
       // 轴向位移沿 `emitDir`（绕 Z 的旋转不改变本地 +Z 的投影）⇒ 在变换之外单独叠加
       p.x = axX * t + wp.x;
       p.y = axY * t + wp.y;
@@ -1965,7 +2355,8 @@ export class ParticleAnimator {
       //   （`docx/TODO.md` §2.6 的"绕 emitDir 张开"口径逐位不变；本工程三个产物的锥形
       //   `rotZ` 全为 0/缺省 ⇒ 与旧写法同值）。
       const side = Math.sin(phi + rot - dirAngle) >= 0 ? 1 : -1;
-      const spread = (R > 1e-9 ? rho / R : 0) * ((sh.angle || 0) / 2) * DEG2RAD * side;
+      const spread =
+        (R > 1e-9 ? rho / R : 0) * ((sh.angle || 0) / 2) * DEG2RAD * side;
       const a = dirAngle + spread;
       const spd = spawnValue(c.startSpeed, r) * s * u * spdMul;
       p.vx = Math.cos(a) * spd;
@@ -1988,9 +2379,19 @@ export class ParticleAnimator {
       const rho = R * (1 - th + th * Math.sqrt(r.next()));
       const phi =
         sh.arcMode === 3
-          ? (this.emittedInBatch / Math.max(1, this.batchCount)) * (sh.arc ?? 360) * DEG2RAD
+          ? (this.emittedInBatch / Math.max(1, this.batchCount)) *
+            (sh.arc ?? 360) *
+            DEG2RAD
           : r.next() * (sh.arc ?? 360) * DEG2RAD;
-      const wp = shapeXform(Math.cos(phi) * rho, Math.sin(phi) * rho, scX, scY, rot, offX, offY);
+      const wp = shapeXform(
+        Math.cos(phi) * rho,
+        Math.sin(phi) * rho,
+        scX,
+        scY,
+        rot,
+        offX,
+        offY
+      );
       p.x = wp.x;
       p.y = wp.y;
       p.localRot = rot;
@@ -2013,7 +2414,11 @@ export class ParticleAnimator {
      * ★ `emitterVelocity` 已是**世界单位/秒**（由 config 直接给，见 config.type.ts）。
      */
     if (this.ivOn && this.ivMode === 0) {
-      const mul = lifeMul(c.inheritVelocity!.curve ?? { mode: 0, a: 1, b: 1 }, 0, p.vmix);
+      const mul = lifeMul(
+        c.inheritVelocity!.curve ?? { mode: 0, a: 1, b: 1 },
+        0,
+        p.vmix
+      );
       p.vx += mul * this.ivEvX;
       p.vy += mul * this.ivEvY;
     }
@@ -2182,7 +2587,8 @@ export class ParticleAnimator {
     //   ⚠️ 补上 `emitTime >= 0` 这一半是顺带修的一个不一致：本工程 11 个背景系统
     //      `startDelay` 全为 0 ⇒ 逐位无影响；旧实现里"rate 不看 delay、burst 看 delay"
     //      会让带 startDelay 的系统在延时期间照样连续发射。
-    const emitOpen = emitTime >= 0 && emitTime < (this.looping ? Infinity : cycle);
+    const emitOpen =
+      emitTime >= 0 && emitTime < (this.looping ? Infinity : cycle);
     const rate = lifeMul(c.emission.rateOverTime, 0);
     if (rate > 0 && emitOpen) {
       this.emitAcc += rate * dt;
@@ -2254,16 +2660,77 @@ export class ParticleAnimator {
        * 采样坐标在系统本地未缩放空间：prefab 坐标先除回 localScale 再乘 frequency。
        * quality=High 是 3D 噪声 → z 取 0，用 x/y 分量（2D 场景即如此）。
        * damping=true → 有效强度 = strength × frequency。
+       *
+       * ★ P4 新增三件事（**全部缺省与 P4 之前逐位一致**，见 `_regress/74_`）：
+       *   · `octaves > 1` ⇒ 势场叠层（`curl3` 逐层累加，每层步长随频率自适应）；
+       *   · `scrollSpeed` ⇒ 采样点加"系统时间 × 速度"的偏移（Cocos 同式）；
+       *   · `rotationAmount` ⇒ 用场里的 z 分量产生自转（度/秒），并把 z 写回
+       *     `p.nzS` 供 `buildGeometry` 做 `sizeAmount` 的尺寸调制。
        */
       if (c.noise && c.noise.enabled) {
-        const eff = c.noise.damping
-          ? c.noise.strength * c.noise.frequency
-          : c.noise.strength;
-        const q = c.noise.frequency / (s * u);
-        curl3(p.x * q, p.y * q, 0, nv);
-        const acc = eff * c.noise.positionAmount * c.noise.gain * s * u * dt;
-        p.vx += nv.x * acc;
-        p.vy += nv.y * acc;
+        const freq = c.noise.frequency;
+        const q = freq / (s * u);
+        /**
+         * 采样坐标（**频率缩放前**的粒子本地空间）。`nzScrollOn === false` ⇒ 走下面那支
+         * **原式**（`p.x × q`），连浮点结合顺序都不动 ⇒ 逐位等于 P4 之前。
+         */
+        let sx = 0;
+        let sy = 0;
+        let sz = 0;
+        if (this.nzScrollOn) {
+          /**
+           * ★ 偏移加在**频率缩放之前**的粒子空间里（Cocos `getNoiseParticle`：
+           *   `getNoise(point.z + accSpeed.x, …)`、`accSpeed = speed × 系统时间`）
+           *   ⇒ 等价写法 `(粒子本地坐标 + 偏移) × frequency`。
+           */
+          const off =
+            lifeMulMix(c.noise.scrollSpeed!, pr, p.vmix) * this.systemTime;
+          sx = (p.x / (s * u) + off) * freq;
+          sy = (p.y / (s * u) + off) * freq;
+          sz = off * freq;
+          curl3(sx, sy, sz, nv, this.nzOct, this.nzOctMul, this.nzOctScale);
+        } else {
+          sx = p.x * q;
+          sy = p.y * q;
+          curl3(sx, sy, 0, nv, this.nzOct, this.nzOctMul, this.nzOctScale);
+        }
+        if (this.nzSep) {
+          /** `separateAxes`：官方 *"Control the strength … independently on each axis."* */
+          const k = c.noise.positionAmount * c.noise.gain * s * u * dt;
+          p.vx += nv.x * this.nzEffX * k;
+          p.vy += nv.y * this.nzEffY * k;
+        } else {
+          /** 缺省支：**与 P4 之前一字不差**（`nzEffX` 此时恰等于原来的 `eff`） */
+          const acc =
+            this.nzEffX * c.noise.positionAmount * c.noise.gain * s * u * dt;
+          p.vx += nv.x * acc;
+          p.vy += nv.y * acc;
+        }
+        /**
+         * `rotationAmount`（官方手册逐字 *"A multiplier to control how much the noise
+         * affects particle rotations, **in degrees per second**."*）。
+         * 取值源 = curl 场的 **z 分量**（2D 渲染本就丢弃它，不与可见位移相关）；
+         * 取负号：与 `rotationCurve` / `rotationBySpeed` 同一个"屏幕自转反号"口径。
+         */
+        if (this.nzRotOn) {
+          p.nzRot = nv.z;
+          const rAmt = lifeMulMix(c.noise.rotationAmount!, pr, p.vmix);
+          p.rot -= nv.z * this.nzEffX * rAmt * DEG2RAD * dt;
+        }
+        /**
+         * `sizeAmount` 的调制源 = **第 4 路标量场**（见 `noiseScalar`）。
+         * ★ 只有真的要调制尺寸时才多花这 1 次 Perlin 采样。
+         */
+        if (this.nzSizeOn) {
+          p.nzS = noiseScalar(
+            sx,
+            sy,
+            sz,
+            this.nzOct,
+            this.nzOctMul,
+            this.nzOctScale
+          );
+        }
       }
 
       /**
@@ -2332,7 +2799,8 @@ export class ParticleAnimator {
         if (this.radOn) {
           const L = Math.sqrt(rx * rx + ry * ry + rz * rz);
           if (L > 1e-5) {
-            const k = (lifeMulMix(c.velocity!.radial!, pr, p.vmix) * s * u * dt) / L;
+            const k =
+              (lifeMulMix(c.velocity!.radial!, pr, p.vmix) * s * u * dt) / L;
             rx += rx * k;
             ry += ry * k;
             rz += rz * k;
@@ -2521,7 +2989,9 @@ export class ParticleAnimator {
      * 缺省（旧 config）⇒ `undefined` ⇒ `alphaAt` 直接返回 `alKeys` 的值，逐位一致。
      */
     const alKeysMin =
-      c.colorModule && c.colorModule.alphaMix ? c.colorModule.alphaKeysMin : undefined;
+      c.colorModule && c.colorModule.alphaMix
+        ? c.colorModule.alphaKeysMin
+        : undefined;
 
     let n = 0;
     for (let i = 0; i < this.particles.length; i++) {
@@ -2546,9 +3016,29 @@ export class ParticleAnimator {
         const rr = speedRate(p.spd, this.sbsR0, this.sbsR1);
         const kx = lifeMulMix(c.sizeBySpeed!.curve, rr, p.vmix);
         sm *= kx;
-        smY *= this.sbsSep && c.sizeBySpeed!.y
-          ? lifeMulMix(c.sizeBySpeed!.y, rr, p.vmix)
-          : kx;
+        smY *=
+          this.sbsSep && c.sizeBySpeed!.y
+            ? lifeMulMix(c.sizeBySpeed!.y, rr, p.vmix)
+            : kx;
+      }
+      /**
+       * ── P4 · `NoiseModule.sizeAmount`（官方手册逐字：*"A multiplier to control how much
+       *    the noise affects particle **sizes**."*）──
+       *
+       * `尺寸乘子 = 1 + 标量噪声 × 有效强度 × sizeAmount(寿命曲线) × gain`
+       *   · **标量噪声** = `p.nzS`（第 4 路势场，Perlin 天然有界 ⇒ 见 `noiseScalar`）；
+       *   · `有效强度` = `strength`（`damping` 时再乘 `frequency`），与位置推力**同一个**
+       *     强度口径；`gain` 沿用位置那一支的校准旋钮。
+       * 缺省（`sizeAmount` 未声明）⇒ **整段短路** ⇒ 尺寸逐位等于 P4 之前。
+       * ⚠️ 绝对量级是**本项目口径**（Unity 未公开），如实标注为存疑项；
+       *   乘子下界钳在 0（不让尺寸取负），上界不钳。
+       */
+      if (this.nzSizeOn) {
+        const sa = lifeMulMix(c.noise!.sizeAmount!, pr, p.vmix);
+        const mul = 1 + p.nzS * this.nzEffX * sa * c.noise!.gain;
+        const kk = mul > 0 ? mul : 0;
+        sm *= kk;
+        smY *= kk;
       }
       const hw = (p.sizeX * sm) / 2;
       const hh = (p.sizeY * smY) / 2;
@@ -2683,11 +3173,9 @@ export class ParticleAnimator {
       }
 
       /**
-       * UV：animationType=0(WholeSheet)。Unity 的公式是
-       *   `frame = startFrame + frameOverTime(t) × cycles × total`
-       * （本套 8 个节点的 `startFrame` 实测**全为常量 0**，故折掉），再对 `total`
-       * **取模回绕** —— 不能像 08 那样 clamp 到最后一帧：那会让序列在前 1/cycles 的
-       * 寿命里播完、之后冻住不动。
+       * UV：Unity 的公式是 `frame = startFrame + frameOverTime(t) × cycles × 帧数`，
+       * 再对帧数**取模回绕** —— 不能像 08 那样 clamp 到最后一帧：那会让序列在前
+       * 1/cycles 的寿命里播完、之后冻住不动。
        *
        * ★ `frameOverTime` 是否随寿命变，**由它的 mode 决定**（见 config.type.ts 同名注释）：
        *   · 曲线 ⇒ 由 `curveOf()` 求值（**含端点外推**，见 `curveAt`）；`niao` 由此在寿命内播 5 遍 8 帧；
@@ -2696,24 +3184,52 @@ export class ParticleAnimator {
        * ★★ 2026-10-13：`curveOf()` 取代了原来的 `foMM.a * keysAt(uvOverKeys, pr)`。
        *   差别就在**端点外推**：`hudie01 ×3` 的 `frameOverTime` 末键在 t=0.0826 且
        *   `m_PostInfinity = 1(Linear)`，旧写法钳在末帧 ⇒ 蝴蝶扇一次就定住（用户的原始报障）。
+       *
+       * ══ P4：三档 `timeMode` + 两档 `animationType`（缺省 ⇒ 下面第一支，逐位不变）══
+       *   · `timeMode = 0 Lifetime`（缺省）⇒ 上式（按归一化寿命取 `frameOverTime` 曲线）；
+       *   · `timeMode = 1 Speed` ⇒ **按当前速度静态选帧**（官方 ScriptReference 逐字注释见
+       *     `config.type.ts` 的 `speedRange`）；`frameOverTime` / `cycles` 官方 UI 会隐藏 ⇒ 不消费；
+       *   · `timeMode = 2 FPS` ⇒ `startFrame + ⌊粒子年龄 × fps⌋`（与寿命/速度无关）。
+       *   · `animationType = 1 Single Row` ⇒ 帧数 = `tilesX`（一行），行号取 `p.uvRow`。
        */
       let u0 = 0;
       let v0 = 0;
       let u1 = 1;
       let v1 = 1;
       if (c.uv.enabled && total > 1) {
-        const foMM = c.uv.frameOverTime;
-        const cv = foMM ? curveOf(foMM, pr) : null;
-        const over = !foMM
-          ? pr // 兼容不带该字段的旧 config：等价于曲线 0→1（= 旧行为）
-          : cv !== null
-          ? cv
-          : p.uvFrameOver;
-        const fi =
-          ((Math.floor(over * cycles * total) % total) + total) % total;
+        /**
+         * 该档下"一帧序列"的总帧数：
+         * WholeSheet ⇒ 整表 `tilesX × tilesY`；SingleRow ⇒ 只有一行 `tilesX` 帧。
+         * `uvSingleRow = false` ⇒ `nF === total`（**同一个变量**，不是另算一遍）。
+         */
+        const nF = this.uvSingleRow ? tilesX : total;
+        /**
+         * `startFrame`（**帧号**，不是归一化值）：
+         * 复用 `lifeMulMix` ⇒ 曲线随寿命、随机两常量按 `p.vmix` 逐粒子抽
+         * （**不额外消耗 rng**）。缺省 `null` ⇒ 0 ⇒ `0 + x` 与旧式**逐位相同**。
+         */
+        const sf = this.uvStart ? lifeMulMix(this.uvStart, pr, p.vmix) : 0;
+        let fi: number;
+        if (this.uvTimeMode === 2) {
+          /** FPS：`⌊年龄 × fps⌋` 帧，加起始帧后对帧数回绕（与寿命、速度都无关） */
+          fi = modPos(Math.floor(sf + p.age * this.uvFps), nF);
+        } else if (this.uvTimeMode === 1) {
+          /** Speed：静态选帧 —— 慢于下界取首帧、快于上界取末帧、其间按比例取（逐字见 config） */
+          const rate = speedRate(p.spd, this.uvSpdR0, this.uvSpdR1);
+          const f = Math.round(sf + rate * (nF - 1));
+          fi = f < 0 ? 0 : f > nF - 1 ? nF - 1 : f;
+        } else {
+          const foMM = c.uv.frameOverTime;
+          const cv = foMM ? curveOf(foMM, pr) : null;
+          const over = !foMM
+            ? pr // 兼容不带该字段的旧 config：等价于曲线 0→1（= 旧行为）
+            : cv !== null
+            ? cv
+            : p.uvFrameOver;
+          fi = ((Math.floor(sf + over * cycles * nF) % nF) + nF) % nF;
+        }
         // 写回真值：快照读的就是这里算出来的帧号，验收脚本无需重抄公式
         p.uvFrame = fi;
-        u0 = (fi % tilesX) * fw;
         /**
          * ★★ **行序必须自上而下**（2026-10-13，实测更正）：
          *   Unity 的 Whole Sheet 帧序是「左→右、**上→下**」（官方 Manual 逐字：
@@ -2728,8 +3244,14 @@ export class ParticleAnimator {
          *   让每颗粒子随机取一格，再从快照读它自己的 `uvFrame`、采样它所在像素的颜色反推格号 ——
          *   修前 **14/16 个样本命中"垂直镜像"**，修后应全部"一致"。
          *   `tilesY = 1` 的系统（qiqiu / 星点这类）此式退化成 0 ⇒ **零影响**。
+         *
+         * ★ P4：Single Row 档的行**不来自 `fi`**，而是来自 `p.uvRow`（出生时定）
+         *   ⇒ 该档 `v0 = (tilesY − 1 − 行号) · fh`、`u0` 用**行内**帧号。
          */
-        v0 = (tilesY - 1 - Math.floor(fi / tilesX)) * fh;
+        u0 = (fi % tilesX) * fw;
+        v0 = this.uvSingleRow
+          ? (tilesY - 1 - Math.min(tilesY - 1, Math.max(0, p.uvRow))) * fh
+          : (tilesY - 1 - Math.floor(fi / tilesX)) * fh;
         u1 = u0 + fw;
         v1 = v0 + fh;
       }
@@ -2829,7 +3351,10 @@ export class ParticleAnimator {
       if (this.rMode === 0 && this.rMaxSize > 0 && this.rViewportH > 0) {
         const ratio = (hhE * 2) / this.rViewportH;
         if (ratio > 1e-9) {
-          const clamped = Math.min(this.rMaxSize, Math.max(this.rMinSize, ratio));
+          const clamped = Math.min(
+            this.rMaxSize,
+            Math.max(this.rMinSize, ratio)
+          );
           const k = clamped / ratio;
           if (k !== 1) {
             hwE *= k;
@@ -2875,7 +3400,8 @@ export class ParticleAnimator {
       /** 逐轴镜像：用出生抽签的 `p.vmix` 判定（**不**额外消耗 rng ⇒ 既有抽签序列零回归） */
       const flipU = this.rFlipX > 0 && p.vmix < this.rFlipX;
       const flipV = this.rFlipY > 0 && p.vmix < this.rFlipY;
-      const meshUse = this.rMode === 4 && !!(this.rMeshPos && this.rMeshUv && this.rMeshIdx);
+      const meshUse =
+        this.rMode === 4 && !!(this.rMeshPos && this.rMeshUv && this.rMeshIdx);
       if (meshUse) {
         /**
          * Mesh 档：顶点**直接用 mesh 的坐标 × 当前帧尺寸**（`mesh.scale` 是数据层旋钮）。
@@ -2901,8 +3427,12 @@ export class ParticleAnimator {
           pos[n * 3 + 0] = cx + ox + ddx * cs - ddy * sn;
           pos[n * 3 + 1] = cy + oy + ddx * sn + ddy * cs;
           pos[n * 3 + 2] = 0;
-          const uu = flipU ? this.rMeshUMin + this.rMeshUMax - mu[vi * 2 + 0] : mu[vi * 2 + 0];
-          const vv2 = flipV ? this.rMeshVMin + this.rMeshVMax - mu[vi * 2 + 1] : mu[vi * 2 + 1];
+          const uu = flipU
+            ? this.rMeshUMin + this.rMeshUMax - mu[vi * 2 + 0]
+            : mu[vi * 2 + 0];
+          const vv2 = flipV
+            ? this.rMeshVMin + this.rMeshVMax - mu[vi * 2 + 1]
+            : mu[vi * 2 + 1];
           uvs[n * 2 + 0] = uu + du;
           uvs[n * 2 + 1] = vv2 + dv;
           muvs[n * 2 + 0] = uu;
@@ -3104,5 +3634,14 @@ export class ParticleAnimator {
   };
 
   /** 验收脚本的钩子：直接调用真身做 curl 散度判据，避免"手抄复刻" */
-  public static __noise = { perlin3, curl3, divCurlNumerical, NOISE_EPS };
+  public static __noise = {
+    perlin3,
+    psi,
+    psiLayer,
+    noiseScalar,
+    curl3,
+    addLayerCurl,
+    divCurlNumerical,
+    NOISE_EPS,
+  };
 }

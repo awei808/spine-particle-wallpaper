@@ -2084,6 +2084,108 @@ export type ParticleMeshConfig = MeshConfig & {
      *     而 `FX_cf_yun011` 左右边缘差 29.98（**不可平铺**），Clamp 会在边缘拉出长条。
      */
     wrap: 'clamp' | 'repeat';
+
+    /* ═══════════════════════════════════════════════════════════════════════
+     * ── P4（2026-10-17）：Texture Sheet Animation 的其余字段 ──
+     *
+     * 以下字段**全部可选**，且**缺省时与 P4 之前逐位一致**（判据见 `_regress/74_`）。
+     * 依据（逐字）：
+     *   · Unity 手册 Texture Sheet Animation module（2021.3 英文 / 7000.0 英文两版比对）
+     *   · Unity `Modules/ParticleSystem/ScriptBindings/ParticleSystemModules.bindings.cs`
+     *     的 `TextureSheetAnimationModule`（2021.3 与 6000.0 两版比对）
+     *   · `ScriptReference/ParticleSystem.TextureSheetAnimationModule-speedRange`（Remarks 逐字）
+     *   · 全包普查 `_work_UV与噪声/01_全包P4普查.py`（41996 个 ParticleSystem）
+     * ═══════════════════════════════════════════════════════════════════════ */
+
+    /**
+     * `TextureSheetAnimationModule.timeMode`（官方 `ParticleSystemAnimationTimeMode`）：
+     *   · **0 = Lifetime（缺省）** —— 用 `frameOverTime` 曲线沿**归一化寿命**取样（现状）；
+     *   · 1 = Speed —— 用**粒子速度**映射到帧（见 `speedRange`），**不随寿命推进**；
+     *   · 2 = FPS —— 用固定帧率按**秒**推进，**与寿命/速度无关**。
+     *
+     * ⚠️ 官方 UI 在 Speed / FPS 两档下**隐藏 `frameOverTime` 与 `cycles`**
+     *   （`UVModuleUI.OnInspectorGUI`：FPS 档只显示 `fps`、Speed 档只显示 `speedRange`）
+     *   ⇒ 本引擎在这两档下同样**不消费** `frameOverTime` / `cycles`。
+     */
+    timeMode?: number;
+    /**
+     * `TextureSheetAnimationModule.fps`（帧/秒）：**只在 `timeMode = 2` 时生效**。
+     * 官方 UI 措辞 *"Specify the Frames Per Second of the animation."* / 属性表
+     * *"FPS — Sample frames based on the specified frames-per-second value."*
+     * ⇒ 帧号 = `startFrame + ⌊粒子年龄 × fps⌋`，再对帧数取模回绕。
+     * 缺省 `30`（Unity 模板默认值；全包普查 13716 条里 13570 条就是 30）。
+     */
+    fps?: number;
+    /**
+     * `TextureSheetAnimationModule.speedRange`：**只在 `timeMode = 1` 时生效**。
+     *
+     * ★★ 官方 `ScriptReference` Remarks **逐字**给出了它的语义（这是本档唯一的权威口径）：
+     *   *"Specify how particle speeds are mapped to the animation frames. If a particle is
+     *   travelling slower than the minimum speed, it uses the first frame. If a particle is
+     *   travelling faster than the maximum speed, then it uses the final frame. For all other
+     *   speeds, the particle chooses a frame based on how far between the minimum and maximum
+     *   value its speed is."*
+     * ⇒ `帧 = round(startFrame + rate × (帧数 − 1))`、`rate = clamp((|v| − min)/(max − min), 0, 1)`
+     *   —— 注意这是**按当前速度静态选帧**，**不是**"速度越快播得越快"（后者是常见误解）。
+     *
+     * ⚠️ 单位是**世界单位/秒**（与本引擎 `p.spd` 同口径）⇒ 构造时乘 `localScale × unitScale`。
+     * 缺省 `[0, 1]`（Unity 模板默认值）。
+     */
+    speedRange?: [number, number];
+    /**
+     * `TextureSheetAnimationModule.startFrame` —— **帧号**（不是归一化值）。
+     * 官方 UI 措辞 *"Phase the animation, so it starts on a frame other than 0."* /
+     * 手册 *"Allows you to specify which frame the particle animation should start on
+     * (useful for **randomly phasing the animation on each particle**)."*
+     * ⇒ 逐粒子从这条 MinMaxCurve 抽一个相位（复用既有的 `lifeMulMix(..., p.vmix)`，
+     *   **不额外消耗 rng**）。
+     * ⚠️ 官方把它**加在帧号上再做回绕**（feng3d `round(startFrame + frameOverTime × n)` 同向）；
+     *   本项目直接 `⌊startFrame + over×cycles×帧数⌋ % 帧数`。缺省 / 常量 0 ⇒ **逐位等于现状**。
+     */
+    startFrame?: ParticleMinMax;
+    /**
+     * `TextureSheetAnimationModule.animation`（官方 `ParticleSystemAnimationType`）：
+     *   · **0 = Whole Sheet** —— 整张表按「左→右、上→下」播完 `tilesX × tilesY` 帧（现状）；
+     *   · 1 = Single Row —— 只播**一行**（`tilesX` 帧），行号由 `rowMode` 决定。
+     * 官方手册 *"Single Row (that is, each row of the sheet represents a separate
+     * Animation sequence)."*
+     *
+     * ⚠️ 与 `uv.animationType` 是**同一个字段**：`animationType` 已在旧 config 里存在
+     *   （长期只被当作"0 = WholeSheet"用）⇒ 此处**沿用**它（1 = Single Row），
+     *   不新增同义字段。
+     */
+    /**
+     * `TextureSheetAnimationModule.rowMode`（官方 `ParticleSystemAnimationRowMode`）：
+     *   · **0 = Custom（缺省）** —— 所有粒子都用固定行 `rowIndex`；
+     *   · 1 = Random —— **每颗粒子出生时**随机选一行（官方 *"Randomly select a row for each
+     *     particle when producing the animation"*；手册另有一句 *"Random Row … powerful as a
+     *     way to break up conspicuous regularity"*）；
+     *   · 2 = Mesh Index —— 按粒子所用网格的子网格序号选行。本引擎每套系统只用**一个**
+     *     mesh（`renderer.mesh`），子网格恒为 0 ⇒ **等价于 Custom 且 `rowIndex = 0`**（如实标注）。
+     *
+     * ⚠️ 只在 `animationType = 1`（Single Row）时被官方 UI 显示 ⇒ 本引擎同样只在 SingleRow 档消费它。
+     */
+    rowMode?: number;
+    /** `TextureSheetAnimationModule.rowIndex`：**只在 `animationType = 1` 且 `rowMode = 0` 时生效**。缺省 0。 */
+    rowIndex?: number;
+    /**
+     * `TextureSheetAnimationModule.flipU` / `flipV` —— ★★ **Unity 已废弃字段**。
+     *
+     * `ScriptReference/ParticleSystem.TextureSheetAnimationModule-flipU` 逐字：
+     *   *"Obsolete — flipU property is deprecated. Use `ParticleSystemRenderer.flip.x`
+     *   instead."*（`flipV` 同）
+     * ⇒ 它与 P3 已实现的 `renderer.flip`（`ParticleSystemRenderer.flip` 的 x/y 分量）
+     *   是**同一件事的旧别名**，语义 = **"逐粒子按比例翻转"**（Unity 手册 *"Mirror a
+     *   proportion of the particles…"*，取值 `[0, 1]`）。
+     *
+     * 本引擎的处理：**只在 `renderer.flip` 缺省时**把它当作回退值（取 `clamp01`），
+     * 两者都缺省 ⇒ 0（**与 P3 逐位一致**）。
+     * 依据：全包普查 13716 条启用 UV 的系统里 `flipU/flipV` **全部是 0.0**
+     *   （美术实际用的是 `ParticleSystemRenderer.flip` —— 本工程 `niao` / `yun`
+     *   的 renderer flip 就是 `[1,0,0]`，而它们的 UV flip 是 0，正好互相印证）。
+     */
+    flipU?: number;
+    flipV?: number;
   };
   /**
    * `CustomDataModule` → 顶点流 `Custom1XYZW(34)` → shader `in_TEXCOORD1`。
@@ -2242,6 +2344,89 @@ export type ParticleMeshConfig = MeshConfig & {
     quality: number;
     positionAmount: number;
     gain: number;
+
+    /* ═══════════════════════════════════════════════════════════════════════
+     * ── P4（2026-10-17）：Noise 模块的其余字段 ──
+     *
+     * 以下字段**全部可选**，且**缺省时与 P4 之前逐位一致**（判据见 `_regress/74_`）。
+     * 依据：Unity 手册 Noise module 属性表**逐字** + Cocos
+     *   `cocos/particle/noise.ts`（`getNoise` 的 fBm 叠层与 `getNoiseParticle` 的滚动）
+     *   + 全包普查 `_work_UV与噪声/01_全包P4普查.py`（41996 个 ParticleSystem）。
+     * ═══════════════════════════════════════════════════════════════════════ */
+
+    /**
+     * `NoiseModule.octaveCount`（官方手册 *"Octaves — Specify how many layers of
+     * overlapping noise are combined to produce the final noise values."*）。
+     *   · **缺省 / 1 ⇒ 单层（现状，逐位不变）**；
+     *   · `n > 1` ⇒ 在**势场**上叠 n 层（curl 是线性算子 ⇒ 先叠势场再取旋度，
+     *     结果仍是**无源无汇**的 curl 场，不会退化成"叠出来的乱向量"）。
+     * 实现见 `ParticleAnimator.curl3()` 的叠层支路（逐层累加，每层差分步长随频率自适应；
+     * 振幅/频率的叠法照 Cocos `ParticleNoise.getNoise`）。
+     */
+    octaves?: number;
+    /**
+     * `NoiseModule.octaveMultiplier`（手册逐字 *"For each additional noise layer,
+     * **reduce the strength by this proportion**"*）⇒ 第 k 层振幅 = `mul^k`。
+     * 缺省 `0.5`（Unity 模板默认；全包普查 1663 条启用 Noise 的**全部**是 0.5）。
+     */
+    octaveMultiplier?: number;
+    /**
+     * `NoiseModule.octaveScale`（手册逐字 *"For each additional noise layer,
+     * **adjust the frequency by this multiplier**"*）⇒ 第 k 层频率 = `scale^k`。
+     * 缺省 `2.0`（同上，全包 1663 条全是 2.0）。
+     */
+    octaveScale?: number;
+    /**
+     * `NoiseModule.scrollSpeed`（手册逐字 *"Move the noise field over time to cause
+     * **more unpredictable and erratic** particle movement."*）。
+     *
+     * 口径（照 Cocos `ParticleNoise.getNoiseParticle`：`accSpeed = speed × t`，
+     * 且偏移加在**频率缩放之前**的粒子空间里）⇒
+     * `采样点 = (粒子坐标 + scrollSpeed × 系统时间) × frequency`。
+     * 缺省 / 0 ⇒ **不加偏移**（且走原来的乘式，保证逐位不变）。
+     *
+     * ⚠️ 以下两点是**本项目口径**（Unity 内部未公开，如实标注）：
+     *   ① 单标量 curve 在三个轴上**等量**平移（= 沿 (1,1,1) 对角滚动）。
+     *      Unity 的 `separateAxes` 会把它拆成 XYZ 三条，但**本工程三个产物全为 false**，
+     *      且全包 1663 条里 `separateAxes = true` 只有 4 条 ⇒ 不做分轴形式。
+     *   ② 偏移量不做 `localScale / unitScale` 折算（保持"噪声场自己的尺度"）。
+     */
+    scrollSpeed?: ParticleMinMax;
+    /**
+     * `NoiseModule.sizeAmount`（手册逐字 *"A multiplier to control how much the noise
+     * affects particle **sizes**."*）⇒ 尺寸乘子 `1 + 标量噪声 × sizeAmount`。
+     *
+     * ★ **取哪一路噪声值**：另开**第 4 路 Perlin 标量场**（`ParticleAnimator.noiseScalar`）。
+     *   为什么不用 curl 的某个分量：① Perlin 本身**有界**（约 ±0.7）⇒
+     *   `1 + 标量 × sizeAmount` 不会把尺寸乘成负数；② 与可见位移（只消费 curl 的 x/y）
+     *   **不相关**，不会出现"往哪边推就往哪边胀"的假相关。
+     *   ⚠️ Unity 未公开它的取值来源 ⇒ **本项目口径，存疑项**。
+     *
+     * 缺省 / 0 ⇒ 乘子恒为 1（**逐位等于现状**），且**连那 1 次 Perlin 采样都不做**。
+     */
+    sizeAmount?: ParticleMinMax;
+    /**
+     * `NoiseModule.rotationAmount`（手册逐字 *"A multiplier to control how much the noise
+     * affects particle rotations, **in degrees per second**."*）。
+     * ⇒ `Δ自转角 = 噪声_z × rotationAmount × (π/180) × dt`（取负号，与
+     *   `rotationCurve` / `rotationBySpeed` 同一个"屏幕反号"口径）。
+     *
+     * ★ 取值源 = curl 场的 **z 分量**（2D 渲染本来就丢弃的那一路 ⇒ 不与可见位移相关）。
+     * 缺省 / 0 ⇒ 不产生自转（**逐位等于现状**）。
+     */
+    rotationAmount?: ParticleMinMax;
+    /**
+     * `NoiseModule.separateAxes`（手册逐字 *"Control the strength and remapping
+     * **independently on each axis**."*）⇒ 位置的推力**逐轴**改用
+     * `strength / strengthY / strengthZ` 三条强度，而不是一条 `strength`。
+     * 缺省 / false ⇒ 三轴共用 `strength`（现状）。
+     * ⚠️ 全包 1663 条启用 Noise 的系统里只有 **4 条**开了它，本工程三个产物**全为 false**。
+     */
+    separateAxes?: boolean;
+    /** `NoiseModule.strengthY`（仅 `separateAxes = true` 时生效）；缺省回退到 `strength` */
+    strengthY?: number;
+    /** `NoiseModule.strengthZ`（仅 `separateAxes = true` 时生效）；缺省回退到 `strength` */
+    strengthZ?: number;
   };
   /** 整组绕枢轴匀速自转（摩天轮轮毂）。pivot 是**相对本 mesh 原点**的世界单位偏移。
    *  ★ 未挂自转的系统（star / saoguang）在 config 里是 `null` —— 类型必须含 null，
@@ -2419,4 +2604,3 @@ export type ActionEffectConfig = {
  *   `_work_芙丽希娅_蝶语吟花/` 的构建链；绑定留到后续一步）。
  */
 export type ActionEffectsConfig = ActionEffectConfig[];
-

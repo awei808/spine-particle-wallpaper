@@ -65,13 +65,13 @@ CustomData / Renderer（+ Burst、顶层 ParticleSystem）。
 | Size by Speed | ✅ **P2**（倍率；`separateAxes` 分轴） | ✅ | ❌ | ❌ |
 | Rotation over Lifetime | ✅ | ✅ | ✅ | ✅ |
 | Rotation by Speed | ✅ **P2**（弧度/秒；序列化 `curve` = z 轴） | ✅ | ❌ | ❌ |
-| **Noise** | ⚠️ strength/frequency/damping/quality/positionAmount（**缺 sizeAmount / scrollSpeed / octaves / separateAxes**） | ✅ | ✅ | ❌ |
+| **Noise** | ✅ **P4 已补齐**（`octaves`/`octaveMultiplier`/`octaveScale` 势场 fBm 叠层、`scrollSpeed`、`sizeAmount`、`rotationAmount`、`separateAxes`+`strengthY/Z`）；⚠️ 仍缺 `quality`(Low/Medium 的跨轴复用手法未公开) / `remap*`（全包无一启用） | ✅ | ✅ | ❌ |
 | Collision | ❌ | ❌ | ❌ | ❌ |
 | Trigger | ❌ | ❌ | ❌ | ❌ |
 | **Sub Emitters** | ❌ | ✅（模块文件齐备，实现程度待核） | ❌ | ❌ |
 | Lights | ❌ | ❌ | ❌ | ❌ |
 | **Trail** | ⚠️ 仅丝带（textureMode=Stretch），无宽/色 over trail 之外的模式 | ✅ 字段齐 | ✅ `ParticleTrailMode` | ❌ |
-| **UV / Texture Sheet Animation** | ⚠️ tiles/cycles/animationType/frameOverTime/drift/wrap（缺 rowMode/randomRow/speedRange/flipU,V/timeMode/fps/uvChannelMask） | ✅ | ✅ `texture-animation.ts` | ✅ |
+| **UV / Texture Sheet Animation** | ✅ **P4 已补齐**（`timeMode` 三档 Lifetime/Speed/FPS + `fps` + `speedRange`、`startFrame`、`animationType=SingleRow` + `rowMode` 三档 + `rowIndex`、`flipU/flipV` 作为已废弃别名并入 `renderer.flip`）；⚠️ 仍缺 `uvChannelMask`（全包全是 −1 ⇒ 无信息可表达）/ `mode=Sprites`（本作无一使用） | ✅ | ✅ `texture-animation.ts` | ✅ |
 | CustomData | ⚠️ 仅 1 条曲线 + `_offon`（S9 扫光用） | ❌ | ❌ | ❌ |
 | **Renderer** | ✅ **P3 已补齐**（renderMode 5 种 + None / alignment 五档 / pivot / sortingFudge / flip / allowRoll / min·maxParticleSize / Mesh 顶点集）；⚠️ **本引擎是 2D 分层渲染 + 正视相机** ⇒ Horizontal / Vertical 会几何退化、View·World·Local·Facing 投影等价（见 §4.12）；⚠️ 仍缺 normalDirection（无光照）/ sortMode（系统内排序）/ soft particle / freeformStretching | ⚠️ 只有数据接口壳（字段齐、**无实现**，见 §4.12 末注） | ✅ 5 模式 + alignSpace + CPU/GPU | ⚠️ |
 | MinMaxCurve / MinMaxGradient 取值口径 | ✅（mode 0/1/2/3 + 端点外推 + 逐粒子抽签，见 `MEMORY_粒子口径.md`） | ✅ | ✅ | ⚠️ |
@@ -394,6 +394,166 @@ vec3 camUp    = velocity.xyz * velocityScale + normalize(velocity.xyz) * lengthS
 3. `cameraVelocityScale`（按相机移动拉伸）**未实现**：本引擎相机位移由适配模块驱动、逐帧几乎恒定，
    且没有"相机速度"这个量。
 
+### 4.14 ★★ P4 依据：`TextureSheetAnimationModule`（旧名 UVModule）
+
+**字段全表**（`ParticleSystemModules.bindings.cs` @2021.3 与 6000.0 两版比对；6000.0 只是把
+`MinMaxCurve` 换成 `MinMaxCurveBlittable` 包装，字段名与含义未变）：
+
+```csharp
+enabled, mode(Grid|Sprites), timeMode(Lifetime|Speed|FPS), fps,
+numTilesX, numTilesY, animation(WholeSheet|SingleRow), rowMode(Custom|Random|MeshIndex),
+frameOverTime, frameOverTimeMultiplier, startFrame, startFrameMultiplier,
+cycleCount, rowIndex, uvChannelMask, spriteCount, speedRange(Vector2)
+```
+
+#### ① 三档 `timeMode`（手册属性表逐字）
+
+| 档 | 手册逐字 | 本引擎实现 |
+|---|---|---|
+| `Lifetime(0)` | *"Sample frames using an Animation Curve over the lifetime of the particle."* | `⌊startFrame + frameOverTime(t)·cycles·nF⌋ mod nF`（**现状**） |
+| `Speed(1)` | *"Sample frames based on the speed of the particle. A speed range specifies the minimum and maximum speed range for the frame selection."* | 见下面的 Remarks 口径 |
+| `FPS(2)` | *"Sample frames based on the specified frames-per-second value."* | `⌊startFrame + 年龄·fps⌋ mod nF`（与寿命、速度**无关**） |
+
+★★ **`speedRange` 的精确语义**（`ScriptReference/ParticleSystem.TextureSheetAnimationModule-speedRange`
+的 **Remarks 逐字** —— 本档唯一的权威口径）：
+
+> *"Specify how particle speeds are mapped to the animation frames. If a particle is travelling
+> **slower than the minimum speed, it uses the first frame**. If a particle is travelling
+> **faster than the maximum speed, then it uses the final frame**. For all other speeds, the
+> particle chooses a frame based on how far between the minimum and maximum value its speed is."*
+
+⇒ 实现 `fi = clamp(round(startFrame + rate·(nF−1)), 0, nF−1)`、
+`rate = clamp((|v| − r0)/(r1 − r0), 0, 1)`。
+⚠️ **它是"按当前速度静态选帧"，不是"速度越快播得越快"** —— 后者是中文社区流传的误解
+（`juejin.cn/post/7031073592213241869` 的实测描述与 Remarks 完全一致：*"速度 0 ⇒ 播第 1 帧…
+speed 大于 7 ⇒ 一直播最后一帧"*，且**不随时间推进**）。
+
+★ **UI 在 Speed / FPS 两档下隐藏 `frameOverTime` 与 `cycles`**
+（`UVModuleUI.OnInspectorGUI`：FPS 档只 `GUIFloat(fps)`、Speed 档只 `GUIMinMaxRange(speedRange)`）
+⇒ 本引擎在这两档下**不消费** `frameOverTime` / `cycles`。
+
+#### ② `animationType = SingleRow` + `rowMode`
+
+* 手册逐字：*"Single Row (that is, each row of the sheet represents a **separate Animation
+  sequence**)."* ⇒ 帧数从 `tilesX × tilesY` 变成 **`tilesX`**（只播一行）。
+* `rowMode`（官方枚举 `ParticleSystemAnimationRowMode`）：
+
+| 档 | 手册逐字 | 本引擎 |
+|---|---|---|
+| `Custom(0)` | *"Use a specific row of the Texture sheet for the animation."* | 用 `rowIndex` |
+| `Random(1)` | *"Randomly select a row for each particle **when producing the animation**."* | **出生时**抽一次、终生不变 |
+| `MeshIndex(2)` | *"Select a row based on the Mesh index assigned to a particle."* | ★ **恒第 0 行**（本引擎每套系统只用一个 mesh、无子网格概念）—— **实现边界**，非等价实现 |
+
+#### ③ `startFrame`（**帧号**，不是归一化值）
+
+UV 模块 UI tooltip *"Phase the animation, so it starts on a frame other than 0."* ＋ 手册
+*"Allows you to specify which frame the particle animation should start on (useful for
+**randomly phasing the animation on each particle**)."*
+⇒ 逐粒子从这条 MinMaxCurve 取值、**加在帧号上再回绕**
+（feng3d `round(startFrame + frameOverTime × 段数)` 同向；本引擎取 `⌊sf + …⌋ mod nF`）。
+
+#### ④ ★★ `flipU` / `flipV` —— **Unity 已废弃**
+
+`ScriptReference/ParticleSystem.TextureSheetAnimationModule-flipU` 逐字：
+
+> *"Obsolete — **flipU property is deprecated. Use `ParticleSystemRenderer.flip.x` instead.**"*
+
+⇒ 它与 P3 已实现的 `ParticleSystemRenderer.flip` 是**同一件事的旧别名**
+（语义 = 手册 *"Mirror a proportion of the particles…"*，取值 `[0,1]`）。
+**不要**再在 UV 模块里另立一条镜像通路 —— 本引擎只在 `renderer.flip` 缺省时把它当回退。
+旁证：全包 13716 条启用 UV 的系统里 `flipU/flipV` **全部是 0.0**，而本工程 `niao` / `yun`
+的 `ParticleSystemRenderer.flip` 是 `[1,0,0]` —— 美术用的就是 renderer 那一路。
+（Cocos `texture-animation.ts` 也序列化了 `flipU/flipV/uvChannelMask`，但 setter 直接
+`console.error('… is not supported!')` ⇒ 无实现可抄。）
+
+#### ⑤ 未实现项（留档）
+
+* `uvChannelMask`：全包 13716 条**全部**是 `−1`（= 全部通道），本引擎也只有一套 UV
+  ⇒ 无信息可表达。
+* `mode = Sprites(1)`：官方 UI 的 Sprites 档（Sprite 列表）—— 本作**无一使用**（全 Grid）。
+
+### 4.15 ★★ P4 依据：`NoiseModule`
+
+**字段全表**（`bindings.cs` @2021.3）：`enabled, separateAxes, strength`（`[NativeName("StrengthX")]`
+⇒ 它就是 X 轴强度）、`strengthY, strengthZ, frequency, damping, octaveCount, octaveMultiplier,
+octaveScale, quality, scrollSpeed, remapEnabled, remap*, positionAmount, rotationAmount, sizeAmount`。
+
+#### ① 手册属性表**逐字**（Noise module @2021.3）
+
+| 属性 | 逐字 |
+|---|---|
+| Separate Axes | *"Control the strength and remapping **independently on each axis**."* |
+| Strength | *"A curve that defines how strong the noise effect is on a particle over its lifetime. Higher values will make particles move faster and further."* |
+| Frequency | *"Low values create soft, smooth noise, and high values create rapidly changing noise. This controls how often the particles change their direction of travel, and how abrupt those changes of direction are."* |
+| Scroll Speed | *"Move the noise field over time to cause **more unpredictable and erratic** particle movement."* |
+| Damping | *"When enabled, **strength is proportional to frequency**. Tying these values together means the noise field can be scaled while maintaining the same behaviour, but at a different size."* |
+| Octaves | *"Specify how many layers of overlapping noise are combined to produce the final noise values. Using more layers gives richer, more interesting noise, but significantly adds to the performance cost."* |
+| Octave Multiplier | *"For each additional noise layer, **reduce the strength by this proportion**."* |
+| Octave Scale | *"For each additional noise layer, **adjust the frequency by this multiplier**."* |
+| Quality | *"Lower quality settings reduce the performance cost significantly…"*；Details 段：*"The settings on the Quality window control how many unique noise samples are generated. When using Medium and Low, less samples of Perlin Noise are used, and those samples are **re-used across multiple axes but combined in a way to try and hide the re-use**."* |
+| Position Amount | *"A multiplier to control how much the noise affects particle positions."* |
+| **Rotation Amount** | *"A multiplier to control how much the noise affects particle rotations, **in degrees per second**."* |
+| **Size Amount** | *"A multiplier to control how much the noise affects particle **sizes**."* |
+| Remap / Remap Curve | *"Remap the final noise values into a different range."* |
+
+#### ② 叠层与滚动的**具体算法**（Cocos `cocos/particle/noise.ts` 逐行，本引擎照此）
+
+```ts
+// getNoise()：fBm —— 振幅 mul^k、频率 scale^k，最后除以 Σ振幅
+let frequency = noiseFrequency, sum = noise(…× frequency, -1, 1);
+if (octaves.x === 1) return sum;
+let amplitude = 1, range = 1;
+for (let i = 1; i < octaves.x; ++i) {
+  amplitude *= octaves.y; frequency *= octaves.z; range += amplitude;
+  sum += noise(…× frequency, -1, 1) * amplitude;
+}
+return sum / range;
+
+// getNoiseParticle()：滚动 —— accSpeed = noiseSpeed × 系统时间，加在**频率缩放之前**的坐标上
+this.accSpeed.set(this.noiseSpeed.x * this.dt, …);   // dt = particleSystem.time
+const sampX = this.getNoise(this.point.z + this.accSpeed.x, this.point.y, this.point.x, …);
+```
+
+⇒ 本引擎：
+`采样点 = (粒子本地坐标 + scrollSpeed × 系统时间) × frequency`；
+叠层做在**势场**上（curl 是线性算子 ⇒ 先叠势场再取旋度，结果仍无源无汇）。
+
+★★ **一个必须注意的数值陷阱**（2026-10-17 由 `_regress/74_` 的散度判据抓出来的真实缺陷）：
+**每一层必须用与自身频率匹配的差分步长** `h_k = NOISE_EPS / f_k`。
+固定步长时高频层的截断误差 `O(h²·f³)` 与层本身同阶 ⇒ 叠出来的高频层是"垃圾"，
+场里出现明显源/汇（实测 4 层 `max|∇·N| = 2.17`，与场量级 4.15 同阶；逐层步长后回到 `5.3e-2`）。
+**同理**：度量散度的那一步也要用匹配的步长，否则量到的是离散算子自己的误差。
+
+⚠️ 一个有益的连带性质：`mul · scale = 0.5 × 2 = 1` 时**每层对 curl 量级的贡献相等**
+（`d/dx[perlin(x·f)] = f·perlin'`，乘上振幅后为 `(mul·scale)^k`）⇒ 叠层**不放大**场量级
+（实测 3.66 → 4.18）。
+
+#### ③ ★ `sizeAmount` / `rotationAmount` 取"场里的哪一路"—— **Unity 未公开、Cocos 未实现**
+
+Cocos 的 `noise-module.ts` 的 `animate()` **只有位置**一项：
+`Vec3.add(particle.position, particle.position, noisePosition × dt)` ⇒ 无实现可抄。
+本引擎的口径（**标注为存疑项**，写进 `config.type.ts` 与回归脚本）：
+
+| 用途 | 取值源 | 理由 |
+|---|---|---|
+| 位置（`positionAmount`） | curl 场 x / y | 现状 |
+| 自转（`rotationAmount`） | curl 场 **z** | 2D 渲染本就丢弃 z ⇒ 与可见位移**正交** |
+| 尺寸（`sizeAmount`） | **第 4 路 Perlin 标量场** | ① Perlin 天然**有界**（实测 4 层叠层 ∈ [−0.46, 0.48]）⇒ `1 + 标量 × sizeAmount` 不会把尺寸乘成负数（curl 分量实测可达 3.7）；② 与可见位移不相关，避免"往哪边推就往哪边胀" |
+
+#### ④ 未实现项（留档，理由必须写清）
+
+* `quality = Low/Medium` —— 手册只说"少采样、跨轴复用并**设法掩盖**复用"，
+  **具体复用方式与掩盖手法未公开** ⇒ 不敢凭猜实现（全包 Medium 100 条、本工程三个产物全 High）。
+* `remapEnabled` / `remap` —— 数学上清楚（把噪声值过一遍曲线），但**全包 1663 条无一启用**。
+
+#### ⑤ 全包用量（41996 个 `ParticleSystem`，`_work_UV与噪声/01_全包P4普查.py`）
+
+`NoiseModule.enabled = 1663`：`octaves` **恒为 1**、`octaveMultiplier` 恒 0.5、
+`octaveScale` 恒 2.0（全是模板值）；`scrollSpeed` 非零 **726**、`sizeAmount` 非零 **478**、
+`rotationAmount` 非零 58、`positionAmount` 非零 1442、`separateAxes = true` **仅 4**、
+`remapEnabled` **0**。
+⇒ **octaves 是纯能力建设**；`scrollSpeed` / `sizeAmount` 才是真有用的两个。
+
 ## 5. 可直接读的关键文件（取文件命令已备）
 
 ```bash
@@ -407,8 +567,8 @@ gh api repos/Unity-Technologies/UnityCsReference/contents/Modules/ParticleSystem
 | 形状模块与统一派发（含 position/rotation/**scale** 矩阵） | `cocos/cocos-engine:cocos/particle/emitter/shape-module.ts` |
 | 全部模块（含 SubEmitters / by-speed / InheritVelocity） | `feng3d-labs/feng3d:packages/particlesystem/src/modules/*` |
 | 渲染模式 / 对齐 / pivot | `feng3d.../modules/ParticleSystemRenderer.ts`、`cocos.../cocos/particle/enum.ts`（`ParticleRenderMode`/`ParticleAlignmentSpace`）、`cocos.../renderer/*` |
-| 贴图序列帧 | `cocos.../cocos/particle/animator/texture-animation.ts`、`feng3d.../modules/ParticleTextureSheetAnimationModule.ts` |
-| 噪声 | `cocos.../cocos/particle/noise-module.ts`、`feng3d.../modules/ParticleNoiseModule.ts` |
+| 贴图序列帧 | `cocos.../cocos/particle/animator/texture-animation.ts`（`randomRow`/`rowIndex`/`SingleRow`；⚠️ `flipU/flipV/uvChannelMask` 序列化了但 setter 直接 `console.error('not supported')`）、`feng3d.../modules/ParticleTextureSheetAnimationModule.ts`（`frameIndex = round(startFrame + frameOverTime × 段数 × cycleCount)`） |
+| 噪声 | `cocos.../cocos/particle/noise.ts`（`getNoise` 的 fBm 叠层 + `getNoiseParticle` 的 `accSpeed = speed × 系统时间`）、`cocos.../cocos/particle/animator/noise-module.ts`（**只把噪声加在位置上** ⇒ `sizeAmount`/`rotationAmount` 无实现可抄）、`feng3d.../modules/ParticleNoiseModule.ts` |
 | 丝带 | `cocos.../cocos/particle/renderer/trail.ts` |
 | 粒子 GLSL（vs/fs + 梯度取色） | `layabox/LayaAir:src/layaAir/laya/particle/d3/shader/*` |
 
@@ -467,6 +627,10 @@ gh api repos/Unity-Technologies/UnityCsReference/contents/Modules/ParticleSystem
 4. **P3 补渲染侧** ✅ **2026-10-17 已完成**：renderMode 5 种（+ None）、alignment 五档、
    pivot、sortingFudge、flip、allowRoll、min·maxParticleSize、Mesh 顶点集。
    依据见本节 §4.12 / §4.13；落地与验证见 `docx/TODO.md` §2.9 与 `_regress/73_回归_渲染侧.ts`（34 断言）。
-5. **P4 补 UV/Noise 细节**：rowMode/randomRow/speedRange/flip、noise 的 sizeAmount/scrollSpeed/octaves。
+5. **P4 补 UV/Noise 细节** ✅ **2026-10-17 已完成**：UV 的 `timeMode` 三档 + `fps` + `speedRange` +
+   `startFrame` + `animationType=SingleRow`/`rowMode`/`rowIndex` + `flipU·flipV`（并入 `renderer.flip`）；
+   Noise 的 `octaves`/`octaveMultiplier`/`octaveScale`（势场 fBm 叠层，**逐层步长随频率自适应**）、
+   `scrollSpeed`、`sizeAmount`、`rotationAmount`、`separateAxes`/`strengthY/Z`。
+   依据见本节 §4.14 / §4.15；落地与验证见 `docx/TODO.md` §2.10 与 `_regress/74_回归_UV与噪声.ts`（65 断言）。
 6. **P5（可选）SubEmitters**：需先定 config 结构。
 7. **明确不复刻**：Collision / Trigger / Lights / ExternalForces / LifetimeByEmitterSpeed（留档说明）。

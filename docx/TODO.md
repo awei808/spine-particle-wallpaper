@@ -175,7 +175,7 @@
   ColorBySpeed、SizeBySpeed、RotationBySpeed、InheritVelocity），见 §2.8。
 - ✅ **P3 渲染侧**：2026-10-17 完成（renderMode 5 种 + None、alignment 五档、pivot、
   sortingFudge、flip、allowRoll、min·maxParticleSize、Mesh 顶点集），见 §2.9。
-- ⬜ **P4** UV / Noise 细节（rowMode、noise sizeAmount/scrollSpeed/octaves）
+- ⬜ **P4** UV / Noise 细节（rowMode、noise sizeAmount/scrollSpeed/octaves） → ✅ 2026-10-17 完成，见 §2.10
 - ⬜ **P5** SubEmitters（需先定 config 结构）
 
 ### 2.6 已查明但**维持现状**的引擎口径（2026-10-16 夜 · 用户拍板）
@@ -451,3 +451,77 @@ S8 用 `_work_星语心恋/19_部署step2到WE.py`）时会把 P1 一并带上�
 6. `Length Scale` 的基准是 `width` 还是 `sizeY`：取 `sizeY`（与 Cocos 同源），§4.13 存疑 2。
 7. **仍未部署 WE、未发布**：本次落源码 + 回归 + 文档 + **S9 的 config 下发**；
    下次部署会把 P0 / P1 / P2 / P3 **一并带上**。
+
+---
+
+### 2.10 ✅ P4「UV / Noise 细节」已落地（2026-10-17）
+
+> 报告：`_work_UV与噪声/REPORT_P4_UV与噪声_2026-10-17.md`（含全包普查 41996 个 ParticleSystem
+> 的字段分布 + 三个产物 39 个节点的全量取值 + 落地前后的实测对照）。
+> 依据：`docx/RESEARCH_粒子系统复刻参考.md` **§4.14 / §4.15**（官方逐字 + Cocos 逐行 + 官方枚举）。
+> 回归：`_regress/74_回归_UV与噪声.ts`（**65 断言**，四份 config 全绿）。
+
+#### 落地了什么
+
+| 模块 | 字段 | 实现要点 | 依据 |
+|---|---|---|---|
+| UV | `timeMode = 0 Lifetime` | 现状（`⌊startFrame + frameOverTime×cycles×nF⌋ mod nF`） | §4.14① |
+| UV | `timeMode = 1 Speed` | ★ **按当前速度静态选帧** `round(sf + rate×(nF−1))`，`rate = clamp((\|v\|−r0)/(r1−r0))`；**不随寿命推进** | `ScriptReference-speedRange` 的 **Remarks 逐字** |
+| UV | `timeMode = 2 FPS` | `⌊sf + 年龄 × fps⌋ mod nF`（与寿命/速度无关） | 手册属性表 + 旁证实测 |
+| UV | `startFrame` | **帧号**，逐粒子取（复用 `lifeMulMix(…, p.vmix)`，**不额外消耗 rng**），加在帧号上再回绕 | §4.14③ |
+| UV | `animationType = 1 SingleRow` | 帧数从整表变 `tilesX`；行 = `p.uvRow`（出生时定） | §4.14② |
+| UV | `rowMode` 0/1/2 | Custom ⇒ `rowIndex`；Random ⇒ 出生抽（**只在真会出现随机行时才抽 rng** ⇒ 既有产物零回归）；MeshIndex ⇒ 恒第 0 行（**实现边界**） | §4.14② |
+| UV | `flipU` / `flipV` | ★ 官方**已废弃**字段（*"Use `ParticleSystemRenderer.flip.x` instead"*）⇒ **只在 `renderer.flip` 缺省时当回退**，镜像逻辑复用 P3 那条，不另立通路 | §4.14④ |
+| Noise | `octaves`/`octaveMultiplier`/`octaveScale` | 势场 fBm 叠层（振幅 `mul^k`、频率 `scale^k`、`/Σ振幅`）；★ **逐层差分步长 `h = NOISE_EPS/f_k`** ⇒ 叠层场仍**无源无汇** | §4.15② |
+| Noise | `scrollSpeed` | 采样点 = `(粒子本地坐标 + scrollSpeed × 系统时间) × frequency`（Cocos 同式） | §4.15② |
+| Noise | `sizeAmount` | 尺寸乘子 `1 + 标量噪声 × 有效强度 × sizeAmount × gain`，下界钳 0 | §4.15③（**本项目口径，存疑**） |
+| Noise | `rotationAmount` | `Δrot = −噪声_z × 有效强度 × rotationAmount × π/180 × dt`（**度/秒**逐字） | §4.15① |
+| Noise | `separateAxes` + `strengthY/Z` | 位置推力逐轴改用三条强度 | §4.15① |
+
+★ 全部新字段**可选且缺省** ⇒ 旧 config **逐位无影响**（`74_` 第 [1] 组与第 [10] 组钉住，
+含真实产物逐位相同）。
+
+#### ★ 构建期修掉一个**真实缺陷**（回归的散度判据直接抓出来的）
+
+第一版把 octave 叠层做在势场上但**所有层共用固定步长** ⇒ 高频层的截断误差 `O(h²f³)`
+与层本身同阶，叠出来的高频层是"垃圾"、场里出现明显源/汇：
+
+| | `max|∇·N|` | 场量级 |
+|---|---|---|
+| 单层 | 1.41e−2 | 3.66 |
+| 4 层（固定步长，**错**） | **2.17** | 4.15 |
+| 4 层（逐层步长，**修后**） | **5.34e−2** | 4.18 |
+
+★ 同时查明：**度量散度的那一步也要用匹配步长**，否则量到的是离散算子自己的误差
+（这条已写进 `74_` 的注释，免得下次误判）。连带有益性质：`mul·scale = 1` 时每层对
+curl 量级的贡献相等 ⇒ 叠层**不放大**场量级（3.66 → 4.18，有断言）。
+
+#### 数据层：**默认只演练，`--apply` 才写盘**
+
+`10_wallpaper_engine/_补P4噪声细节.py`（新）。**为什么不自动下发**：实测三个产物里
+**只有两个节点**有非默认的 P4 字段，而**下发会真的改变已验收过的观感**：
+
+| 产物 | 节点 | 字段 | 期望观感 |
+|---|---|---|---|
+| S8 动作特效 | `fx_touch1_glow_1` | `noise.sizeAmount = 0.5`、`scrollSpeed = 0.3` | 光圈 ±10% 尺寸呼吸 + 场缓慢滚动 |
+| S6 动作特效 chat | `fx_chat_lizi_san` | `noise.sizeAmount = 0.5`、`scrollSpeed = 1.0` | ★ 该节点 `positionAmount = 0` ⇒ **目前噪声一点没生效**，下发后**新出现** ±25% 呼吸 |
+
+⇒ 与 P3 对 S6 `pivot` 的处理方式一致：**交用户实测后自己跑 `--apply`**。
+**S9 无字段可下发**（三组粒子的 P4 字段全是默认值）。
+★ 脚本用**既有字段做自校验**（重算的 `noise.strength`/`positionAmount` 必须与 config 里
+已有的值逐位一致，否则拒绝写盘）⇒ MinMaxCurve 的转换口径不是第二意见。
+
+#### ⬜ 未做 / 存疑（如实标注）
+
+1. **`NoiseModule.quality`(Low/Medium) 未实现** —— 手册只说"少采样、跨轴复用并**设法掩盖**复用"，
+   **具体手法未公开**（全包 Medium 100 条、三个产物全 High）⇒ 不凭猜实现。
+2. **`NoiseModule.remapEnabled` / `remap` 未实现** —— 全包 1663 条**无一启用**。
+3. **`sizeAmount` / `rotationAmount` 的"取哪一路噪声值"与绝对量级** —— Unity 未公开、
+   Cocos 也未实现 ⇒ §4.15③ 那张表是**本项目口径**（尺寸用**第 4 路有界标量场**、
+   自转用 curl 的 z 分量），`gain` 是留给数据层的校准旋钮。
+4. **`scrollSpeed` 的滚动方向** —— 单标量 curve 按"三轴等量平移"（沿 (1,1,1) 对角）处理；
+   `separateAxes` 会把它拆成 XYZ 三条，但全包只有 4 条开 separateAxes、三个产物全 false。
+5. **`uvChannelMask` 未实现** —— 全包 13716 条**全部**是 −1（= 全部通道），本引擎也只有一套 UV。
+6. **`mode = Sprites` 未实现** —— 本作**无一使用**（全 Grid）。
+7. **仍未部署 WE、未发布**：与 P0~P3 同，本轮只落源码 + 回归 + 文档 + 数据层脚本（演练）。
+   下次部署会把 P0 / P1 / P2 / P3 / P4 **一并带上**。
