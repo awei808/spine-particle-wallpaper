@@ -160,9 +160,18 @@ const warnReport = validateEvents(events, {
   mode: 'warn',
 });
 eq(
-  'C1 warn ⇒ unplayable 清空（reject 降级为 report）',
-  warnReport.unplayable.length,
-  0
+  'C1 warn ⇒ 只剩物理不可播的（动画缺失 / 空事件 / id 非法与重复）',
+  ['custom:anim', 'custom:empty', 'custom:dup'].every(
+    (k) => warnReport.unplayable.indexOf(k) >= 0
+  ),
+  true
+);
+eq(
+  'C1b warn ⇒ 语义类 reject 放回候选（热区未知 / 条件非法）',
+  ['custom:zone', 'custom:cond'].filter(
+    (k) => warnReport.unplayable.indexOf(k) >= 0
+  ),
+  []
 );
 eq('C2 warn ⇒ 没有 reject 计数', warnReport.counts.reject, 0);
 ok(

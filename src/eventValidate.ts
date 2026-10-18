@@ -163,6 +163,16 @@ export const validateEvents = (
     report.issues.push(makeIssue(code, d, detail, id));
   };
 
+  /**
+   * **物理上不可播**的条目（与"reject 的处置"分开记）。
+   *
+   * `E_ID_INVALID` / `E_ID_DUP` / `E_EVENT_EMPTY` / `E_ANIM_MISSING` 这四条不是"作者语义
+   * 有问题"，而是**播不出来**（没有身份 / 没有内容 / 骨架里没有这条 clip）。
+   * `validate:'warn'` 可以把**报告级别**降成 info，但**不能把它们放回候选池** ——
+   * 否则点击抽到它 ⇒ `playAction` 返回 false ⇒ 用户看到"点了没反应"，
+   * 而且这一 tick 不会再换一条（PLAN §7 的售后问题）。
+   */
+  const hard: EventKey[] = [];
   /** 已见 id（`normalizeEventTable` 已去重，这里兜住"有人绕过归一直接调"的情况） */
   const seen: string[] = [];
   /** 动画 → 各事件的 particles 串（`W_FX_DIVERGED`） */
@@ -173,11 +183,13 @@ export const validateEvents = (
     if (!key || !isEventKey(key)) {
       add('E_ID_INVALID', 'reject', 'id 非法 ⇒ 丢弃本条', key || '');
       report.unplayable.push(key);
+      hard.push(key);
       return;
     }
     if (seen.indexOf(key) >= 0) {
       add('E_ID_DUP', 'reject', '重复 id ⇒ 保留首条', key);
       report.unplayable.push(key);
+      hard.push(key);
       return;
     }
     seen.push(key);
@@ -193,6 +205,7 @@ export const validateEvents = (
         key
       );
       report.unplayable.push(key);
+      hard.push(key);
     }
     if (!ts.length) {
       add('W_TEXT_EMPTY', 'report', '纯动作事件（合法）', key);
@@ -225,6 +238,7 @@ export const validateEvents = (
           key
         );
         report.unplayable.push(key);
+        hard.push(key);
       }
       if (fallbackable.length) {
         const f = fallbackable[0];
@@ -416,6 +430,8 @@ export const validateEvents = (
    *
    * ★ 理由：壁纸是"看的东西"，用户自己改坏一条台词就让整类事件静默消失，
    *   比"照播 + 档案红标"更难排查。作者期/CI 用 `'strict'`。
+   * ⚠️ 例外：**物理上播不出来的**（`hard`：id 非法/重复、空事件、动画缺失）
+   *   仍留在 `unplayable` —— "照播"在这几条上不成立，只会变成"点了没反应"。
    */
   if (mode === 'warn') {
     report.issues = report.issues.map((it) =>
@@ -431,7 +447,7 @@ export const validateEvents = (
     report.issues.forEach((it) => {
       report.counts[it.disposition] += 1;
     });
-    report.unplayable = [];
+    report.unplayable = hard.slice();
   }
 
   /** 去重 `unplayable`（同一条可能踩多个 reject 码） */
