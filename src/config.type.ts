@@ -696,7 +696,7 @@ export type SubtitleAudioConfig = {
    * | 有项但全是垃圾 | 退回缺省（容忍拼错，不当成"关掉兜底"） |
    *
    * ⚠️ `m4a` 故意排最后：WE 的 CEF 对 AAC 支持不稳，放前面会"明明有 ogg、
-   * 却先撞一条解不了的 m4a"。改顺序前先看 `PLAN_自定义事件前置条件` §8 的实测待办。
+   * 却先撞一条解不了的 m4a"。改顺序前先看 `docx/PLAN_自定义事件系统_2026-10-18.md` §9 的实测待办。
    * ⚠️ 与 `SubtitleAudioConfig.enabled` 无关：本字段只影响**找到哪个文件**，不控制是否出声。
    */
   extOrder?: string[];
