@@ -575,6 +575,49 @@ export const createVoiceBubble = (
   /** 复用的淡出收尾计时器 */
   let fadeTimer: number | null = null;
 
+  /**
+   * 同步模糊层的**横向**几何 —— 跟随 `contentGroup`（= 文字区的真实宽度）。
+   *
+   * ★★ 为什么不能用 `left/right:0` 满铺 `frame`（2026-10-18，用户口径）
+   *
+   * `frame` 有 `min-width: minWidth × s`（源自游戏 `Talk` 的 `UISizeAdapter
+   * Min(260,60)`）。文案很短时：
+   *   `frame` 被这个下限撑宽（≥ 260×s），而 `contentGroup` 是
+   *   `width:fit-content` ⇒ 只有**文字加 padding 那么宽**，且在 `frame` 里靠
+   *   `justify-content:flex-start` 落位。
+   * ⇒ 满铺出来的模糊层比灰底和文字**宽出一大截**，画面上就是"多出一块没有
+   *   内容的毛玻璃"。这个下限对气泡外观没有任何其他作用（`frame` 自身透明），
+   *   唯一的视觉出口就是这一层。
+   *
+   * ⇒ **横向改为按 `contentGroup` 的实际盒子定位 + 取宽**，`min-width` 遂不再
+   *   传导到毛玻璃；纵向仍满铺 `frame`（矮文案时框高来自 `frame` 的
+   *   `min-height`，且 `contentGroup` 有 `align-self:stretch` 已经拉满 ⇒
+   *   纵横两种情况都与暗化层对齐）。
+   *
+   * ⚠️ 必须在**文本已写入**之后调用 —— `contentGroup` 的宽度由文本决定，
+   *    所以 `resize()`（尺寸随视口变）与 `show()`（文案换了）都要调一次。
+   *
+   * ⚠️ 保持 `blurLayer` 是 `contentGroup` 的**兄弟**：一旦成为 `opacity` 过渡元素的
+   *    后代，`backdrop-filter` 会失效（见 `show()` 顶部的长注释）。这里只改盒子，
+   *    不动 DOM 结构，也不引入任何会处于非 1 `opacity` 的祖先。
+   */
+  const syncBlurBox = () => {
+    if (!style.blur.enabled) {
+      return;
+    }
+    const sNow = window.innerHeight / style.referenceHeight;
+    const ix = style.blur.inset.x * sNow;
+    const iy = style.blur.inset.y * sNow;
+    // `contentGroup` 与 `blurLayer` 同以 `frame` 为包含块 ⇒ `offsetLeft` 可直接用
+    const left = contentGroup.offsetLeft;
+    const width = contentGroup.offsetWidth;
+    blurLayer.style.left = left + ix + 'px';
+    blurLayer.style.width = Math.max(0, width - 2 * ix) + 'px';
+    blurLayer.style.right = 'auto';
+    blurLayer.style.top = iy + 'px';
+    blurLayer.style.bottom = iy + 'px';
+  };
+
   const clearTimers = () => {
     if (hideTimer !== null) {
       window.clearTimeout(hideTimer);
@@ -618,6 +661,13 @@ export const createVoiceBubble = (
     frame.style.transform = 'translateX(-50%)';
 
     // ── 尺寸（设计单位 × s） ──
+    /**
+     * ★ 2026-10-18：这个 `min-width` **只作用于看不见的 `frame`**（它自身透明），
+     *   不再传导到毛玻璃 —— 模糊层的横向几何改由 `syncBlurBox()` 按 `contentGroup`
+     *   的真实宽度给出，所以短文案时不会再"多出一块没有内容的毛玻璃"。
+     *   它保留下来的唯一意义：给气泡一个**下限盒子**（`min-height` 同理，且矮文案时
+     *   那个高度是**要**的 —— 视觉上框不会塌成一条）。
+     */
     frame.style.minWidth = style.minWidth * s + 'px';
     frame.style.minHeight = style.minHeight * s + 'px';
     /**
@@ -675,26 +725,18 @@ export const createVoiceBubble = (
 
     // ── 模糊层几何 ──
     /**
-     * `inset` 为 0（缺省）⇒ **满铺**，与暗化层完全重合。
-     * 此时**不能**靠 `left/right/top/bottom = 0` 来铺——因为 `blurLayer` 在 DOM 里是
-     * `position:absolute` 且**没有**显式的宽高，只设 4 个 0 在部分引擎下依赖
-     * "static position 兜底"，不如直接明确写满。非 0 时才走内缩分支。
+     * 几何由 `syncBlurBox()` 统一产出（横向跟内容宽、纵向满铺），
+     * `resize()` 与 `show()` 都调它。
+     *
+     * ★ 注意历史教训：早期版本这里用 `left/right/top/bottom` 四个 0 来"铺满"，
+     *   靠的是 `position:absolute` + 无显式宽高的**静态位置兜底**，在部分引擎下不稳。
+     *   现在横向显式写 `width`（来源 `contentGroup.offsetWidth`），不再依赖兜底；
+     *   纵向仍用 `top/bottom`，但那是因为高度要跟随 `frame` 的 `min-height`，
+     *   本来就是"拉伸"语义。
      */
     if (style.blur.enabled) {
-      const ix = style.blur.inset.x * s;
-      const iy = style.blur.inset.y * s;
-      const insetAll = style.blur.inset.x === 0 && style.blur.inset.y === 0;
-      if (insetAll) {
-        blurLayer.style.left = '0';
-        blurLayer.style.right = '0';
-        blurLayer.style.top = '0';
-        blurLayer.style.bottom = '0';
-      } else {
-        blurLayer.style.left = ix + 'px';
-        blurLayer.style.right = ix + 'px';
-        blurLayer.style.top = iy + 'px';
-        blurLayer.style.bottom = iy + 'px';
-      }
+      // 横向跟随内容宽度、纵向满铺 frame —— 详见 `syncBlurBox` 的注释
+      syncBlurBox();
       /**
        * ★ 半径**不乘 s** —— 它是**恒定的视口像素数**。
        *
@@ -815,6 +857,9 @@ export const createVoiceBubble = (
     // 直接替换文案：Unity 也是同一个 Text 换字符串，没有排队
     text.textContent = entry.text;
     frame.style.visibility = 'visible';
+    // ★ 文案换了 ⇒ `contentGroup` 的宽度变了 ⇒ 模糊层的横向几何必须重同步
+    //   （`resize()` 只在窗口尺寸变化时跑，管不到"同一窗口下换更短/更长的台词"）
+    syncBlurBox();
     // 强制一次重排后再设 opacity，保证"已在显示中再 show"也能有过渡
     void frame.offsetHeight;
     contentGroup.style.transition = 'opacity ' + style.fadeMs + 'ms ease';
