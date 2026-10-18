@@ -1012,7 +1012,19 @@ export const createTouchController = (
     if (!animationName) {
       return false;
     }
-    const played = trigger(entry, 'touch');
+    /**
+     * ★★ `entry` 为 `null` 时**不能**直接 `trigger(null)` —— `trigger` 第一步读的是
+     *   `entry?.animation`，拿到空串就立刻 `return false`，于是上面那条"退化为随机
+     *   动画名"的兜底完全失效：点击既不播动作、也不进 `skippedCount`、还不打日志，
+     *   表现为"点了完全没反应"（2026-10-18 排查 `weight:0` 占档时一并发现）。
+     *
+     *   ⇒ 用一个**只带动画名**的临时条目过闸门：动作照播、没有台词/语音
+     *     （`text`/`voice` 都缺省），与"池空 ⇒ 只播动作"的原意一致。
+     */
+    const played = trigger(
+      entry ?? ({ animation: animationName } as DialogueEntry),
+      'touch'
+    );
     if (played) {
       lastPick = animationName;
     }

@@ -660,7 +660,16 @@ export type ConditionContext = {
 export type PickPolicy = {
   /** 0..100，缺省 0，越大越优先（越界 ⇒ 夹取 + `E_PRIORITY_RANGE`） */
   priority?: number;
-  /** >=0，缺省 1；**0 = 不参与自动抽取**，只能手动 `trigger()` */
+  /**
+   * `>=0`，缺省 1；**0 = 不参与自动抽取**，只能手动 `trigger()`。
+   *
+   * ⚠️ **`weight:0` 连"占档"都不做**（2026-10-18 修的真 bug）：抽取顺序是
+   *   "先剔掉 weight:0 → 再在剩下的人里取最高档"。写成"先取最高档再剔"的话，
+   *   一条 `{priority:80, weight:0}` 就会让**整条通道**抽不出东西
+   *   （最高档只剩它、剔完为空 ⇒ 返回 `null`、且没有任何日志）。
+   *   症状极隐蔽：点击被识别、池看着满、`firedCount/skippedCount` 都不涨。
+   *   ⇒ 想表达"只能手动播"用这个字段没问题，但别指望它同时"压住"别的条目。
+   */
   weight?: number;
   /** 互斥组：同组**同一 tick** 至多出一条 */
   group?: string;

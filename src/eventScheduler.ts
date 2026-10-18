@@ -55,9 +55,19 @@ export const eventWeight = (e: DialogueEntry): number =>
  * 从**已过 ①~③ 层**的候选里选一条；没有可选 ⇒ `null`。
  *
  * 算法（PLAN §4.2 的代码，逐行照抄语义）：
- *   ① 取 `priority` 最高档；
- *   ② 档内剔掉 `weight <= 0`（`weight:0` = 只能手动 trigger）；
+ *   ① 先剔掉 `weight <= 0`（`weight:0` = 只能手动 trigger）；
+ *   ② 在**剩下的人里**取 `priority` 最高档；
  *   ③ 按 `weight` 加权随机（`rnd ∈ [0,1)` 可注入）。
+ *
+ * ## ★★ 为什么 ① 必须在 ② 之前（2026-10-18 修复的真实 bug）
+ *
+ * 旧顺序是"先取最高档 → 再在档内剔 weight:0"。只要**最高档里全是 `weight:0`**
+ * 的条目，档内就空了 ⇒ 返回 `null` ⇒ **整条通道彻底哑掉**，而且不会回落到次档。
+ *
+ * 实战触发条件极普通：一条 `pick:{priority:80, weight:0}` 的"仅手动"事件
+ * （S9 的 `custom:hold-hand` 正是）就会让**所有点击**失效 —— 触摸池 7 条、
+ * 全部正常，却怎么点都没反应；`skippedCount / firedCount` 都是 0，日志一声不吭。
+ * ⇒ `weight:0` 的语义是"我**不参加**自动抽取"，那它连"占一个档位"都不该做到。
  *
  * ★ 浮点边界兜底返回**档内最后一条**（与候选顺序无关的错误方向固定，便于断言）。
  */
@@ -68,20 +78,21 @@ export const selectEvent = (
   if (!ready || !ready.length) {
     return null;
   }
+  /** ① `weight:0` 在这一步就出局（不是"进档再剔"） */
+  const eligible = ready.filter((e) => eventWeight(e) > 0);
+  if (!eligible.length) {
+    /** 全是 `weight:0` ⇒ 自动通道永不选中 */
+    return null;
+  }
+  /** ② 最高档只在 `eligible` 里算 */
   let top = PRIORITY_DEFAULT;
-  ready.forEach((e) => {
+  eligible.forEach((e) => {
     const p = eventPriority(e);
     if (p > top) {
       top = p;
     }
   });
-  const tier = ready.filter(
-    (e) => eventPriority(e) === top && eventWeight(e) > 0
-  );
-  if (!tier.length) {
-    /** 全是 `weight:0` ⇒ 自动通道永不选中 */
-    return null;
-  }
+  const tier = eligible.filter((e) => eventPriority(e) === top);
   const total = tier.reduce((s, e) => s + eventWeight(e), 0);
   let r = rnd() * total;
   for (let i = 0; i < tier.length; i++) {

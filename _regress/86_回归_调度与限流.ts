@@ -100,6 +100,37 @@ eq(
   selectEvent([E('custom:a', { weight: 0 })], () => 0.5),
   null
 );
+/**
+ * ★★ A6b 是 2026-10-18 线上 bug 的钉扎：**最高档全是 `weight:0`** 时不能返回 null。
+ *
+ * 旧实现"先取最高档、再在档内剔 weight:0" ⇒ 档内空 ⇒ null ⇒ 整条通道哑掉，
+ * 而池里其它条目明明完全正常（实测：点击 7 条候选的触摸池，怎么点都没反应，
+ * `firedCount / skippedCount` 都是 0）。`weight:0` 应理解为"我不参加抽取"，
+ * 而不是"我占住最高档、谁也别想抽"。
+ */
+eq(
+  'A6b ★最高档全是 weight:0 ⇒ 落到次档（不能返回 null）',
+  selectEvent(
+    [
+      E('custom:manual', { priority: 80, weight: 0 }),
+      E('custom:normal', { priority: 0 }),
+    ],
+    () => 0
+  )?.id,
+  'custom:normal'
+);
+eq(
+  'A6c 多档时同样按"剔掉 weight:0 后的最高档"选',
+  selectEvent(
+    [
+      E('custom:manual', { priority: 80, weight: 0 }),
+      E('custom:mid', { priority: 50 }),
+      E('custom:low', { priority: 10, weight: 9 }),
+    ],
+    () => 0.99
+  )?.id,
+  'custom:mid'
+);
 eq(
   'A7 rnd=1.0（越界注入）不返回 undefined',
   selectEvent([E('custom:a'), E('custom:b')], () => 1)?.id,

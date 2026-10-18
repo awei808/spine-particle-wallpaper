@@ -73,7 +73,11 @@ import {
   normalizeEventTable,
   resolveEventVariant,
 } from './eventModel';
-import { createEventLog, resolveEventFrom } from './eventScheduler';
+import {
+  createEventLog,
+  eventWeight as eventWeightOf,
+  resolveEventFrom,
+} from './eventScheduler';
 import {
   mergeEventOverrides,
   readEventOverrides,
@@ -1645,6 +1649,41 @@ const main = async () => {
                   validationReport.unplayable.length
                 );
               }
+              /**
+               * ★★ **整条通道全是 `weight:0` 的启动告警**（2026-10-18 线上 bug 的守门）。
+               *
+               * `weight:0` = "只手动播"。若某个通道**所有**候选都这么写，那这个通道
+               * 永远抽不出东西 —— 而运行时完全静默：`firedCount`/`skippedCount` 都不涨、
+               * 没有异常、池大小看着还挺正常。用户只能看到"点了完全没反应"。
+               *
+               * 档案面板会把这类条目标「仅手动」，但那只在打开档案时才看得见；
+               * ⇒ 启动时打一行 warn，把"点不动"和"配置写错"直接连起来。
+               */
+              (
+                [
+                  ['touch', touchKinds],
+                  ['standby', standbyKinds],
+                  ['resume', resumeKinds],
+                ] as [TriggerChannel, TriggerEventKind[]][]
+              ).forEach(([ch, ks]) => {
+                const pool = mergeKindPools(ks, KIND_POOLS, fams).filter(
+                  (e) => channelsOf(e).indexOf(ch) >= 0
+                );
+                if (!pool.length) {
+                  return;
+                }
+                if (pool.some((e) => eventWeightOf(e) > 0)) {
+                  return;
+                }
+                console.warn(
+                  '[subtitle] 「%s」通道的 %d 条候选**全部**是 pick.weight:0 ⇒ 该通道永远不会自动触发' +
+                    '（只能从调试面板手动播）。去掉 weight 或改成 >0 即可恢复：%s',
+                  ch,
+                  pool.length,
+                  pool.map((e) => eventKeyOf(e)).join(', ')
+                );
+              });
+
               /**
                * 常驻动作序列（config 顶层 `idleSequence`）：顶替 idle 占住 track 0。
                *
