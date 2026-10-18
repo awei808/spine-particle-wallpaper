@@ -74,11 +74,13 @@ import {
   DialogueSlotKey,
   DialogueTimeRange,
   EventFamily,
+  EventKeyInput,
   GreetMode,
   TriggerChannel,
   TriggerEventKind,
   TriggerPhase,
 } from './config.type';
+import { eventKeyOf, normalizeEventKey } from './eventModel';
 
 /** 时段遍历顺序：按早 → 中 → 晚找第一个命中的 */
 export const SLOT_ORDER: DialogueSlotKey[] = ['morning', 'noon', 'evening'];
@@ -136,7 +138,12 @@ export const resolveTimeSlot = (
   return null;
 };
 
-/** 按 actionId 在总表里查条目；查不到返回 `null`（不抛，让上层决定降级） */
+/**
+ * 按 `actionId` 在总表里查条目；查不到返回 `null`（不抛，让上层决定降级）。
+ *
+ * @deprecated 2026-10-18 起用 `findByEventKey`（自定义事件没有 `actionId`）。
+ *   本函数保留为薄包装，**引擎内部零调用** —— 免得出现"两个身份判据"。
+ */
 export const findByActionId = (
   entries: DialogueEntry[],
   actionId: number
@@ -153,6 +160,29 @@ export const findByActionId = (
 };
 
 /**
+ * 按 `EventKey` 查条目（唯一身份判据）。
+ *
+ * ★ 兼容边界在这里收口：`64005` / `'64005'` / `'game:64005'` 等价（`normalizeEventKey`）。
+ * ⚠️ 表里的条目也走 `eventKeyOf`（`id` 优先、其次 `actionId` 派生），
+ *   所以**归一前后的表都能查**。
+ */
+export const findByEventKey = (
+  entries: DialogueEntry[],
+  key: EventKeyInput
+): DialogueEntry | null => {
+  const want = normalizeEventKey(key);
+  if (!entries?.length || !want) {
+    return null;
+  }
+  for (let i = 0; i < entries.length; i++) {
+    if (eventKeyOf(entries[i]) === want) {
+      return entries[i];
+    }
+  }
+  return null;
+};
+
+/**
  * 把 actionId 列表解析成条目池。
  *
  * 列表里指向**不存在的 id** 会被静默跳过 —— 配置写错一个字时降级成"少一条候选"，
@@ -161,7 +191,7 @@ export const findByActionId = (
  */
 export const buildPool = (
   entries: DialogueEntry[],
-  ids: number[],
+  ids: EventKeyInput[],
   /**
    * 允许的**事件族**（2026-10-10 新增，可选）。
    *
@@ -173,8 +203,11 @@ export const buildPool = (
    * ★★ 为什么是"**收全命中**"而不是像旧实现那样 `findByActionId` 取首个：
    *   同一动作的不同族孪生条目**共用 `actionId`**（游戏里本就是"同一条动作、两套动画"）。
    *   取首个的话，勾了 `['normal','postMarry']` 时孪生**永远轮不到**（静默偏向普通态）。
-   *   收全之后由 `mergeKindPools` 按 `actionId|phase` 去重，两条都留在池里。
+   *   收全之后由 `mergeKindPools` 按 `id|phase` 去重，两条都留在池里。
    *   ⚠️ 对既有 config（一个 id 只对应一条）**结果完全相同**。
+   *
+   * ★ 2026-10-18：`ids` 收 `EventKeyInput`（`number` / `'64005'` / `'game:64005'` /
+   *   `'custom:xxx'`）；匹配走 `eventKeyOf` —— 自定义事件没有 `actionId` 也能进池。
    */
   phases?: readonly TriggerPhase[],
   /** 事件族注册表（决定"条目属于哪一族"；缺省 = 内置单族 `normal`） */
@@ -183,11 +216,22 @@ export const buildPool = (
   if (!entries?.length || !ids?.length) {
     return [];
   }
+  /** 先把 id 列表归成 `EventKey` 集合（`number` / 数字串都等价） */
+  const want: string[] = [];
+  ids.forEach((raw) => {
+    const k = normalizeEventKey(raw);
+    if (k && want.indexOf(k) < 0) {
+      want.push(k);
+    }
+  });
+  if (!want.length) {
+    return [];
+  }
   const pool: DialogueEntry[] = [];
-  for (let i = 0; i < ids.length; i++) {
+  for (let i = 0; i < want.length; i++) {
     for (let j = 0; j < entries.length; j++) {
       const e = entries[j];
-      if (!e || e.actionId !== ids[i]) {
+      if (!e || eventKeyOf(e) !== want[i]) {
         continue;
       }
       if (phases && phases.indexOf(resolveDialoguePhase(e, reg)) < 0) {
@@ -214,20 +258,29 @@ export const buildPool = (
  *
  * ⚠️ 两种都必须接受 —— 老 config.json 与既有回归脚本（64/65）仍在传后者。
  */
-export type GreetSource = number[] | Partial<Record<DialogueSlotKey, number>>;
+export type GreetSource =
+  | EventKeyInput[]
+  | Partial<Record<DialogueSlotKey, EventKeyInput>>;
 
 /**
- * 把问候来源摊平成**去重保序**的 actionId 数组。两者都不是 ⇒ 空数组（永不抛）。
+ * 把问候来源摊平成**去重保序**的 id 列表。两者都不是 ⇒ 空数组（永不抛）。
  *
  * ★ 旧口径按 `SLOT_ORDER`（早→中→晚）摊平 ⇒ 数组顺序天然就是"时段序号"，
- *   这正是 `GreetMode==='time'` 按下标取条所依赖的形状（见 `pickGreetingEntry`）。
+ *   这正是 `GreetMode==='time'` 按时段取条所依赖的形状（见 `normalizeEventTable`
+ *   对 `greet` 数组的**下标对位**）。
+ * ★ 2026-10-18 起元素可以是 `EventKey`；**保留原始写法**（`64005` 不会变成 `'game:64005'`），
+ *   去重按归一后的键判断（`64005` 与 `'64005'` 算同一条）。
  */
-export const normalizeGreetIds = (src?: GreetSource): number[] => {
-  const out: number[] = [];
+export const normalizeGreetIds = (src?: GreetSource): EventKeyInput[] => {
+  const out: EventKeyInput[] = [];
+  const seen: string[] = [];
   const push = (id: unknown): void => {
-    if (typeof id === 'number' && out.indexOf(id) < 0) {
-      out.push(id);
+    const key = normalizeEventKey(id);
+    if (!key || seen.indexOf(key) >= 0) {
+      return;
     }
+    seen.push(key);
+    out.push(id as EventKeyInput);
   };
   if (Array.isArray(src)) {
     src.forEach(push);
@@ -259,8 +312,8 @@ export const hasGreetIds = (greet?: GreetSource): boolean =>
  * ⚠️ 两边都没配 ⇒ `undefined`（调用方按"没配"处理，与改动前逐字一致）。
  */
 export const resolveGreetSource = (
-  greet: number[] | undefined,
-  greeting: Partial<Record<DialogueSlotKey, number>> | undefined
+  greet: EventKeyInput[] | undefined,
+  greeting: Partial<Record<DialogueSlotKey, EventKeyInput>> | undefined
 ): GreetSource | undefined => (greet?.length ? greet : greeting);
 
 /**
@@ -270,19 +323,26 @@ export const resolveGreetSource = (
  * ⇒ 只配了旧字段的老 config 行为**逐字不变**。
  */
 export const resolveChatIds = (
-  chat: number[] | undefined,
-  standby: number | undefined
-): number[] => {
-  if (chat?.length) {
-    const out: number[] = [];
-    chat.forEach((id) => {
-      if (typeof id === 'number' && out.indexOf(id) < 0) {
-        out.push(id);
+  chat: EventKeyInput[] | undefined,
+  standby: EventKeyInput | undefined
+): EventKeyInput[] => {
+  const toList = (list: EventKeyInput[]): EventKeyInput[] => {
+    const out: EventKeyInput[] = [];
+    const seen: string[] = [];
+    list.forEach((raw) => {
+      const k = normalizeEventKey(raw);
+      if (k && seen.indexOf(k) < 0) {
+        seen.push(k);
+        out.push(raw);
       }
     });
     return out;
+  };
+  if (chat?.length) {
+    return toList(chat);
   }
-  return typeof standby === 'number' ? [standby] : [];
+  const one = normalizeEventKey(standby);
+  return one ? [standby as EventKeyInput] : [];
 };
 
 /**
@@ -298,10 +358,15 @@ export const resolveChatIds = (
  * ⚠️ 本函数**只产出 id 列表**，不解析条目 —— 解析交给 `buildPool`，
  * 于是"id 指向不存在的条目就静默跳过"这条兜底口径对三条来源一视同仁。
  */
-export const resolveTouchIds = (touch: number[] | undefined): number[] => {
-  const out: number[] = [];
+export const resolveTouchIds = (
+  touch: EventKeyInput[] | undefined
+): EventKeyInput[] => {
+  const out: EventKeyInput[] = [];
+  const seen: string[] = [];
   (touch ?? []).forEach((id) => {
-    if (typeof id === 'number' && out.indexOf(id) < 0) {
+    const k = normalizeEventKey(id);
+    if (k && seen.indexOf(k) < 0) {
+      seen.push(k);
       out.push(id);
     }
   });
@@ -795,9 +860,25 @@ export const projectDialoguesToActionPhase = (
     if (!e) {
       return e;
     }
+    /**
+     * ★★ **每个 variant 也要换名**（2026-10-18，PLAN §2.3）。
+     *   只换 `e.animation` 的话，混族时抽到 `variants[1]` 会播婚前动画名
+     *   （`addAnimation` 直接 throw ⇒ 整次点击丢失）。
+     */
+    const variants = Array.isArray(e.variants)
+      ? e.variants.map((v) =>
+          v && typeof v.animation === 'string' && v.animation
+            ? {
+                ...v,
+                animation: resolveAnimationName(v.animation, reg, actionPhase),
+              }
+            : v
+        )
+      : e.variants;
     return {
       ...e,
       animation: resolveEntryAnimation(e, reg, actionPhase),
+      variants,
       /** 钉住投影前的判族结果（见上面的"为什么同时钉住 phase"） */
       phase: resolveDialoguePhase(e, reg),
     };
@@ -947,14 +1028,17 @@ export const mergeKindPools = (
 ): DialogueEntry[] => {
   const out: DialogueEntry[] = [];
   /**
-   * 去重键 = **`actionId|phase`**（2026-10-10 改；此前只有 `actionId`）。
+   * 去重键 = **`EventKey|phase`**（2026-10-10 起含族；2026-10-18 起换成 `EventKey`）。
    *
    * ★★ 同一动作的不同族孪生条目**共用 `actionId`** ⇒ 只按 id 去重会把孪生**静默丢掉**。
    *   ⚠️ 对既有 config（一个 id 只对应 `'normal'` 一条）**结果完全相同**
    *   —— 同一个 id 的 key 仍只有一个。
+   * ★★ 为什么必须从 `e.actionId` 换成 `eventKeyOf(e)`：自定义事件**没有 `actionId`**
+   *   ⇒ 旧键退化成 `undefined|phase`，**同族所有自定义事件被算成同一条**、
+   *   只留一条进池、其余静默消失（PLAN §3 的真正理由）。
    */
   const seen: string[] = [];
-  /** 逐类拼接；按 `actionId|phase` 去重（既防跨类重复，也保住不同族的孪生） */
+  /** 逐类拼接；按 `EventKey|phase` 去重（既防跨类重复，也保住不同族的孪生） */
   TRIGGER_KIND_ORDER.forEach((kind) => {
     if (kinds.indexOf(kind) < 0) {
       return;
@@ -963,7 +1047,7 @@ export const mergeKindPools = (
       if (!e) {
         return;
       }
-      const key = e.actionId + '|' + resolveDialoguePhase(e, reg);
+      const key = eventKeyOf(e) + '|' + resolveDialoguePhase(e, reg);
       if (seen.indexOf(key) >= 0) {
         return;
       }
@@ -1029,7 +1113,13 @@ export const pickRandomFromPool = (
   return pool[i] ?? null;
 };
 
-/** 按时段取问候条目；该时段没配或条目缺失时返回 `null` */
+/**
+ * 按时段取问候条目；该时段没配或条目缺失时返回 `null`。
+ *
+ * @deprecated 2026-10-18：漏斗（`index.ts` 的 `resolveEvent`）改用 `when.time` 条件，
+ *   本函数只剩历史回归脚本在用。**新代码不要调它** —— 它的 `?? pickRandomFromPool`
+ *   兜底与"作者期校验报错"直接对立（PLAN §5.3 已裁决为"接受不播"）。
+ */
 export const pickGreetingEntry = (
   entries: DialogueEntry[],
   greet: GreetSource | undefined,
@@ -1065,7 +1155,7 @@ export const pickGreetingEntry = (
     // 时段被改坏（ranges 覆盖不到全天）⇒ 沿用改动前的口径：不猜、返回 null
     return null;
   }
-  const byTime = findByActionId(entries, idForSlot(greet, slot));
+  const byTime = findByEventKey(entries, idForSlot(greet, slot) ?? '');
   /**
    * ★ 降级而非静默失效：按序号找不到（池的顺序与时段不对位，或池不足 3 条）
    *   ⇒ **池内随机**。宁可是"时段对不上"，也不要"到点了什么都不播"。
@@ -1081,5 +1171,5 @@ export const pickGreetingEntry = (
 export const idForSlot = (
   greet: GreetSource | undefined,
   slot: DialogueSlotKey
-): number | undefined =>
+): EventKeyInput | undefined =>
   Array.isArray(greet) ? greet[SLOT_ORDER.indexOf(slot)] : greet?.[slot];

@@ -8,7 +8,8 @@
     "format": "npx prettier --write .",
     "start": "webpack serve --open --progress --config webpack.dev.js",
     "build": "webpack --progress --color --config webpack.production.js",
-    "voice-manifest": "ts-node --transpile-only scripts/voiceManifest.ts"
+    "voice-manifest": "ts-node --transpile-only scripts/voiceManifest.ts",
+    "validate-events": "ts-node --transpile-only scripts/validateEvents.ts public/assets"
   },
   "repository": {
     "type": "git",

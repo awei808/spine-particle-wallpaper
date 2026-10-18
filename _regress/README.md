@@ -41,10 +41,17 @@ npx ts-node --transpile-only _regress/<脚本名>.ts [参数...]
 | `75_回归_子发射器结构.ts`       | 同上（**P5-a 只校验结构、不跑渲染**：直接 import `src/subEmitterConfig` 的纯函数，不依赖 config 真有这些字段） | `WK_CONFIG`               | `public/assets/config.json`                    |
 | `77_回归_触摸热区.ts`           | `argv[2]` = `config.json`（**可选**：只用于 C4 的真实工程比对，文件缺失则该条跳过）                            | `WK_CONFIG`               | `public/assets/config.json`                    |
 | `82_回归_多格式语音.ts`         | **无**（用 DOM 桩，不需要任何音频文件）                                                                        | —                         | —                                              |
+| `83_回归_事件键与归一.ts`       | **无**（纯函数：EventKey / normalizeEventTable / 去重键 / 变体抽取）                                           | —                         | —                                              |
+| `84_回归_漏斗等价.ts`           | **无**（对照旧 `buildPool`/`pickRandomFromPool`，验"三通道取条逐条一致"）                                       | —                         | —                                              |
+| `85_回归_条件AST.ts`            | **无**（注入时钟：跨零点 / 跨年区间 / 星期 / ctx / 未知键）                                                    | —                         | —                                              |
+| `86_回归_调度与限流.ts`         | **无**（priority/weight/cooldown/quota/group + `decidePlay` 抢占矩阵）                                          | —                         | —                                              |
+| `87_回归_变体整包.ts`           | **无**（`variants` 整包随机 + 逐 variant 换名）                                                                 | —                         | —                                              |
+| `88_回归_事件校验.ts`           | **无**（16 码各一条 + warn 降级 + 离线跳过）                                                                    | —                         | —                                              |
 
 > ⚠️ **编号先看现状再取号**：`docx/PLAN_自定义事件系统_2026-10-18.md` §10 把自定义事件的
 > S1~S9 排在 **83~88**（77 = 触摸热区、82 = 多格式语音均已落地；78~81 留给并行工作线）。
-> 本脚本取 **82** 就是为了不插队改动别人的编号；新脚本落地前先 `ls _regress` 确认下一个可用号。
+> **83~88 已于 2026-10-18 落地**（对应 S1+S3 / S2 / S4 / S5 / S6 / S7）。新脚本落地前
+> 先 `ls _regress` 确认下一个可用号（89 起）。
 
 例：
 

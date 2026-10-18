@@ -98,10 +98,16 @@ eq(
   resolveTouchIds([64005, 64005, 64006]),
   [64005, 64006]
 );
+/**
+ * ★ 2026-10-18 口径变更（PLAN §3 / S1）：`subtitle.*` 的元素从 `number[]` 放宽成
+ * `EventKeyInput[]` ⇒ `'64006'`（数字串）与 `'custom:xxx'` 都**合法**，
+ * 只有真正非法的值（`null` / 空串 / 拼错的自定义键）才丢弃。
+ * 这是**有意**的行为变化，不是回归。
+ */
 eq(
-  'A3 非数字值 ⇒ 丢弃',
-  resolveTouchIds([64005, null, '64006'] as unknown as number[]),
-  [64005]
+  'A3 非法值丢弃、数字串/EventKey 保留',
+  resolveTouchIds([64005, null, '64006', 'custom:x', '', {}] as unknown as number[]),
+  [64005, '64006', 'custom:x']
 );
 eq('A4 没配 ⇒ 空', resolveTouchIds(undefined), []);
 eq('A5 空数组 ⇒ 空', resolveTouchIds([]), []);

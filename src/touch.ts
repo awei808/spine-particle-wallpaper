@@ -104,7 +104,6 @@ import {
   TouchFeedbackMode,
   TouchZoneConfig,
 } from './config.type';
-import { pickRandomFromPool } from './dialogue';
 import { hitTestZonesDetailed, TouchZone, ZoneHit } from './touchZones';
 
 /**
@@ -275,6 +274,41 @@ export const decideAction = (
   return 'reject';
 };
 
+/**
+ * `decideAction` 的**薄包装**：只加一条"自动事件抢占"规则（PLAN §4.5 / S5）。
+ *
+ * `interrupt: true` 的语义**只有一条**：
+ * **当前在播的也是自动事件、且候选的 priority 严格更高**时，允许抢占。
+ *
+ * | 情形 | 结果 |
+ * |---|---|
+ * | 触摸候选（`source === 'touch'`） | **恒走 `decideAction`** —— 用户设置（`touchFeedbackMode`）优先，事件无权绕过 |
+ * | 空闲 / 候选没写 `interrupt` | 恒走 `decideAction`（= 现状） |
+ * | 正在播触摸 | `reject`（用户的点击结果不该被定时器抢走） |
+ * | 正在播自动事件且 `candidate.priority > active.priority` | `'play'`（抢占） |
+ * | 优先级相同 | 不抢（严格大于才算赢） |
+ *
+ * ★ `decideAction` 本体**一行不改** —— 旧行为是缺省路径，回归可以逐格比。
+ */
+export const decidePlay = (
+  active: { source: ActionSource; priority: number } | null,
+  candidate: { source: ActionSource; priority: number; interrupt: boolean },
+  mode: TouchFeedbackMode = 'legacy'
+): GateDecision => {
+  const base = decideAction(
+    active ? active.source : null,
+    candidate.source,
+    mode
+  );
+  if (!candidate.interrupt || candidate.source === 'touch') {
+    return base;
+  }
+  if (!active || active.source === 'touch') {
+    return base;
+  }
+  return candidate.priority > active.priority ? 'play' : base;
+};
+
 /** 一次动作播放的载荷。`entry` 为 `null` ⇒ 该动作没有配字幕（只播动作） */
 export type ActionPlayPayload = {
   source: ActionSource;
@@ -354,15 +388,19 @@ export type TouchControllerOptions = {
   /** 随机源，测试时可注入固定值 */
   random?: () => number;
   /**
-   * 触摸池：动作与字幕**同源**的念白条目。
+   * **取条钩子**（2026-10-18 起取代 `touchPool`）。
    *
-   * - 给了 ⇒ 命中热区时从池里随机取一条，播它的 `animation` 并把整条回调出去
-   *   （`onAction`），字幕由 `voiceBubble` 显示；
-   * - 不给 ⇒ 退回老行为：从 `touchAnimations` 里纯随机挑动画名，只播动作、无字幕。
+   * 入参 = 命中的热区 id（重叠裁决后的赢家；没命中不会调用）。
+   * 返回 = 这次要播的条目（动作+台词+语音一整套）；`null` = 本通道此刻没有候选
+   * ⇒ 退化为"只播随机动画名"的老兜底。
    *
-   * 池的构造（actionId → 条目）在 `index.ts`，用 `dialogue.ts` 的 `buildPool`。
+   * ★★ 为什么改成回调：漏斗（`resolveEvent`）里有条件/冷却/配额/优先级，
+   *   这些状态都在 `index.ts` 手里；本模块如果继续自己 `pickRandomFromPool`，
+   *   就又多了一份选择逻辑（PLAN §4.1 的 #2）。现在**通道内不再自己抽**。
    */
-  touchPool?: DialogueEntry[];
+  pick?: (zoneId: string) => DialogueEntry | null;
+  /** 池大小（**仅用于 `snapshot().poolSize` 统计**，不参与播放判据） */
+  poolSize?: number;
   /** 每**真正开始**播一个动作都会回调（触摸 / 待机 / 问候），用于同步字幕 */
   onAction?: (payload: ActionPlayPayload) => void;
 };
@@ -514,7 +552,15 @@ export const createTouchController = (
     }
   });
   const touchNames = options.touchAnimations.slice();
-  const touchPool = (options.touchPool ?? []).slice();
+  /**
+   * 取条钩子。**没给 ⇒ 命中热区只播随机动画名**（老兜底，不出字幕）。
+   * ⚠️ 这里**不再保留 `touchPool` 兼容入参**：通道内自己抽会多出第二份选择逻辑
+   *   （PLAN §4.1 的 #2）。所有调用方（含回归 60/63）传空池时语义相同。
+   */
+  const pickEntry: (zoneId: string) => DialogueEntry | null =
+    options.pick ?? (() => null);
+  /** 池大小（**仅统计口径**，不参与播放判据） */
+  const poolSize = typeof options.poolSize === 'number' ? options.poolSize : 0;
   const zones = options.zones.slice();
   const onZoneHit = options.onZoneHit;
   const onAction = options.onAction;
@@ -527,7 +573,7 @@ export const createTouchController = (
   const feedbackMode: TouchFeedbackMode = options.touchFeedbackMode ?? 'legacy';
 
   if (!state || !touchNames.length) {
-    return createNoopController(idleName, touchNames, zones, touchPool.length);
+    return createNoopController(idleName, touchNames, zones, poolSize);
   }
 
   /**
@@ -561,6 +607,11 @@ export const createTouchController = (
   let activeEntry: threejsSpine.TrackEntry = null;
   /** 当前动作的来源；`null` = 没在播 */
   let activeSource: ActionSource = null;
+  /**
+   * 当前在播事件的 `pick.priority`（0 = 没写）。只给 `decidePlay` 的抢占判据用；
+   * 触摸通道不看它（用户设置优先）。
+   */
+  let activePriority = 0;
 
   /**
    * 是否处于常驻态：直接读 track 0 的真实动画名，不用自维护的状态变量。
@@ -620,6 +671,7 @@ export const createTouchController = (
     const prev = activeEntry;
     activeEntry = null;
     activeSource = null;
+    activePriority = 0;
     if (!prev) {
       return;
     }
@@ -720,6 +772,10 @@ export const createTouchController = (
     }
     activeEntry = trackEntry;
     activeSource = source;
+    activePriority =
+      entry && typeof entry.pick?.priority === 'number'
+        ? entry.pick.priority
+        : 0;
     if (source === 'touch') {
       firedCount++;
     } else if (source === 'greet') {
@@ -738,12 +794,14 @@ export const createTouchController = (
         if (activeEntry === trackEntry) {
           activeEntry = null;
           activeSource = null;
+          activePriority = 0;
         }
       },
       dispose: () => {
         if (activeEntry === trackEntry) {
           activeEntry = null;
           activeSource = null;
+          activePriority = 0;
         }
       },
       complete: () => {
@@ -752,6 +810,7 @@ export const createTouchController = (
         }
         activeEntry = null;
         activeSource = null;
+        activePriority = 0;
         /**
          * ★ `'queue'` 模式（叠加模式专用）：还有排队的 ⇒ **别混出**，直接接下一条。
          *
@@ -844,9 +903,16 @@ export const createTouchController = (
       return false;
     }
 
-    const decision = decideAction(
-      activeEntry ? activeSource : null,
-      source,
+    const decision = decidePlay(
+      activeEntry
+        ? { source: activeSource as ActionSource, priority: activePriority }
+        : null,
+      {
+        source,
+        priority:
+          typeof entry?.pick?.priority === 'number' ? entry.pick.priority : 0,
+        interrupt: entry?.pick?.interrupt === true,
+      },
       feedbackMode
     );
     if (decision === 'skip') {
@@ -923,15 +989,18 @@ export const createTouchController = (
   };
 
   /** 点击热区 → 播一条触摸念白。返回是否真的播了 */
-  const playTouch = (): boolean => {
+  const playTouch = (zoneId: string): boolean => {
     let entry: DialogueEntry | null = null;
     let animationName = '';
 
-    if (touchPool.length) {
-      // 动作与字幕同源：取了哪条就播它的动画、显示它的台词
-      entry = pickRandomFromPool(touchPool, random);
-      animationName = entry?.animation ?? '';
-    } else {
+    /**
+     * ★★ 取条交给**漏斗**（`options.pick`）—— 本模块不再自己抽。
+     *   条件 / 冷却 / 配额 / 优先级都在 `index.ts` 的 `resolveEvent` 里，
+     *   这里只负责"拿到什么就播什么"，以及"空池时退化为随机动画名"。
+     */
+    entry = pickEntry(zoneId);
+    animationName = entry?.animation ?? '';
+    if (!animationName) {
       // 没配字幕池 ⇒ 退回"只随机挑动画名"的老行为
       const i = Math.min(
         touchNames.length - 1,
@@ -968,7 +1037,7 @@ export const createTouchController = (
       missCount++;
       return;
     }
-    playTouch();
+    playTouch(hit.zone.id);
   };
 
   // 用 mousedown 而不是 click：
@@ -995,7 +1064,7 @@ export const createTouchController = (
     snapshot: () => ({
       idleName,
       touchNames,
-      poolSize: touchPool.length,
+      poolSize,
       /** 与 `isBusy()` 同一口径：待播那条也算"有事在做" */
       busy: !!activeEntry || pendingQueue.length > 0,
       playing: activeEntry?.animation?.name ?? '',

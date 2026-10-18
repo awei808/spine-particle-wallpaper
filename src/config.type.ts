@@ -578,17 +578,179 @@ export type PointerTrailConfig = {
  * 与热区同一套架构口径：**几何/数据的唯一来源是 config，代码里不留兜底副本**
  * （热区那边已明确删掉 `DEFAULT_TOUCH_ZONES`）。好处是改文案、调时长**免重建 bundle**。
  */
+/* ══════════════════════════════════════════════════════════════════════
+ * 自定义事件系统（2026-10-18，`docx/PLAN_自定义事件系统_2026-10-18.md`）
+ *
+ * 口径只有一处真相：`subtitle.dialogues[]`。下面这些类型是**给它加的字段**，
+ * 不新建第二张表 —— 一旦双表，"档案念 A 表、引擎抽 B 表"必然出现。
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/**
+ * 事件的**唯一身份**。
+ *
+ * - 内置（游戏表出身）：`"game:64005"` —— 带 `actionId`，可反查权威表；
+ * - 自定义（用户建的）：`"custom:goodnight"` —— 不带 `actionId`。
+ *
+ * ★ 为什么不用 UUID：要能写进 `config.json`、档案里一眼读懂、回归里写死断言。
+ * ★ 合法性：`/^(game:\d+|custom:[a-z0-9][a-z0-9_-]{0,39})$/`（见 `eventModel.ts`）。
+ */
+export type EventKey = string;
+
+/**
+ * **兼容边界**上允许的输入：`number` 等价 `game:<n>`。
+ *
+ * ★ 只有两个地方收它（PLAN §3）：config 载入、`__WB_DIALOGUE__.trigger`。
+ *   归一之后内部一律用 `EventKey`，不接受 `number` —— 不留第二判据副本。
+ */
+export type EventKeyInput = number | string;
+
+/**
+ * 条件 AST —— **4 类叶子 + 3 个组合子**（PLAN §2.2）。
+ *
+ * 为什么不用 `eval` / 字符串表达式：WE 的 CEF 里 `eval` 既受限又不可审计；
+ * AST 可序列化、可 `describe()`、可注入时钟做纯函数单测。
+ *
+ * ⚠️ 未知键的处理见 `conditions.ts`：**该叶子恒真 + `E_COND_UNKNOWN`**
+ *   （拼错一个词不该把事件关掉，但必须留 warn）。
+ */
+export type Condition =
+  | { all: Condition[] }
+  | { any: Condition[] }
+  | { not: Condition }
+  /** 时段（小时 0..24，**含起点不含终点**；`start > end` = 跨零点，`start === end` = 全天） */
+  | { time: { start: number; end: number } }
+  | {
+      calendar: {
+        /** 月 1..12 / 日 1..31（同时给 = 某一天） */
+        month?: number;
+        day?: number;
+        /** 节日区间 `MM-DD`，可跨年（`12-24` → `01-05`） */
+        from?: string;
+        to?: string;
+        /** 星期，0 = 周日 */
+        weekday?: number[];
+      };
+    }
+  | {
+      /** 运行上下文（由信号方注入，事件**不可改**） */
+      ctx: {
+        /** 已静置多久（standby 通道） */
+        idleMs?: number;
+        /** 命中的热区 id（touch 通道，见 `touch.zones[].id`） */
+        zone?: string;
+        /** resume 通道的具体来源 */
+        signal?: ('boot' | 'visible' | 'focus' | 'resume')[];
+      };
+    };
+
+/** 求值时注入的运行上下文（`compileCondition` 的第二参） */
+export type ConditionContext = {
+  now?: Date;
+  idleMs?: number;
+  zone?: string;
+  signal?: 'boot' | 'visible' | 'focus' | 'resume';
+};
+
+/**
+ * 「怎么选」—— 限流与竞争（PLAN §2.1 / §4.2 的 ③④ 层）。
+ *
+ * ★ 缺省全 `priority:0 / weight:1` ⇒ 等价于旧的 `pickRandomFromPool`
+ *   ⇒ 老 config **逐字不变**（这是本系统的兼容性承诺）。
+ */
+export type PickPolicy = {
+  /** 0..100，缺省 0，越大越优先（越界 ⇒ 夹取 + `E_PRIORITY_RANGE`） */
+  priority?: number;
+  /** >=0，缺省 1；**0 = 不参与自动抽取**，只能手动 `trigger()` */
+  weight?: number;
+  /** 互斥组：同组**同一 tick** 至多出一条 */
+  group?: string;
+  /** 同一条两次触发的最小间隔（毫秒），缺省 0 */
+  cooldownMs?: number;
+  /** 配额（取代旧稿的 `once`）。`session` 重载即清零，`day` 跨零点重置，`ever` 持久 */
+  quota?: { max: number; per: 'session' | 'day' | 'ever' };
+  /**
+   * 缺省 `false`。**仅自动通道（standby / resume）有效** ——
+   * 触摸通道由 `touchFeedbackMode` 说了算（用户的设置不能被单条事件绕过）。
+   */
+  interrupt?: boolean;
+};
+
+/**
+ * 整包随机的一个变体（PLAN §2.3）：动作 / 粒子 / 台词 / 语音**一起定**，
+ * 不会出现"打招呼的动作配生气的台词"。
+ *
+ * ⚠️ 任意字段可缺省 ⇒ 继承基准条目；不写 `variants` ⇒ 基准 = 隐式 variant#0，逐字等价旧行为。
+ */
+export type EventVariant = {
+  /** 缺省 1 */
+  weight?: number;
+  animation?: string;
+  particles?: string[];
+  text?: string;
+  voice?: string;
+  textTime?: number;
+};
+
 export type DialogueEntry = {
-  /** 动作表 ID（`CfgSoulSpineActionTable.Id`）。用于跟权威表格逐条对齐，也用于日志 */
-  actionId: number;
+  /**
+   * 事件唯一键（`"game:64005"` / `"custom:goodnight"`）。**缺省由 `actionId` 派生**。
+   * 归一函数：`eventModel.normalizeEventTable`。
+   */
+  id?: EventKey;
+  /**
+   * 动作表 ID（`CfgSoulSpineActionTable.Id`）。用于跟权威表格逐条对齐，也用于日志。
+   * ⚠️ 2026-10-18 起**可选**：自定义事件没有游戏侧 actionId。
+   */
+  actionId?: number;
   /** 官方动作名（`ActionName` 经 I18N 解出的中文名），仅用于日志/HUD */
   label?: string;
+  /** 档案/面板的**人话名**（缺省 = `id`）。自定义事件必写，否则档案只有 `#custom:xxx` */
+  displayName?: string;
+  /** 作者备注（只进档案/日志，不参与任何判据） */
+  note?: string;
+  /** 是否启用（缺省 `true`）。`false` ⇒ 不进任何池（`W_ORPHAN` 建议用它） */
+  enabled?: boolean;
   /**
    * 该条要播放的 spine 动画名（= `SoulActionState`）。
    * ⚠️ 10 条念白只对应 **6 个** clip：64005/64006→`touch1`、64007/64010→`touch2`、
    * 64008/64009→`touch3`。这是骨架资源本身的事实，不是缺数据。
+   * ★ 2026-10-18 起可选：纯台词事件（`E_EVENT_EMPTY` 判"既无 animation 又无 text"）。
    */
-  animation: string;
+  animation?: string;
+  /**
+   * 该条**专属**的粒子组名（`config.meshes[].name`）。
+   *
+   * ★ 优先级高于 `config.actionEffects[animation]`：写了就只播这几个组
+   *   （语义是"这条事件的五要素里自带粒子"，见 PLAN §5.5）；
+   *   没写 ⇒ 按动画名回落查 `actionEffects`（老 config 行为）。
+   * ⚠️ 名字写错 ⇒ `E_PARTICLES_UNKNOWN`（coerce：剔掉该名，事件照播）。
+   */
+  particles?: string[];
+  /**
+   * **触发通道**（多值）。缺省 `['standby']`。
+   *
+   * ★ 为什么不是单值 `channel`：一条事件挂多通道是常态（问候既能在开机、
+   *   也能在回到桌面），单值会逼作者复制两条、再靠"两条必须同步改"维持一致。
+   * ⚠️ 旧 config 不带本字段 ⇒ `normalizeEventTable` 从 `greet` / `chat` / `touch`
+   *   三个旧池键**反推**（`W_LEGACY`），迁移完成后才由本字段说了算。
+   */
+  on?: TriggerChannel | TriggerChannel[];
+  /**
+   * 事件类别 —— **用户开关的轴**（`subtitle.*Kinds` 三个多选）。
+   *
+   * 缺省按 `on` 推：`touch → 'touch'` / `standby → 'chat'` / `resume → 'greet'`。
+   * ★ 为什么 `when` 不能替代它："我不想在触摸时听到闲聊"是一个**开关**，不是一条条件。
+   */
+  kind?: TriggerEventKind;
+  /** 触发条件（缺省恒真）。AST 见 `Condition`；求值/文案见 `conditions.ts` */
+  when?: Condition;
+  /**
+   * 整包随机的变体（§2.3）。缺省 ⇒ 单条播放（= 旧行为）。
+   * ⚠️ 每个 variant 的 `animation` 也要参与动作族换名（`projectDialoguesToActionPhase`）。
+   */
+  variants?: EventVariant[];
+  /** 竞争/限流策略（缺省 = 等价旧行为）。见 `PickPolicy` */
+  pick?: PickPolicy;
   /**
    * **事件族 id** —— 必须是 `config.subtitle.eventFamilies` 注册表里的某个 `id`
    * （见 `EventFamily`）。
@@ -636,8 +798,8 @@ export type DialogueEntry = {
    * ★ 未来加自定义动作族时，本字段直接加一个键即可，**不需要改引擎**。
    */
   phaseAnimations?: { [phaseId: string]: string };
-  /** 念白正文（字幕文本） */
-  text: string;
+  /** 念白正文（字幕文本）。★ 可选：纯动作事件合法（`W_TEXT_EMPTY`），纯台词事件也合法 */
+  text?: string;
   /**
    * 字幕停留秒数（= `CV.csv.TextTime`）。
    * 实际显示时长取 `min(本值, 该动画的 duration)` —— 动画播完就先收起气泡。
@@ -654,6 +816,25 @@ export type DialogueEntry = {
    */
   voice?: string;
 };
+
+/**
+ * PLAN §2.1 的 `EventDef` —— **就是扩展后的 `DialogueEntry`**。
+ *
+ * ★ 刻意用别名而不是新类型：`subtitle.dialogues[]` 是唯一真相，
+ *   一旦出现"事件表"与"念白表"两个类型，就会有人开始合并两张表。
+ */
+export type EventDef = DialogueEntry;
+
+/**
+ * 事件校验的严格度（`subtitle.validate`，PLAN §6.3）。
+ *
+ * | 值 | 行为 |
+ * |---|---|
+ * | `'off'` | 不校验（只留 normalize 的静默 coerce） |
+ * | `'warn'`（**缺省**） | 跑校验；`reject` 降级为 `report`（照播，只记一笔） |
+ * | `'strict'` | `reject` 真的不播（作者期口径，CI / 离线用） |
+ */
+export type EventValidateMode = 'off' | 'warn' | 'strict';
 
 /**
  * 语音播放配置。
@@ -806,6 +987,11 @@ export type IdleSequenceItem =
        * ⚠️ 想要"只循环动作、别一直冒气泡" ⇒ 用 `animation`（或裸字符串），不要用 `actionId`。
        */
       actionId?: number;
+      /**
+       * 念白条目的 `EventKey`（2026-10-18 新增，`"game:64005"` / `"custom:xxx"`）。
+       * 与 `actionId` 二选一；同时给时 `key` 优先（它是新口径，`actionId` 是兼容输入）。
+       */
+      key?: EventKeyInput;
     };
 
 export type IdleSequenceConfig = {
@@ -1494,16 +1680,19 @@ export type SubtitleConfig = {
    * ⚠️ **空数组视同没配** ⇒ 退回旧时段表 `greeting`（判据 `dialogue.resolveGreetSource`，
    * 与 `chat: []` 退回 `standby` **同一口径**）—— 照抄 `config.example.json` 的空数组
    * 不该把整类问候静默关掉。
+   *
+   * ★ 2026-10-18 起元素可以是 `EventKey`（`"custom:goodnight"`）。
+   * ⚠️ 迁移完成后本键**应当删除**（池由条目自己的 `on`/`kind` 派生，PLAN §0 #12）。
    */
-  greet?: number[];
+  greet?: EventKeyInput[];
   /**
    * **聊天（chat）事件池** —— 「长时间无互动」到点后可触发的那些念白。
    *
    * ★ 2026-10-08 由旧的单值字段 `standby` 升级为数组：**"待机该说什么"从此由用户说了算**。
    */
-  chat?: number[];
+  chat?: EventKeyInput[];
   /** **触摸（touch）事件池**：命中热区时从这里**随机**取一条（动作+字幕同源，天然配套） */
-  touch?: number[];
+  touch?: EventKeyInput[];
 
   /** 播放动作事件时的触摸反馈策略（缺省 `'legacy'` = 旧版行为）。详见 `TouchFeedbackMode` 的表格 */
   touchFeedbackMode?: TouchFeedbackMode;
@@ -1581,6 +1770,14 @@ export type SubtitleConfig = {
    *   这一档的含义完全可能是「原皮肤」而不是「誓约前」。
    */
   actionPhaseBaseLabel?: string;
+  /**
+   * **事件表校验严格度**（`'off' | 'warn' | 'strict'`，缺省 `'warn'`）。见 `EventValidateMode`。
+   *
+   * ★ 缺省 `'warn'`：用户自己改坏 config 时只在档案/控制台提示，**不整体静默** ——
+   *   壁纸是"看的东西"，因为一条台词写错就整块不出声是更差的结果。
+   * ★ 作者期 / CI 用 `'strict'`（或离线 CLI 的 `--strict`）：`reject` 真的不播。
+   */
+  validate?: EventValidateMode;
   /**
    * **长时间待机可触发的事件（多选）**——`TriggerEventKind` 的子集，通道 `'standby'`。
    *

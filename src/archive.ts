@@ -31,7 +31,7 @@
  * 传进来的 `config` 是**已合并 localStorage 覆盖层**的生效值 ⇒ 用户改了
  * 「待机时长」「三个通道各能触发哪几类」之后，表里立刻是改后的数字/池子大小。
  * 池子的构造与类别解析直接复用运行时同一批纯函数（`dialogue.ts` 的
- * `resolveTriggerKinds` / `mergeKindPools` / `buildPool` / `findByActionId`），
+ * `resolveTriggerKinds` / `mergeKindPools` / `normalizeEventTable` / `findByEventKey`），
  * **不另写一套判据** —— 否则文档与行为会慢慢漂移（这正是"新增冗余"最容易出事的地方）。
  *
  * ## ★★ 新增「特效」列 —— 逐行标出这条动画会拉起哪些粒子组（2026-10-17）
@@ -85,6 +85,7 @@
 import {
   Configs,
   DialogueEntry,
+  EventKeyInput,
   DialogueSlotKey,
   TriggerChannel,
   TriggerEventKind,
@@ -96,8 +97,7 @@ import {
   SLOT_ORDER,
   TRIGGER_KIND_ORDER,
   buildFamilyRegistry,
-  buildPool,
-  findByActionId,
+  findByEventKey,
   isEntryVisibleInPhase,
   mergeKindPools,
   normalizeGreetIds,
@@ -111,6 +111,15 @@ import {
   resolveTriggerKinds,
 } from './dialogue';
 import { UI_SCALE_VAR, fpx, getUiScale, initUiScale, uiPx } from './uiScale';
+import {
+  channelsOf,
+  eventKeyOf,
+  kindOf as eventKindOf,
+  normalizeEventKey,
+  normalizeEventTable,
+} from './eventModel';
+import { describeCondition } from './conditions';
+import { summarizeReport, ValidationReport } from './eventValidate';
 
 /**
  * 「动画名 → 绑定的粒子组名」映射（= `config.actionEffects` 的**扁平形式**）。
@@ -140,6 +149,13 @@ export type ArchiveOptions = {
    *   见 `ActionEffectNames` 的说明。
    */
   actionEffects?: ActionEffectNames;
+  /**
+   * **事件表校验报告**（`index.ts` 的 `validationReport`）。
+   *
+   * ★ 传 getter 而不是快照：档案可能在骨架就绪前就建好（`createArchive` 在
+   *   `waitLoad` 里），getter 保证读到的是"最后一次校验结果"。
+   */
+  validation?: () => ValidationReport | null;
 };
 
 export type ArchivePanel = {
@@ -275,9 +291,10 @@ const makeRow = (
   event: string,
   cond: string,
   e: DialogueEntry,
-  reg: FamilyRegistry,
+  st: ArchiveState,
   ae: ActionEffectNames
 ): Row => {
+  const reg = st.families;
   const short = shortLabel(e.label);
   /**
    * ★ 非**缺省族**的条目在角标后**缀上事件族名**（2026-10-10）——
@@ -289,13 +306,20 @@ const makeRow = (
   const ph = resolveDialoguePhase(e, reg);
   const phTail =
     reg.families.length && ph !== reg.fallbackId ? ' · ' + reg.label(ph) : '';
+  const key = eventKeyOf(e);
+  /**
+   * 念白标识：内置保持 `#64005`（老观感）；自定义事件没有 `actionId` ⇒ `#custom:xxx`。
+   * 被校验判 `reject` 的条目加 `⚠`（档案是用户唯一能看出"这条不会播"的地方）。
+   */
+  const badge = key.indexOf('custom:') === 0 ? key : String(e.actionId ?? key);
+  const warn = st.rejected[key] ? '⚠ ' : '';
   return {
     event,
     cond,
-    action: e.animation,
+    action: e.animation ?? '—',
     fx: fxText(ae, e.animation),
-    tag: '#' + e.actionId + (short ? ' ' + short : '') + phTail,
-    text: e.text,
+    tag: warn + '#' + badge + (short ? ' ' + short : '') + phTail,
+    text: e.text ?? '',
     voice: voiceBase(e.voice),
   };
 };
@@ -308,11 +332,11 @@ const makeRow = (
  */
 type ArchiveState = {
   dialogues: DialogueEntry[];
-  /** 三张 id 列表（摊平旧口径之后） */
-  chatIds: number[];
-  greetIds: number[];
+  /** 三张 id 列表（摊平旧口径之后）。2026-10-18 起元素可以是 `EventKey` */
+  chatIds: EventKeyInput[];
+  greetIds: EventKeyInput[];
   /**
-   * 三个类别各自的条目池（`buildPool` 的产物）。
+   * 三个类别各自的条目池（由事件表的 `kind` 派生，与 `index.ts` 同一判据）。
    *
    * ★★ 三层判据都已含在里面：当前**动作族**投影 + 本状态存在性 + **全局事件族闸门**
    *   （`subtitle.phases`）。三个通道**共用这一套**（= `index.ts` 的 `KIND_POOLS`）。
@@ -320,6 +344,8 @@ type ArchiveState = {
    *      表格就会替某个入口撒谎。
    */
   pools: Record<TriggerEventKind, DialogueEntry[]>;
+  /** 旧 `touch` 列表（用于"哪些条目是旧池键引用的"差集） */
+  touchIds: EventKeyInput[];
   /** 事件族注册表（`config.subtitle.eventFamilies` 归一而来；族名/缺省族/判据都从它取） */
   families: FamilyRegistry;
   /** 生效的**事件族闸门**（`subtitle.phases`；注册表为空 ⇒ `undefined` = 不筛） */
@@ -329,11 +355,35 @@ type ArchiveState = {
   /** 三个通道**真正会播**哪些类别（口径 + 可用性，= 运行时同一判据） */
   channels: Record<TriggerChannel, TriggerEventKind[]>;
   greetMode: 'time' | 'random';
+  /** 旧池键的 id（`greet` / `chat` / `touch`）；自定义事件不在这里 ⇒ 单独列一段 */
+  legacyKeys: string[];
+  /** 被校验判 `reject` 的事件（事件名列加 `⚠`） */
+  rejected: { [key: string]: boolean };
+  /** 校验报告（表下汇总用） */
+  validation: ValidationReport | null;
 };
 
-const resolveState = (cfg: Configs): ArchiveState => {
+const resolveState = (
+  cfg: Configs,
+  validation: ValidationReport | null = null
+): ArchiveState => {
   const sub = cfg.subtitle;
-  const dialogues: DialogueEntry[] = sub?.dialogues ?? [];
+  /**
+   * ★ 2026-10-18：**先归一**再算池 —— 与 `index.ts` 同一入口（`normalizeEventTable`）。
+   *   ⇒ 自定义事件（显式 `on` / `kind`）会进表、进池；旧 config 由旧池键反推，内容不变。
+   */
+  const normalized = normalizeEventTable(sub?.dialogues ?? [], {
+    legacy: {
+      touch: sub?.touch,
+      chat: sub?.chat,
+      standby: sub?.standby,
+      greet: sub?.greet,
+      greeting: sub?.greeting,
+      greetingRanges: sub?.greetingRanges,
+      greetMode: sub?.greetMode,
+    },
+  });
+  const dialogues: DialogueEntry[] = normalized.events;
   // ★ 「新数组优先、空数组退回旧时段表」的口径集中在 `dialogue.resolveGreetSource` ——
   //   这里不另写 `??`（`??` 对空数组不回退 ⇒ 会把整类问候静默关掉）
   const greetSource = resolveGreetSource(sub?.greet, sub?.greeting);
@@ -364,7 +414,7 @@ const resolveState = (cfg: Configs): ArchiveState => {
     : undefined;
   /**
    * ★ 投影 + 存在性过滤：`dialogues` 之后**就是**本状态真正能播的那份
-   *   （动画名已换成当前动作族的），`buildRows` 里的 `findByActionId` 因此拿到的
+   *   （动画名已换成当前动作族的），`buildRows` 里的 `findByEventKey` 因此拿到的
    *   是**换名后**的条目 —— 表里写的动画名与实际播放的必然一致。
    */
   const projected = projectDialoguesToActionPhase(
@@ -375,17 +425,42 @@ const resolveState = (cfg: Configs): ArchiveState => {
   const active: DialogueEntry[] = projected.filter((e) =>
     isEntryVisibleInPhase(e, families, actionPhase)
   );
+  /**
+   * ★ 池**由事件表派生**（与 `index.ts` 的 `poolOfKind` 同一条判据）：
+   *   旧 config 的 `kind` 是旧池键反推来的 ⇒ 内容逐条不变；自定义事件自动进池。
+   *   ⚠️ 不再调 `buildPool(旧 id 列表)` —— 那会把没写进旧数组的自定义事件漏掉。
+   */
+  const phased: DialogueEntry[] =
+    phaseFilter === undefined
+      ? active
+      : active.filter(
+          (e) => phaseFilter.indexOf(resolveDialoguePhase(e, families)) >= 0
+        );
+  const reachable = phased.filter((e) => channelsOf(e).length > 0);
   const pools: Record<TriggerEventKind, DialogueEntry[]> = {
-    chat: buildPool(active, chatIds, phaseFilter, families),
-    greet: buildPool(active, greetIds, phaseFilter, families),
-    touch: buildPool(active, touchIds, phaseFilter, families),
+    chat: reachable.filter((e) => eventKindOf(e) === 'chat'),
+    greet: reachable.filter((e) => eventKindOf(e) === 'greet'),
+    touch: reachable.filter((e) => eventKindOf(e) === 'touch'),
   };
+  /** 旧池键的键集合（自定义事件不在这里 ⇒ 档案单独列一段） */
+  const legacyKeys: string[] = [];
+  [...chatIds, ...greetIds, ...touchIds].forEach((raw) => {
+    const k = normalizeEventKey(raw);
+    if (k && legacyKeys.indexOf(k) < 0) {
+      legacyKeys.push(k);
+    }
+  });
+  const rejected: { [key: string]: boolean } = {};
+  (validation?.unplayable ?? []).forEach((k) => {
+    rejected[k] = true;
+  });
   const has = (k: TriggerEventKind): boolean => pools[k].length > 0;
   return {
     /** ★ 投影 + 存在性过滤后的那批（动画名 = 当前动作族），**不是** config 里的原始表 */
     dialogues: active,
     chatIds,
     greetIds,
+    touchIds,
     pools,
     families,
     actionPhase,
@@ -394,6 +469,9 @@ const resolveState = (cfg: Configs): ArchiveState => {
      * `phaseFilter` 是 `undefined`（不筛），此时绝不能写成 `[]`，否则细则会谎报"全关"。
      */
     phases: phaseFilter,
+    legacyKeys,
+    rejected,
+    validation,
     channels: {
       // ★ 与 `index.ts` 完全同一组入参 —— 表里显示的"会播哪几类"不可能与实际行为不同
       standby: resolveTriggerKinds(
@@ -503,7 +581,7 @@ const buildRows = (
     kinds.forEach((k) => {
       if (k === 'chat') {
         st.chatIds.forEach((id, i) => {
-          const e = findByActionId(dialogues, id);
+          const e = findByEventKey(dialogues, id);
           if (!e) {
             return;
           }
@@ -512,7 +590,7 @@ const buildRows = (
               prefix + ' · chat类 #' + (i + 1),
               GATE[kind] + tail + '（chat 池 ' + st.pools.chat.length + ' 条）',
               e,
-              st.families,
+              st,
               ae
             )
           );
@@ -526,7 +604,7 @@ const buildRows = (
          */
         const only = kinds.length === 1;
         st.greetIds.forEach((id, i) => {
-          const e = findByActionId(dialogues, id);
+          const e = findByEventKey(dialogues, id);
           if (!e) {
             return;
           }
@@ -542,16 +620,18 @@ const buildRows = (
           const range = slot
             ? sub?.greetingRanges?.[slot] ?? DEFAULT_TIME_RANGES[slot]
             : null;
-          const cond =
-            GATE[kind] +
-            (only
-              ? ' · ' +
-                greetModeText +
-                (only && greetModeText === '按时段' && range
-                  ? '（' + hourRangeText(range.start, range.end) + '）'
-                  : '')
-              : tail);
-          rows.push(makeRow(prefix + ' · ' + name, cond, e, st.families, ae));
+          /**
+           * ★ 2026-10-18：取条已改为**条件驱动**（`when.time`），不再是"第 i 条 = 第 i 个时段"。
+           *   有条目级条件就**照实写**（唯一文案起点 `describeCondition`）；
+           *   没有（旧 config 的 random 模式 / 新配置没写条件）才退回旧文案。
+           */
+          const timeText = e.when
+            ? describeCondition(e.when)
+            : greetModeText === '按时段' && range
+            ? '时段 ' + hourRangeText(range.start, range.end)
+            : '不限时段';
+          const cond = GATE[kind] + (only ? ' · ' + timeText : tail);
+          rows.push(makeRow(prefix + ' · ' + name, cond, e, st, ae));
         });
         return;
       }
@@ -566,7 +646,7 @@ const buildRows = (
               st.pools.touch.length +
               ' 条，同「点击触摸」）',
             st.pools.touch[0],
-            st.families,
+            st,
             ae
           )
         );
@@ -597,7 +677,7 @@ const buildRows = (
           KIND_TEXT[kind] +
           '）',
         e,
-        st.families,
+        st,
         ae
       )
     );
@@ -608,12 +688,10 @@ const buildRows = (
   if (seq?.enabled === true && (seq.items ?? []).length) {
     const gapMs = typeof seq.gapMs === 'number' ? seq.gapMs : 0;
     (seq.items ?? []).forEach((it, i) => {
-      const actionId = it && typeof it === 'object' ? it.actionId : undefined;
+      const key =
+        it && typeof it === 'object' ? it.key ?? it.actionId : undefined;
       const anim = it && typeof it === 'object' ? it.animation : (it as string);
-      const e =
-        typeof actionId === 'number'
-          ? findByActionId(dialogues, actionId)
-          : null;
+      const e = key !== undefined ? findByEventKey(dialogues, key) : null;
       const cond =
         '常驻循环 ' +
         (i + 1) +
@@ -623,7 +701,7 @@ const buildRows = (
         gapMs +
         ' ms';
       if (e) {
-        rows.push(makeRow('常驻序列 #' + (i + 1), cond, e, st.families, ae));
+        rows.push(makeRow('常驻序列 #' + (i + 1), cond, e, st, ae));
       } else {
         rows.push({
           event: '常驻序列 #' + (i + 1),
@@ -638,6 +716,39 @@ const buildRows = (
       }
     });
   }
+
+  /**
+   * ⑥ **自定义事件**（2026-10-18）—— 不在任何旧池键里的条目单独列一段。
+   *
+   * 为什么需要：`greet` / `chat` / `touch` 的逐条枚举依赖旧数组，自定义事件不在里面；
+   * 若不列，用户新建的事件在档案里**完全不可见**（正是"档案念 A 表"的那类问题）。
+   * 条件列直接调 `describeCondition`（唯一文案起点，禁止另写一份）。
+   */
+  const CH_LABEL: Record<TriggerChannel, string> = {
+    standby: '待机',
+    touch: '点击',
+    resume: '回到壁纸',
+  };
+  st.dialogues
+    .filter((e) => {
+      const k = eventKeyOf(e);
+      return k.indexOf('custom:') === 0 && st.legacyKeys.indexOf(k) < 0;
+    })
+    .forEach((e, i) => {
+      const chans = channelsOf(e)
+        .map((c) => CH_LABEL[c] ?? c)
+        .join(' / ');
+      const name = e.displayName || e.label || eventKeyOf(e);
+      rows.push(
+        makeRow(
+          '自定义 #' + (i + 1) + ' · ' + name,
+          (chans || '不可达') + ' · ' + describeCondition(e.when),
+          e,
+          st,
+          ae
+        )
+      );
+    });
 
   /* ⑤ 背景音乐（环境音，不是"触发"但也应当能查到） */
   if (cfg.bgm?.enabled !== false && cfg.bgm?.file) {
@@ -670,9 +781,13 @@ const describeChannel = (st: ArchiveState, kind: TriggerChannel): string => {
     return '不播任何东西（一类都没勾，或勾了的类别没有候选）';
   }
   if (kinds.length === 1 && kinds[0] === 'greet') {
+    /**
+     * ★ 2026-10-18：问候不再"按列表下标对位"，而是每条自带的 `when.time` 过滤后随机
+     *   ⇒ 文案必须跟着改，否则档案会说谎（PLAN §0 #3 的同一条理由）。
+     */
     return st.greetMode === 'random'
-      ? 'greet 列表随机取 1 条'
-      : '按时刻取 greet 列表对应条目（1=清晨 / 2=中午 / 3=傍晚）';
+      ? 'greet 类全部条目里随机取 1 条'
+      : '取条件命中当前时刻的 greet 条目（无条件者恒命中），再有多个则随机 1 条';
   }
   const pool = mergeKindPools(kinds, st.pools, st.families);
   return (
@@ -690,6 +805,20 @@ const describeChannel = (st: ArchiveState, kind: TriggerChannel): string => {
 const buildNotes = (cfg: Configs, st: ArchiveState): string[] => {
   const sub = cfg.subtitle;
   const notes: string[] = [];
+  /**
+   * ★ 校验汇总（2026-10-18，PLAN §6.3）：`reject` 会让事件不播、`coerce` 是修好了继续播。
+   *   写在第一条，用户排查"为什么这条不播"时第一眼就能看到。
+   */
+  if (st.validation) {
+    notes.push(
+      summarizeReport(st.validation) +
+        (st.validation.unplayable.length
+          ? ' · 其中 ' +
+            st.validation.unplayable.length +
+            ' 条不会播（念白列带 ⚠）'
+          : '')
+    );
+  }
   const delaySec = Math.max(
     0,
     Math.round((sub?.greetingDelayMs ?? 3000) / 1000)
@@ -780,7 +909,10 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
   /** 「动画名 → 粒子组名」映射（缺省空表 ⇒ 特效列全为「—」）。见 `ActionEffectNames`。 */
   const ae: ActionEffectNames = options.actionEffects ?? {};
   // ★ 口径只算一次，表格与细则共用（见 `ArchiveState` 的注释）
-  const st = resolveState(cfg);
+  const st = resolveState(
+    cfg,
+    options.validation ? options.validation() : null
+  );
   const rows = buildRows(cfg, st, ae);
   const notes = buildNotes(cfg, st);
 

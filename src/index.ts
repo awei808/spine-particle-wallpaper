@@ -44,7 +44,9 @@ import { PointerTrail } from './pointerTrail';
 import {
   TouchZoneConfig,
   DialogueEntry,
+  EventKeyInput,
   GreetMode,
+  TriggerChannel,
   TriggerEventKind,
   TriggerPhase,
   ActionEffectConfig,
@@ -53,23 +55,30 @@ import {
 } from './config.type';
 import {
   buildFamilyRegistry,
-  buildPool,
+  findByEventKey,
   isEntryVisibleInPhase,
   mergeKindPools,
-  normalizeGreetIds,
-  pickGreetingEntry,
-  pickRandomFromPool,
   projectDialoguesToActionPhase,
   resolveActionPhase,
   resolveAnimationName,
-  resolveChatIds,
   resolveDialoguePhase,
   resolvePhases,
-  resolveGreetSource,
   resolveIdleAnimation,
   resolveTriggerKinds,
-  resolveTouchIds,
 } from './dialogue';
+import {
+  channelsOf,
+  eventKeyOf,
+  kindOf,
+  normalizeEventTable,
+  resolveEventVariant,
+} from './eventModel';
+import { createEventLog, resolveEventFrom } from './eventScheduler';
+import {
+  summarizeReport,
+  validateEvents,
+  ValidationReport,
+} from './eventValidate';
 import { createVoiceBubble, VoiceBubble } from './voiceBubble';
 import { createVoicePlayer, voiceBasename, VoicePlayer } from './voicePlayer';
 import { createBgmPlayer, BgmPlayer } from './bgmPlayer';
@@ -625,7 +634,38 @@ const main = async () => {
    * @param animationName 本次要播的动画名（与 `DialogueEntry.animation` 同一口径）
    * @returns 实际重播/激活的组数（0 = 这条动画没绑特效，或绑的组名都不存在）
    */
-  const playActionEffects = (animationName: string): number => {
+  const playActionEffects = (
+    animationName: string,
+    /**
+     * 本次要播的**事件**（可选）。写了 `particles` ⇒ **只播这几个组**
+     * （五要素里的粒子是显式的，PLAN §5.5）；没写 ⇒ 回落到按动画名查 `actionEffects`。
+     */
+    entry?: DialogueEntry | null
+  ): number => {
+    /**
+     * ★ 事件级 `particles` 优先：空数组也**算显式**（= 这条不要特效），
+     *   不能退化成 `?? 回落`（那样"显式关掉"会被 `actionEffects` 又拉起来）。
+     */
+    if (entry && Array.isArray(entry.particles)) {
+      let n = 0;
+      entry.particles.forEach((name) => {
+        const anim = particleByName[name];
+        if (!anim) {
+          if (!warnedEffectNames[name]) {
+            warnedEffectNames[name] = true;
+            console.warn(
+              '[subtitle] 事件 "%s" 的 particles 里找不到粒子组 "%s" ⇒ 跳过；请核对 config.meshes[].name',
+              eventKeyOf(entry),
+              name
+            );
+          }
+          return;
+        }
+        anim.restart();
+        n++;
+      });
+      return n;
+    }
     const binds = actionEffectIndex[animationName];
     if (!binds || !binds.length) {
       return 0;
@@ -700,7 +740,7 @@ const main = async () => {
      * ⚠️ 必须**在 `entry` 为空时也照常触发**：动作与特效是两件事，
      *   念白缺失（`entry=null`）只意味着"不出字幕"，不意味着"不播特效"。
      */
-    playActionEffects(animationName);
+    playActionEffects(animationName, entry);
     if (!entry) {
       // 本次动作没配字幕 ⇒ 收起上一条，免得"动作换了、台词还是上一句"
       if (voiceBubble) {
@@ -752,19 +792,13 @@ const main = async () => {
   const standbyIdleMs = subtitleCfg?.standbyIdleMs ?? 25000;
   const greetingDelayMs = subtitleCfg?.greetingDelayMs ?? 3000;
   /**
-   * ★★ 问候事件的**来源**（2026-10-08 起统一走数组 `greet`）。
+   * 问候的取条方式（缺省 `'time'`）。详见 `GreetMode` 的表格。
    *
-   * 新 config 写 `"greet": [64001, 64002, 64003]`（用户可以直接增删）；
-   * **没配、或写成空数组**时才退回旧的时段表 `greeting`（**老 config 行为逐字不变**）——
-   * 判据在 `dialogue.resolveGreetSource`（纯函数、可单测），与 `chat: []` 退 `standby` 同一口径。
-   * 后面几处（问候池构造、`greet` 类取条）全部只用这一个对象，
-   * ⇒ 不会再出现"两处读了两种口径"。
+   * ★ 2026-10-18 起它**只喂归一函数**（决定要不要给问候条目写 `when.time`），
+   *   运行期不再有"按全局开关跳过条件"的分支（PLAN §0 #3）。
+   *   新 config 写 `"greet": [...]`；没配/空数组才回退旧时段表 `greeting`
+   *   —— 判据在 `dialogue.resolveGreetSource`，与 `chat: []` 退 `standby` 同一口径。
    */
-  const greetSource = resolveGreetSource(
-    subtitleCfg?.greet,
-    subtitleCfg?.greeting
-  );
-  /** 问候的取条方式（缺省 `'time'`）。详见 `GreetMode` 的表格 */
   const greetMode: GreetMode = subtitleCfg?.greetMode ?? 'time';
   /**
    * ★★「闲聊」池 —— `chat` 数组（**没配时**退回旧字段 `standby`，即 S9 的休闲待机 64004）。
@@ -828,6 +862,34 @@ const main = async () => {
     ? phases
     : undefined;
   /**
+   * ★★ **事件表归一（唯一入口）** —— 2026-10-18（PLAN §3 / S3）。
+   *
+   * 补 `id` / `on` / `kind` / `when` / `pick`，并把旧池键（`greeting` / `standby` /
+   * `touch` / `greet` / `chat`）**反推**成条目上的字段（`W_LEGACY`）。
+   *
+   * ⚠️ 从这里往下**只认 `eventTable`**：池、漏斗、档案、探针全部消费它。
+   *   任何一处再补一遍默认值，就会出现"引擎按 A 口径抽、档案按 B 口径显示"。
+   */
+  const normalizedTable = normalizeEventTable(dialogues, {
+    legacy: {
+      touch: subtitleCfg?.touch,
+      chat: subtitleCfg?.chat,
+      standby: subtitleCfg?.standby,
+      greet: subtitleCfg?.greet,
+      greeting: subtitleCfg?.greeting,
+      greetingRanges: subtitleCfg?.greetingRanges,
+      greetMode,
+    },
+  });
+  /**
+   * 归一阶段的 issue（`E_ID_INVALID` / `E_ID_DUP` / `E_PRIORITY_RANGE` / `W_LEGACY` …）。
+   * 运行时校验的 issue 在骨架就绪后再合并进来（见 `validationReport`）。
+   */
+  const normalizeIssues = normalizedTable.issues;
+  /** 归一后的事件表（**未**投影；投影会改动画名，校验要用原名） */
+  const eventTable: DialogueEntry[] = normalizedTable.events;
+
+  /**
    * ★★ **投影到当前动作族**：动画名换成该族那一套（`greet` → `greet_marry`），
    *   并把条目按 `isEntryVisibleInPhase` 剔掉"本状态不存在"的那些。
    *
@@ -835,7 +897,7 @@ const main = async () => {
    *   不可能出现"点击播 `greet`、档案写 `greet_marry`"这种漂移。
    */
   const dialoguesAuto: DialogueEntry[] = projectDialoguesToActionPhase(
-    dialogues,
+    eventTable,
     fams,
     actionPhase
   );
@@ -845,49 +907,10 @@ const main = async () => {
   );
 
   /**
-   * ★★ **三个通道共用的一套池**（`TriggerEventKind` → 条目池）。
+   * ★★ **再按全局事件族闸门筛一遍**的表 = 漏斗的候选总集。
    *
-   * 建池的三层判据（顺序即短路顺序，**别调换**）：
-   *   ① `activeDialogues` —— 已投影到当前**动作族**（动画名换好）+ 已剔除本状态
-   *      不存在的条目（`isEntryVisibleInPhase`）；
-   *   ② `phaseFilter` —— **全局事件族闸门**（`subtitle.phases`）。`[]` ⇒ 三个池全空；
-   *   ③ 各池的 id 列表（`chat` / `greet` / `touch`）。
-   *
-   * ⚠️ **不要再拆出"触摸专用池"**（2026-10-17 撤掉）：那是事件族只管点击时的产物。
-   *   现在族筛对**所有入口**生效，三个通道看见的候选必须完全一致 ——
-   *   否则"表里说待机能播、实际抽不出"这类漂移会立刻出现。
-   */
-  const chatPool: DialogueEntry[] = buildPool(
-    activeDialogues,
-    resolveChatIds(subtitleCfg?.chat, subtitleCfg?.standby),
-    phaseFilter,
-    fams
-  );
-  /** ★★「问候」池 —— `greet` 池（或旧时段表 `greeting`），只勾 greet类 时按 `greetMode` 取条 */
-  const greetPool: DialogueEntry[] = buildPool(
-    activeDialogues,
-    normalizeGreetIds(greetSource),
-    phaseFilter,
-    fams
-  );
-  /** ★★「触摸」池 —— `subtitle.touch`，与**点击热区**同一份候选 */
-  const touchBasePool: DialogueEntry[] = buildPool(
-    activeDialogues,
-    resolveTouchIds(subtitleCfg?.touch),
-    phaseFilter,
-    fams
-  );
-
-  /**
-   * ★★ **再按全局事件族闸门筛一遍**的表 —— 只给"绕过池、按 actionId 直接取条"的那条路用。
-   *
-   * 为什么需要：`pickChannelEntry` 在"只勾 `greet` 一类"时走 `pickGreetingEntry`
-   * （它要按**时段**取条，所以必须自己 `findByActionId`，不能只吃并好的池）。
-   * 那条路如果拿 `activeDialogues`，就会把被事件族勾掉的问候也播出来 ——
-   * 恰恰是"事件族对所有事件生效"这件事最容易漏掉的一个洞。
-   *
-   * ★ 判据与 `buildPool` 的 `phases` 参数**完全一致**（都是 `resolveDialoguePhase`），
-   *   不存在第二套口径。
+   * 判据与 `buildPool` 的 `phases` 参数**完全一致**（都是 `resolveDialoguePhase`），
+   * 不存在第二套口径。
    */
   const phasedDialogues: DialogueEntry[] =
     phaseFilter === undefined
@@ -895,6 +918,33 @@ const main = async () => {
       : activeDialogues.filter(
           (e) => phaseFilter.indexOf(resolveDialoguePhase(e, fams)) >= 0
         );
+
+  /**
+   * 校验后被判 `reject` 的事件（漏斗第 ① 层用）。骨架就绪后由
+   * `validateEvents()` 填充；在此之前为空 ⇒ 与"没校验"等价。
+   */
+  const unplayable: { [key: string]: boolean } = {};
+  /** 校验报告（骨架就绪后填充；`__WB_DIALOGUE__.validation()` 与档案共用） */
+  let validationReport: ValidationReport | null = null;
+
+  /**
+   * ★★ **三个通道共用的一套池**（`TriggerEventKind` → 条目池）。
+   *
+   * 2026-10-18 起**由事件表派生**（此前是 `buildPool(activeDialogues, 旧 id 列表)`）：
+   *   - 旧 config 的 `on` / `kind` 由 `normalizeEventTable` 反推 ⇒ 池内容逐条不变；
+   *   - 自定义事件（显式 `on`）**自动**进对应池，不需要再往三个旧数组里登记。
+   *
+   * ⚠️ **不要再拆出"触摸专用池"**：事件族闸门对所有入口生效，
+   *   三个通道看见的候选必须完全一致 —— 否则"表里说待机能播、实际抽不出"必然出现。
+   */
+  const poolOfKind = (kind: TriggerEventKind): DialogueEntry[] =>
+    phasedDialogues.filter(
+      /** ⚠️ `on: []`（不可达）不进池 —— 否则池大小会虚高，档案/面板读数跟着撒谎 */
+      (e) => kindOf(e) === kind && channelsOf(e).length > 0
+    );
+  const chatPool: DialogueEntry[] = poolOfKind('chat');
+  const greetPool: DialogueEntry[] = poolOfKind('greet');
+  const touchBasePool: DialogueEntry[] = poolOfKind('touch');
 
   /**
    * 三个通道各自的「可触发的事件」候选池（`TriggerEventKind` → 条目池）。
@@ -978,38 +1028,87 @@ const main = async () => {
   );
 
   /**
-   * 按某个通道**勾中的类别**取一条候选。
+   * ══════════════════════════════════════════════════════════════════════
+   * **唯一漏斗 `resolveEvent`**（PLAN §4.2 / S2 + S5）
+   * ══════════════════════════════════════════════════════════════════════
    *
-   * ★★ **多类 = 并成一个大池随机**（`mergeKindPools` + `pickRandomFromPool`），
-   *   池内每条等概率、类别之间按条目数加权 —— 2026-10-09 用户拍板，三个通道一致。
+   * 四层顺序**写死**，别在各调用点自己排：
    *
-   * ★ **唯一例外**：某个通道**只勾 `greet` 一类**时改走 `pickGreetingEntry` ——
-   *   否则「问候触发方式」（按系统时间 / 随机，`greetMode`）会静默失效。
-   *   三个通道的缺省值各自不同，但都命中这条路径的那两个（`standby` / `resume` 的单勾）
-   *   因此与改动前**逐字一致**。
+   * ```
+   * ① 权限层  enabled + on(通道) + kind(用户勾选) + phases(事件族) + unplayable
+   * ② 条件层  when                                  ← 纯函数，注入 now/ctx
+   * ③ 限流层  pick.group / quota / cooldownMs        ← 状态在 eventLog
+   * ④ 竞争层  priority 最高档 → 同档按 weight 加权随机
+   * ```
    *
-   * ★ 本函数**只服务待机 / 回到壁纸两个通道**（触摸通道已由 `touchPool` 预建好）。
-   *   两条路都受**两层全局闸门**约束：`KIND_POOLS` 已在建池时按 `phaseFilter` 筛过；
-   *   单勾 greet 那条走 `phasedDialogues`（= 动作族投影 + 存在性 + 事件族闸门）。
+   * ★ 2026-10-18 之前这里有 **3 份选择逻辑 + 2 份存在性校验副本**
+   *   （`pickChannelEntry`、`touch.ts` 的 `pickRandomFromPool`、`idleSequence` 的自查、
+   *   `missingAnims` 的 ad-hoc 检查、`pickGreetingEntry` 的时段下标）。现在只剩这一处：
+   *   三个通道的差别只有"哪个 channel + 勾了哪几类"。
+   * ★ **同一 tick 全局最多一条**（track 2 只有一个）；互斥组 `pick.group` 靠 `eventLog` 的
+   *   tick 号实现"同组同 tick 至多一条"。
+   * ★ 配额/冷却在**收集阶段**剔除 ⇒ 不会"选到高优先级却被冷却拦下、本次空转"。
+   * ★ 计时用 `Date.now()`，**不用 rAF**：WE 暂停时 rAF 停、`Date.now()` 继续走。
    */
-  const pickChannelEntry = (
-    kinds: readonly TriggerEventKind[]
-  ): DialogueEntry | null => {
-    if (!kinds.length) {
-      return null;
+  const eventLog = createEventLog(
+    typeof window !== 'undefined' && window.localStorage
+      ? window.localStorage
+      : null
+  );
+  /** 可注入的随机源（回归脚本可以换成固定序列；引擎里就是 `Math.random`） */
+  const eventRandom: () => number = Math.random;
+  /** 漏斗的运行上下文（由信号方注入，事件不可改） */
+  type ResolveContext = {
+    /** 已静置毫秒数（standby 通道） */
+    idleMs?: number;
+    /** 命中的热区 id（touch 通道） */
+    zone?: string;
+    /** resume 通道的具体信号来源 */
+    signal?: 'boot' | 'visible' | 'focus' | 'resume';
+  };
+  /** 漏斗本体在 `eventScheduler.resolveEventFrom`（纯函数，回归可拿真实实现对照旧行为） */
+  const resolveEvent = (
+    channel: TriggerChannel,
+    kinds: readonly TriggerEventKind[],
+    ctx: ResolveContext = {}
+  ): DialogueEntry | null =>
+    resolveEventFrom(
+      phasedDialogues,
+      { channel, kinds, ctx, unplayable, log: eventLog },
+      eventRandom
+    );
+
+  /**
+   * 取条 → 抽变体 → 真播。**三个通道共用**。
+   *
+   * @returns 是否真的播了（`trigger` 的忙碌闸门拒绝时返回 false ⇒ 配额不会被吃掉）
+   */
+  const playEvent = (
+    channel: TriggerChannel,
+    kinds: readonly TriggerEventKind[],
+    source: 'touch' | 'greet' | 'standby',
+    ctx: ResolveContext = {}
+  ): boolean => {
+    if (!touchController) {
+      return false;
     }
-    if (kinds.length === 1 && kinds[0] === 'greet') {
-      return pickGreetingEntry(
-        // ★ 用**已过族闸门**的那份（见 `phasedDialogues`）—— 否则单勾 greet 的通道
-        //   会绕过事件族，把勾掉的问候也播出来
-        phasedDialogues,
-        greetSource,
-        subtitleCfg?.greetingRanges ?? {},
-        new Date(),
-        greetMode
-      );
+    const picked = resolveEvent(channel, kinds, ctx);
+    if (!picked) {
+      return false;
     }
-    return pickRandomFromPool(mergeKindPools(kinds, KIND_POOLS, fams));
+    /**
+     * ★ 变体在**这里**抽（整包一起换）—— 冷却/配额/互斥组只看事件，
+     *   与抽中哪个变体无关，所以必须等"已经决定播它"之后再抽。
+     */
+    const entry = resolveEventVariant(picked, eventRandom);
+    if (!entry.animation) {
+      return false;
+    }
+    /**
+     * ⚠️ 记账（`eventLog.commit`）**不在这里**：由 `onAction` 在"真的开始播"时统一做。
+     *   否则一次被忙碌闸门拒绝的抽取会白白吃掉一次配额。
+     */
+    return touchController.trigger(entry, source);
   };
 
   /**
@@ -1030,7 +1129,7 @@ const main = async () => {
    * 没有这层会出现"一句话连播三遍"。★ 去重**管整个通道**（不只是 greet类）——
    * 勾上 chat类 / touch类 之后同样会被几个信号连播。
    *
-   * ★ `reason` 只用于日志/排障，不影响行为。
+   * ★ `reason` 现在**参与条件求值**（`when.ctx.signal`）：作者可以写"只在 boot 播"。
    */
   const tryResumeEvent = (reason: string): boolean => {
     if (!touchController) {
@@ -1040,26 +1139,20 @@ const main = async () => {
     if (now - lastGreetingAt < GREETING_DEDUPE_SEC) {
       return false;
     }
-    /**
-     * ★ 取条走**通道统一**的 `pickChannelEntry`（勾中的类别并池随机；
-     *   只勾 `greet` 一类时按 `greetMode` 取条）⇒ 与本通道的缺省行为逐字一致。
-     * ⚠️ 早先这里是写死的 `pickGreetingEntry` —— 那个口径已经由 `resumeKinds === ['greet']`
-     *   这一缺省表达，代码里不再需要第二处特判。
-     */
-    const entry = pickChannelEntry(resumeKinds);
-    if (!entry) {
+    const signal =
+      reason === 'boot' || reason === 'visible' || reason === 'focus'
+        ? reason
+        : 'resume';
+    const played = playEvent('resume', resumeKinds, 'greet', { signal });
+    if (!played) {
       if (reason !== 'boot' && reason !== 'visible' && reason !== 'focus') {
         console.warn('[subtitle] 回到壁纸事件没有可播条目: %s', reason);
       }
       return false;
     }
-    // trigger 会在"正在播触摸"时拒绝；此时不更新去重时间，等下次信号再来
-    if (touchController.trigger(entry, 'greet')) {
-      lastGreetingAt = now;
-      lastActivityAt = now;
-      return true;
-    }
-    return false;
+    lastGreetingAt = now;
+    lastActivityAt = now;
+    return true;
   };
 
   /**
@@ -1109,9 +1202,9 @@ const main = async () => {
    * 代价是每秒一次空转，可以忽略。
    *
    * ★★ 待机到点后播哪一类（2026-10-09 起是「长时间待机可触发的事件」多选）：
-   *   从 `standbyKinds`（= 勾了且可用的 `chat` / `greet` / `touch`，见其声明处）取条 ——
-   *   **勾了多类就并成一个大池随机**（`pickChannelEntry`，与另外两个通道同一口径）；
-   *   空数组（显式全关）⇒ 什么都不做。
+   *   从 `standbyKinds`（= 勾了且可用的 `chat` / `greet` / `touch`）取条 ——
+   *   2026-10-18 起走**唯一漏斗** `resolveEvent`（四层：权限 → 条件 → 限流 → 竞争），
+   *   与另外两个通道同一份代码；空数组（显式全关）⇒ 什么都不做。
    */
   const tickStandby = () => {
     if (!touchController) {
@@ -1123,7 +1216,8 @@ const main = async () => {
       lastActivityAt = now;
       return;
     }
-    if (now - lastActivityAt < standbyIdleMs / 1000) {
+    const idleMs = (now - lastActivityAt) * 1000;
+    if (idleMs < standbyIdleMs) {
       return;
     }
     if (!standbyKinds.length) {
@@ -1135,13 +1229,11 @@ const main = async () => {
      *   按 `touch.ts` 的闸门表，`'touch'` 会去**打断**正在演的问候/动作，
      *   而自动播放只该"让位不抢戏"。给了 `'touch'` 还会污染点击统计口径。
      *
-     * ★ 取条走通道统一的 `pickChannelEntry`（多类并池随机；只勾 `greet` 一类时按
-     *   `greetMode` 取条）—— 语义与另外两个通道完全一致，不再有三套分支。
-     *   只有**真播了**才重置计时：`trigger` 被闸门挡下（返回 false）时不重置，
-     *   下一秒 tick 会再试一次。
+     * ★ `idleMs` 注入条件层：作者可以写 `when.ctx.idleMs: 60000` 表达"静置满一分钟"，
+     *   不必再往事件上挂一个 `requiresIdle` 字段（PLAN §0 #8）。
+     * ★ 只有**真播了**才重置计时：闸门挡下（返回 false）时不重置，下一秒 tick 会再试。
      */
-    const entry = pickChannelEntry(standbyKinds);
-    if (entry && touchController.trigger(entry, 'standby')) {
+    if (playEvent('standby', standbyKinds, 'standby', { idleMs })) {
       lastActivityAt = now;
     }
   };
@@ -1463,29 +1555,75 @@ const main = async () => {
               );
 
               /**
-               * ★★ **一次集中核对"投影后的动画名"是否都在骨架里**（2026-10-17）。
+               * ★★ **事件表校验的唯一接线点**（2026-10-18，PLAN §6.3）。
                *
-               * 为什么必须核：`actionPhase` 的换名是**纯字符串**推导（`greet` + 后缀），
-               * 而骨架才是唯一的真相。名字不存在时 `state.addAnimation` 会 **throw**
-               * （`AnimationState.ts:601-603`，整条点击丢失），所以：
-               *   ① 这里把不一致的条目**列出来**（一条 error 汇总，不逐条刷屏）；
-               *   ② `touch.ts` 的 `playAction` 另有一道运行时闸门兜底（返回 false 而非抛）。
+               * 骨架就绪 + 热区/粒子组已知 ⇒ 一次性算出：
+               *   - `unplayable`：`validate:'strict'` 下被判 `reject` 的事件（漏斗第 ① 层依据）；
+               *   - `fixed`：`coerce` 补丁（**就地应用**，`phasedDialogues` 与池共享对象引用）；
+               *   - `validationReport`：档案汇总 + `__WB_DIALOGUE__.validation()` 用。
                *
-               * ⚠️ 只报 `activeDialogues`（本状态真正会播的那些）—— 别的动作族的条目
-               *   本来就不该出现在当前骨架的播放路径上。
+               * ⚠️ 门禁**不散落到消费点**：只把 `unplayable` 塞进漏斗。
+               * ⚠️ 运行时不报 `E_VOICE_MISSING`（`file://` + CORS 无法遍历目录，见
+               *   `eventValidate.ts` 文件头）—— 语音只靠 `voicePlayer` 的降级链。
                */
-              const missingAnims = activeDialogues.filter(
-                (d) => d.animation && allAnimations.indexOf(d.animation) < 0
+              const particleNames = (configs.meshes ?? [])
+                .map((m) => (m as { name?: string })?.name)
+                .filter((n): n is string => typeof n === 'string' && !!n);
+              /**
+               * ⚠️ 校验用 **`activeDialogues`**（事件族闸门**之前**）：
+               *   `W_FAMILY_NOT_ENABLED` 的意义正是"这条属于未勾选的族"——
+               *   若拿 `phasedDialogues`，它们已被筛掉，这条永远报不出来。
+               *   （动画存在性仍只对"当前动作族可见"的条目判，别的动作族不在
+               *   `activeDialogues` 里，不会误报。）
+               */
+              validationReport = validateEvents(activeDialogues, {
+                animations: allAnimations,
+                particleNames,
+                zoneIds: touchZones.map((z) => z.id),
+                familyIds: fams.families.length ? fams.ids : null,
+                fallbackFamilyId: fams.fallbackId,
+                enabledFamilyIds: fams.families.length ? phases : null,
+                actionPhase,
+                projectAnimation: (n) =>
+                  resolveAnimationName(n, fams, actionPhase),
+                mode: subtitleCfg?.validate ?? 'warn',
+              });
+              /** 归一阶段 + 校验阶段的 issue 合并（`validation()` / 档案看到的是全集） */
+              validationReport.issues = normalizeIssues.concat(
+                validationReport.issues
               );
-              if (missingAnims.length) {
-                console.error(
-                  '[subtitle] 动作族 "%s" 下有 %d 条念白的动画在 %s 里不存在（点击会静默失败）: %s',
-                  actionPhase || '(无)',
-                  missingAnims.length,
-                  skeletonFile,
-                  missingAnims
-                    .map((d) => d.actionId + '→' + d.animation)
-                    .join(', ')
+              /** 应用 `coerce` 补丁（就地改：池、档案、播放共享同一批对象） */
+              Object.keys(validationReport.fixed).forEach((key) => {
+                const target =
+                  findByEventKey(phasedDialogues, key) ??
+                  findByEventKey(eventTable, key);
+                if (target) {
+                  Object.assign(target, validationReport?.fixed[key]);
+                }
+              });
+              validationReport.unplayable.forEach((k) => {
+                unplayable[k] = true;
+              });
+              /**
+               * 日志：`error` 逐条（`reject` 会让事件不播，必须能看见原因）；
+               * 其余只打一行汇总，避免刷屏。
+               */
+              validationReport.issues.forEach((it) => {
+                if (it.level === 'error') {
+                  console.error(
+                    '[subtitle] %s %s: %s',
+                    it.code,
+                    it.id || '(工程)',
+                    it.detail
+                  );
+                }
+              });
+              if (validationReport.issues.length) {
+                console.info(
+                  '[subtitle] %s（validate=%s，unplayable=%d）',
+                  summarizeReport(validationReport),
+                  subtitleCfg?.validate ?? 'warn',
+                  validationReport.unplayable.length
                 );
               }
 
@@ -1534,17 +1672,17 @@ const main = async () => {
                 /**
                  * 触摸池：动作与字幕**同源**。
                  *
-                 * ★★ 池子由「触摸可触发的事件」（`subtitle.touchKinds`）在**启动期**算好
-                 * （上面那个 `touchPool` = `mergeKindPools(touchKinds, KIND_POOLS)`）——
-                 * 勾了多类就是并成一个大池，命中热区时在整个大池里随机取一条
+                 * ★★ 2026-10-18 起**通道内不再自己抽**（PLAN §4.1 的 #2）：控制器拿的是
+                 * `pick(zoneId)` 回调，真正的取条走唯一漏斗 `resolveEvent('touch', ...)`
+                 * —— 条件 / 冷却 / 配额 / 优先级 / 变体全部在那一处。
                  * ⇒ 播哪个动作就显示哪句台词，天然配套不会串。
                  *
-                 * ⚠️ 控制器拿的是**固定数组**（开机一次性构造，见 `settingsStore` 文件头的
-                 * "生效方式"）⇒ 改设置要**重载**才生效。
+                 * ⚠️ 控制器是**开机一次性构造**（见 `settingsStore` 文件头的"生效方式"）
+                 * ⇒ 改设置要**重载**才生效。
                  */
                 if (!touchPool.length && subtitleCfg?.touch?.length) {
                   console.warn(
-                    '[subtitle] 触摸可触发的事件里没有任何可播条目（subtitle.touch 的 actionId 没一条能在 subtitle.dialogues 里找到）⇒ 退化为只播动作、不出字幕'
+                    '[subtitle] 触摸可触发的事件里没有任何可播条目（subtitle.touch 的 id 没一条能在 subtitle.dialogues 里找到）⇒ 退化为只播动作、不出字幕'
                   );
                 }
 
@@ -1573,7 +1711,10 @@ const main = async () => {
                       idleSequence?.resume(mixSeconds),
                     touchAnimations: touchNames,
                     zones: touchZones,
-                    touchPool,
+                    /** ★ 唯一漏斗：命中哪个热区 → 哪一条（由 `resolveEvent` 决定） */
+                    pick: (zoneId) =>
+                      resolveEvent('touch', touchKinds, { zone: zoneId }),
+                    poolSize: touchPool.length,
                     // 命中哪块就把哪块点亮——桌面上截图即可判读热区位置对不对；
                     // ★ 同时把"本次命中的全部候选"传进去 ⇒ 重叠处能看出谁赢、谁被压住
                     onZoneHit: (hit) =>
@@ -1585,6 +1726,15 @@ const main = async () => {
                     // 每播一条念白：刷新待机计时 + 同步字幕（动作与字幕来自同一条）
                     onAction: (payload) => {
                       markActivity();
+                      /**
+                       * ★★ **漏斗的记账点**（PLAN §4.2 第 ③ 层）。
+                       *
+                       * 三个通道都汇到这里，且只有**真的开始播**才会回调
+                       * ⇒ 冷却 / 配额 / 互斥组不会被"抽到了但被闸门拒绝"白白消耗。
+                       */
+                      if (payload.entry) {
+                        eventLog.commit(payload.entry, Date.now());
+                      }
                       showDialogue(payload.entry, payload.animation);
                     },
                   }
@@ -1711,27 +1861,45 @@ const main = async () => {
          * 用假字符串测出来的"能放几个字"无法回答"这 10 条里有没有会换行的"。
          */
         probeTexts: () =>
-          dialogues.map((it) => ({ actionId: it.actionId, text: it.text })),
+          dialogues.map((it) => ({
+            actionId: it.actionId,
+            /** 自定义事件没有 actionId ⇒ 用 `id` 定位 */
+            id: it.id,
+            text: it.text,
+          })),
         isBusy: () => (touchController ? touchController.isBusy() : false),
         playing: () =>
           touchController ? touchController.playingAnimation() : '',
-        /** 按 actionId 播一条（待机/问候同路径，走 trigger 的同一套打断规则） */
-        trigger: (actionId: number, source?: string) => {
+        /**
+         * 按 `EventKey` 播一条（待机/问候同路径，走 `trigger` 的同一套打断规则）。
+         *
+         * ★ 2026-10-18：收 `number | string`（`64005` / `'64005'` / `'game:64005'` /
+         *   `'custom:xxx'`），归一后查表。**仍然拒绝任意动画名** —— 后门口径不变
+         *   （查不到条目 ⇒ `null` ⇒ 不播）。
+         * ★ `weight:0` 的事件只能从这里手动播（自动通道永不选中它）。
+         */
+        trigger: (key: EventKeyInput, source?: string) => {
           if (!touchController) {
             return false;
           }
           /**
            * ★★★ 从 `phasedDialogues` 找（= 动作族投影 + 存在性 + **全局事件族闸门**）
            *   —— 与真实点击/待机**完全同源**。
-           *   ⚠️ 不能退化成 `activeDialogues`：那样探针会绕过事件族，读数与真实行为不符
-           *   （"表/探针说会播、实际抽不出"），正是本仓库反复强调要避免的那类谎报。
+           *   ⚠️ 不能退化成 `activeDialogues`：那样探针会绕过事件族，读数与真实行为不符。
            */
-          const entry =
-            phasedDialogues.find((it) => it.actionId === actionId) ?? null;
+          const entry = findByEventKey(phasedDialogues, key);
           const src =
             source === 'greet' || source === 'standby' ? source : 'touch';
-          return touchController.trigger(entry, src);
+          return entry ? touchController.trigger(entry, src) : false;
         },
+        /**
+         * **事件表校验报告**（PLAN §6.3）。回归断言用。
+         *
+         * `null` = 还没跑到校验（骨架未就绪）。
+         */
+        validation: () => validationReport,
+        /** 事件日志快照（冷却/配额/互斥组的运行时真值，调试用） */
+        eventLog: () => eventLog.snapshot(),
         /** 模拟一次热区点击（与真实 mousedown 走完全相同的代码路径） */
         click: (u = 0.5, v = 0.5) => {
           document.dispatchEvent(
@@ -1904,6 +2072,8 @@ const main = async () => {
          * （见 `actionEffectNames` 与 `archive.ts` 的 `ActionEffectNames` 说明）。
          */
         actionEffects: actionEffectNames,
+        /** ★ 校验报告（getter）：档案「细则」首行显示 `0 reject / N coerce / …` */
+        validation: () => validationReport,
       });
 
       settingsUI = createSettingsPanel({

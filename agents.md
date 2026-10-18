@@ -27,8 +27,17 @@ src/
   bgmPlayer.ts      BGM player (registers with audioMaster)
   voicePlayer.ts    Voice-line player (resumes from paused position; registers with audioMaster)
   voiceBubble.ts    Subtitle bubble (follows a character anchor)
-  dialogue.ts       Voice scheduling
-  touch.ts          Hit zones + action gating (mutual exclusion / interrupt rules)
+  dialogue.ts       Voice scheduling: family registry, action-phase projection, legacy pools
+  eventModel.ts     * Event identity (EventKey) + normalizeEventTable (THE single normalizer:
+                    legacy greet/chat/touch pools are inferred into per-entry on/kind/when)
+                    + variant picking (whole-package random)
+  conditions.ts     * Condition AST: compile / inspect / describe (pure, injectable clock)
+  eventScheduler.ts * selectEvent (priority tier + weighted random) + eventLog state
+                    (cooldown / quota / mutex group; quota.day|ever persisted in localStorage)
+  eventValidate.ts  * 16-code validation, 3 dispositions (reject / coerce / report);
+                    wiring point is the funnel in index.ts, NOT the consumers
+  touch.ts          Hit zones + action gating (mutual exclusion / interrupt rules);
+                    takes a `pick(zoneId)` callback — it does NOT select entries itself
   touchZoneOverlay.ts  Visual overlay for hit zones
   pointerTrail.ts   Cursor trail (deliberately separate from scene particles)
   settingsPanel.ts  Built-in settings panel (6 tabs — the last one, "壁纸独立设置", is
@@ -58,7 +67,8 @@ packages/
   threejs-spine-3.8-runtime-es6/   Git SUBMODULE — required for build
 public/assets/     Assets + config.json (gitignored except README*.md + config.example.json)
 dist/              Build output (gitignored)
-_regress/          Regression scripts (run with ts-node)
+scripts/           Offline CLIs (voiceManifest.ts, validateEvents.ts)
+_regress/          Regression scripts (run with ts-node); 83~88 = custom-event system
 ```
 
 ## Setup & build — read this before running anything

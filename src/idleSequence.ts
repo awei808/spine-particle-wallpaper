@@ -60,10 +60,12 @@
 import * as threejsSpine from 'threejs-spine-3.8-runtime-es6';
 import {
   DialogueEntry,
+  EventKeyInput,
   IdleSequenceConfig,
   IdleSequenceItem,
 } from './config.type';
-import { findByActionId } from './dialogue';
+import { findByEventKey } from './dialogue';
+import { normalizeEventKey } from './eventModel';
 
 /** 常驻轨道。触摸/问候/待机在 track 2，互不干扰。 */
 export const IDLE_TRACK = 0;
@@ -150,7 +152,7 @@ export type IdleSequenceOptions = {
    * | `false` | **整项跳过**并 warn（不是退化成"只播动画"—— 那等于绕过了闸门） |
    * | `true` / 没传 | 照原逻辑走（命中念白条目 ⇒ 连台词一起播） |
    */
-  isActionAllowed?: (actionId: number) => boolean;
+  isActionAllowed?: (key: EventKeyInput) => boolean;
   /** 每播到一项都会回调（含首项）。`entry` 为 `null` = 该项只播动作 */
   onItem?: (entry: DialogueEntry | null, animation: string) => void;
 };
@@ -178,26 +180,32 @@ export const resolveSequence = (
     if (typeof it === 'string') {
       animation = it;
     } else if (it && typeof it === 'object') {
-      if (typeof it.actionId === 'number') {
+      /**
+       * ★ 2026-10-18：`key`（`EventKey`）与 `actionId` 二选一，`key` 优先。
+       *   两者都走 `normalizeEventKey` —— 自定义事件没有 `actionId` 也能进序列。
+       */
+      const keyRaw = it.key !== undefined ? it.key : it.actionId;
+      const key = normalizeEventKey(keyRaw);
+      if (key) {
         /**
          * ★ 先过"事件族闸门"再解析条目：被勾掉的族**整项跳过**。
          *   ⚠️ 不能退化成"只播 `it.animation`"—— 那等于让序列绕过全局闸门。
          */
-        if (options.isActionAllowed && !options.isActionAllowed(it.actionId)) {
+        if (options.isActionAllowed && !options.isActionAllowed(key)) {
           console.warn(
-            '[idleSequence] items[%d] 的 actionId=%s 所属事件族未勾选 ⇒ 跳过该项',
+            '[idleSequence] items[%d] 的 %s 所属事件族未勾选 ⇒ 跳过该项',
             i,
-            it.actionId
+            key
           );
           continue;
         }
-        entry = findByActionId(options.entries, it.actionId);
+        entry = findByEventKey(options.entries, key);
         animation = entry?.animation ?? it.animation ?? '';
-        if (typeof it.actionId === 'number' && !entry) {
+        if (!entry) {
           console.warn(
-            '[idleSequence] items[%d] 的 actionId=%s 在 subtitle.dialogues 里查不到 ⇒ 退化为只播动作 %s',
+            '[idleSequence] items[%d] 的 %s 在 subtitle.dialogues 里查不到 ⇒ 退化为只播动作 %s',
             i,
-            it.actionId,
+            key,
             it.animation ?? '(空)'
           );
         }
