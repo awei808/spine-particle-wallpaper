@@ -119,6 +119,7 @@ import {
   normalizeEventTable,
 } from './eventModel';
 import { describeCondition } from './conditions';
+import { mergeEventOverrides } from './eventOverrides';
 import { summarizeReport, ValidationReport } from './eventValidate';
 
 /**
@@ -313,16 +314,35 @@ const makeRow = (
    */
   const badge = key.indexOf('custom:') === 0 ? key : String(e.actionId ?? key);
   const warn = st.rejected[key] ? '⚠ ' : '';
+  /**
+   * ★★ `pick.weight: 0` 的条目**永不参与自动抽取**（`eventScheduler` 第 ② 步直接剔掉），
+   *   只能在调试面板 / `__WB_DIALOGUE__.trigger` 里手动播。
+   *
+   * 为什么必须在档案里标出来：它是**池里**的一员（池不按 weight 筛），
+   * 所以"池内随机 1 条（共 7 条）"会让用户以为它有 1/7 的机会 —— 实际是 0。
+   * 这正是档案"不能替引擎撒谎"的那条红线（见文件头）。2026-10-18 起
+   * config 里真的出现了 `weight:0` 的示例事件（`custom:hold-hand`），这句成了必需的。
+   */
+  const manualOnly = e.pick?.weight === 0 ? ' · 仅手动' : '';
   return {
     event,
     cond,
     action: e.animation ?? '—',
     fx: fxText(ae, e.animation),
-    tag: warn + '#' + badge + (short ? ' ' + short : '') + phTail,
+    tag: warn + '#' + badge + (short ? ' ' + short : '') + phTail + manualOnly,
     text: e.text ?? '',
     voice: voiceBase(e.voice),
   };
 };
+
+/**
+ * 池里**真正会被自动抽到**的条数（`weight: 0` 不算）。
+ *
+ * ★ 与 `eventScheduler.pickInTier` 同一判据：池不按 weight 筛，抽取时才剔。
+ *   档案要显示"共 N 条"就必须用这个数，否则读数会虚高。
+ */
+const autoCount = (pool: DialogueEntry[]): number =>
+  pool.filter((e) => e.pick?.weight !== 0).length;
 
 /**
  * 表格与细则**共用**的一份"当前生效口径"：三个池 + 三条事件列表 + 每个通道的勾选结果。
@@ -372,17 +392,24 @@ const resolveState = (
    * ★ 2026-10-18：**先归一**再算池 —— 与 `index.ts` 同一入口（`normalizeEventTable`）。
    *   ⇒ 自定义事件（显式 `on` / `kind`）会进表、进池；旧 config 由旧池键反推，内容不变。
    */
-  const normalized = normalizeEventTable(sub?.dialogues ?? [], {
-    legacy: {
-      touch: sub?.touch,
-      chat: sub?.chat,
-      standby: sub?.standby,
-      greet: sub?.greet,
-      greeting: sub?.greeting,
-      greetingRanges: sub?.greetingRanges,
-      greetMode: sub?.greetMode,
-    },
-  });
+  const normalized = normalizeEventTable(
+    /**
+     * ★ 2026-10-18（S9）：档案必须看到**用户新建的事件**（否则"面板里建了、
+     *   档案里没有"，用户会以为没生效）。合并口径与 `index.ts` 同一函数。
+     */
+    mergeEventOverrides(sub?.dialogues ?? []),
+    {
+      legacy: {
+        touch: sub?.touch,
+        chat: sub?.chat,
+        standby: sub?.standby,
+        greet: sub?.greet,
+        greeting: sub?.greeting,
+        greetingRanges: sub?.greetingRanges,
+        greetMode: sub?.greetMode,
+      },
+    }
+  );
   const dialogues: DialogueEntry[] = normalized.events;
   // ★ 「新数组优先、空数组退回旧时段表」的口径集中在 `dialogue.resolveGreetSource` ——
   //   这里不另写 `??`（`??` 对空数组不回退 ⇒ 会把整类问候静默关掉）
@@ -573,18 +600,34 @@ const buildRows = (
       return;
     }
     const mergedPool = mergeKindPools(kinds, st.pools, st.families);
-    /** 勾了多类 ⇒ 合成一个池一起抽（池内每条等概率，所以条目多的类别更容易抽到） */
+    /**
+     * 勾了多类 ⇒ 合成一个池一起抽（池内每条等概率，所以条目多的类别更容易抽到）。
+     *
+     * ★ 计数用 `autoCount`（`weight:0` 不算）：那是 runtime 真正会抽的条数。
+     *   池里若有"仅手动"的条目，再补一句把它们摘出来 —— 见 `makeRow` 的 `manualOnly`。
+     */
+    const manual = mergedPool.length - autoCount(mergedPool);
     const tail =
-      kinds.length > 1
-        ? ' · 并池随机 1 条（共 ' + mergedPool.length + ' 条）'
-        : ' · 池内随机 1 条';
+      (kinds.length > 1
+        ? ' · 并池随机 1 条（共 ' + autoCount(mergedPool) + ' 条）'
+        : ' · 池内随机 1 条') +
+      (manual ? '（另有 ' + manual + ' 条仅手动）' : '');
+    /**
+     * ★★ 逐条枚举的**唯一来源** = 「事件表派生的池」再按 `on` 过滤本通道。
+     *
+     * 2026-10-18 迁移动了这里：原先逐条枚举走的是旧 id 数组（`subtitle.greet` /
+     * `chat`），迁移后那三个键**已经不存在**，照旧写法会让「回到壁纸 / 待机」
+     * 两段**整段消失**（表格看起来像"这两条通道不播任何东西"）。
+     * 改用池 + `on` 之后，档案的枚举口径与运行时漏斗完全同源（PLAN 头号纪律：
+     * 不另写一套判据）。
+     */
+    const entriesOf = (k: TriggerEventKind): DialogueEntry[] =>
+      st.pools[k].filter((e) => channelsOf(e).indexOf(kind) >= 0);
+
     kinds.forEach((k) => {
       if (k === 'chat') {
-        st.chatIds.forEach((id, i) => {
-          const e = findByEventKey(dialogues, id);
-          if (!e) {
-            return;
-          }
+        const list = entriesOf('chat');
+        list.forEach((e, i) => {
           rows.push(
             makeRow(
               prefix + ' · chat类 #' + (i + 1),
@@ -603,12 +646,9 @@ const buildRows = (
          *   与别的类并池时它只是池里的一条候选（不再看时间）——两种情况都在条件列里写明。
          */
         const only = kinds.length === 1;
-        st.greetIds.forEach((id, i) => {
-          const e = findByEventKey(dialogues, id);
-          if (!e) {
-            return;
-          }
-          const seat = '#' + (i + 1) + '/' + st.greetIds.length;
+        const list = entriesOf('greet');
+        list.forEach((e, i) => {
+          const seat = '#' + (i + 1) + '/' + list.length;
           const name = !only
             ? 'greet类 · 池内候选 ' + seat
             : greetModeText === '随机'
@@ -617,6 +657,7 @@ const buildRows = (
             ? 'greet类 · ' + SLOT_LABEL[SLOT_ORDER[i]]
             : 'greet类 · 追加 ' + seat;
           const slot = SLOT_ORDER[i];
+          /** 旧时段表只作"条目没写条件"时的文案兜底（迁移后的配置不会有这种条目） */
           const range = slot
             ? sub?.greetingRanges?.[slot] ?? DEFAULT_TIME_RANGES[slot]
             : null;
@@ -645,7 +686,8 @@ const buildRows = (
               '（touch 池 ' +
               st.pools.touch.length +
               ' 条，同「点击触摸」）',
-            st.pools.touch[0],
+            /** 代表行优先取"本通道可达"的那条，否则退回首条（旧文案不变） */
+            entriesOf('touch')[0] ?? st.pools.touch[0],
             st,
             ae
           )
@@ -663,16 +705,30 @@ const buildRows = (
   /* ③ 点击触摸 —— 池 = 「触摸可触发的事件」勾中的类别并池，且**先按「可触发的事件族」筛过** */
   const touchKinds = st.channels.touch;
   const touchPool = mergeKindPools(touchKinds, st.pools, st.families);
-  touchPool.forEach((e, i) => {
+  /**
+   * ★ 序号分母用 `autoCount`：`weight:0` 的条目**不会被自动抽到**（它的行尾角标带
+   *   「仅手动」），分母若用池长就会让人以为"7 条里 1 条 = 1/7 概率"。
+   */
+  const touchAuto = autoCount(touchPool);
+  let touchSeat = 0;
+  touchPool.forEach((e) => {
     const kind = kindOfEntry(e, touchKinds, st.pools);
+    const manual = e.pick?.weight === 0;
+    if (!manual) {
+      touchSeat += 1;
+    }
     rows.push(
       makeRow(
-        '点击触摸 #' + (i + 1),
+        /**
+         * `weight:0` 的条目**不占序号**（它不在自动抽取里）。
+         * ⚠️ 别再显示"#6（仅手动）"—— 与真的 #6 撞号，看起来像重复条目。
+         */
+        manual ? '点击触摸 · 仅手动' : '点击触摸 #' + touchSeat,
         // ★ 不写事件族（2026-10-17）：属族由念白列角标表达，条件列只留"命中热区 + 池内序号"
         '点击角色热区 · 池 #' +
-          (i + 1) +
+          (manual ? '—' : touchSeat) +
           '/' +
-          touchPool.length +
+          touchAuto +
           '（' +
           KIND_TEXT[kind] +
           '）',
@@ -790,12 +846,16 @@ const describeChannel = (st: ArchiveState, kind: TriggerChannel): string => {
       : '取条件命中当前时刻的 greet 条目（无条件者恒命中），再有多个则随机 1 条';
   }
   const pool = mergeKindPools(kinds, st.pools, st.families);
+  /** ★ 计数用 `autoCount`（`weight:0` 不会被自动抽到，见 `autoCount` 的说明） */
+  const manual = pool.length - autoCount(pool);
   return (
     '「' +
     kinds.map((k) => KIND_TEXT[k]).join('、') +
     '」并池随机 1 条（共 ' +
-    pool.length +
-    ' 条）'
+    autoCount(pool) +
+    ' 条' +
+    (manual ? '，另有 ' + manual + ' 条仅手动' : '') +
+    '）'
   );
 };
 
@@ -871,10 +931,23 @@ const buildNotes = (cfg: Configs, st: ArchiveState): string[] => {
         ? /**
            * ★ 2026-10-17 起只有**一套**池（`st.pools`，三层判据都已含在里面）——
            *   不再有"触摸专用 / 缺省族专用"两套，表格与细则不可能各读一套。
+           * ★ 2026-10-18：计数走 `autoCount`（`weight:0` 的"仅手动"条目不算进去）。
            */
-          '（池 ' +
-          mergeKindPools(st.channels.touch, st.pools, st.families).length +
-          ' 条）'
+          (() => {
+            const pool = mergeKindPools(
+              st.channels.touch,
+              st.pools,
+              st.families
+            );
+            const manual = pool.length - autoCount(pool);
+            return (
+              '（池 ' +
+              autoCount(pool) +
+              ' 条' +
+              (manual ? '，另有 ' + manual + ' 条仅手动' : '') +
+              '）'
+            );
+          })()
         : '（池为空 ⇒ 不播）') +
       '；多条念白可共用同一动画，属骨架资源本身的情况。'
   );

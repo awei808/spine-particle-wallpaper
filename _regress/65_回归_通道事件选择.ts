@@ -89,14 +89,21 @@ const ok = (name: string, cond: boolean, detail = ''): void => {
 /* ── 读真实 config ────────────────────────────────────────── */
 const cfg = JSON.parse(fs.readFileSync(CFG, 'utf8')) as Configs;
 const sub = cfg.subtitle;
-if (
-  !sub ||
-  !sub.dialogues ||
-  !sub.greeting ||
-  typeof sub.standby !== 'number'
-) {
+/**
+ * ★ 2026-10-18（S8 迁移后）：真实 config 已经**没有** `greeting` / `standby` 旧池键，
+ *   通道写在条目的 `on` 上。前置条件因此放宽成"两种形状任选其一"：
+ *   · 旧形状：`greeting` + `standby`（未迁移的工作副本）；
+ *   · 新形状：`dialogues[].on` 非空（迁移后 / 新工程）。
+ *   本脚本真正测的是 `resolveTriggerKinds` 的口径，与这两种形状都无关。
+ */
+const hasLegacyPools =
+  !!sub?.greeting && typeof (sub as { standby?: unknown }).standby === 'number';
+const hasExplicitChannels = (sub?.dialogues ?? []).some(
+  (d) => ((d as { on?: unknown }).on as unknown[] | undefined)?.length
+);
+if (!sub || !sub.dialogues || (!hasLegacyPools && !hasExplicitChannels)) {
   console.error(
-    'config 缺少 subtitle.{dialogues,greeting,standby}，无法回归: ' + CFG
+    'config 既没有旧池键（greeting/standby）也没有条目级 on，无法回归: ' + CFG
   );
   process.exit(2);
 }

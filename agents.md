@@ -31,6 +31,12 @@ src/
   eventModel.ts     * Event identity (EventKey) + normalizeEventTable (THE single normalizer:
                     legacy greet/chat/touch pools are inferred into per-entry on/kind/when)
                     + variant picking (whole-package random)
+  eventOverrides.ts * Per-user event overlay (localStorage `wb.swe.events.v1`: `added` +
+                    `disabled`). `mergeEventOverrides` is the ONLY merge point and must run
+                    BEFORE normalize (config → +added → disabled applied last)
+  eventBuilder.ts   * Pure builder for the panel's "自定义事件" page: a point-and-click draft
+                    becomes a DialogueEntry (condition template, whole-package random via
+                    `variants`, text/voice inherited from an existing entry)
   conditions.ts     * Condition AST: compile / inspect / describe (pure, injectable clock)
   eventScheduler.ts * selectEvent (priority tier + weighted random) + eventLog state
                     (cooldown / quota / mutex group; quota.day|ever persisted in localStorage)
@@ -67,8 +73,15 @@ packages/
   threejs-spine-3.8-runtime-es6/   Git SUBMODULE — required for build
 public/assets/     Assets + config.json (gitignored except README*.md + config.example.json)
 dist/              Build output (gitignored)
-scripts/           Offline CLIs (voiceManifest.ts, validateEvents.ts)
-_regress/          Regression scripts (run with ts-node); 83~88 = custom-event system
+scripts/           Offline CLIs (voiceManifest.ts, validateEvents.ts, migrateEvents.ts,
+                    deployWe.ts — copies dist/ into a Wallpaper Engine project dir; it does
+                    NOT write project.json when one already exists, and `--audio-check`
+                    repoints that project's `file` to audio-check.html so the self-test runs
+                    inside WE's own CEF instead of a normal browser)
+_regress/          Regression scripts (run with ts-node); 83~90 = custom-event system
+public/audio-check.html  Audio-format self-test page (canPlayType + real decode +
+                    a MediaRecorder-generated AAC/MP4 round-trip) — used to answer
+                    "can WE's CEF decode m4a" without needing an m4a sample
 ```
 
 ## Setup & build — read this before running anything
@@ -99,22 +112,44 @@ Notes:
 
 ## Config-driven changes (NO rebuild needed)
 
-Voice lines, greeting/chat/touch behaviour, and several runtime switches are driven entirely
-by the `subtitle` block of `public/assets/config.json`. Editing it does **not** require a
-rebuild — copy `config.example.json` to `config.json`, edit, reload.
+Voice lines, trigger conditions, and several runtime switches are driven entirely by the
+`subtitle` block of `public/assets/config.json`. Editing it does **not** require a rebuild —
+copy `config.example.json` to `config.json`, edit, reload.
+
+**Since 2026-10-18 (PLAN S8) `subtitle.dialogues[]` is the only truth**: every entry carries
+its own `on` / `kind` / `when`, and the old pool keys (`greet` / `chat` / `touch` / `standby` /
+`greeting` / `greetInTouchPool`) are **gone from migrated configs**. They are still _read_ when
+present (legacy inference in `normalizeEventTable`, reported as `W_LEGACY`), so old copies keep
+working — but never write them into a new config.
 
 ```jsonc
 "subtitle": {
-  "greet": [64001, 64002, 64003],   // startup / resume / focus-gain greetings
-  "chat":  [64004],                 // idle chatter — fires after standbyIdleMs, only if 'chat' is enabled below
-  "touch": [64005, 64006, 64007],   // any hit-zone click
-  "greetMode": "time",              // "time" (by clock) | "random"
+  "dialogues": [
+    { "id": "game:64001", "actionId": 64001, "animation": "greet",
+      "on": ["resume"], "kind": "greet",
+      "when": { "time": { "start": 5, "end": 12 } },   // 05:00–12:00 (start>end ⇒ crosses midnight)
+      "text": "…", "voice": "CV/…/x.ogg", "textTime": 6 },
+    { "id": "game:64004", "actionId": 64004, "animation": "chat",
+      "on": ["standby"], "kind": "chat", "text": "…" },
+    { "id": "game:64005", "actionId": 64005, "animation": "touch1",
+      "on": ["touch"], "kind": "touch", "text": "…" },
+    { "id": "custom:valentine", "displayName": "情人节问候", "animation": "greet",
+      "on": ["resume"], "kind": "greet",
+      "when": { "calendar": { "month": 2, "day": 14 } },
+      "pick": { "priority": 50, "quota": { "max": 1, "per": "day" } },
+      "variants": [ { "text": "…", "voice": "…" } ] }   // whole-package random
+  ],
   "touchFeedbackMode": "immediate", // legacy | immediate | queue | none
   "standbyKinds": ["chat"],         // what may fire after a long idle: chat | greet | touch
   "touchKinds": ["touch"],          // what a hit-zone click may fire: chat | greet | touch
   "resumeKinds": ["greet"]          // what the four auto signals may fire (startup/visible/focus/resume)
 }
 ```
+
+Field semantics live in `config.type.ts` (`DialogueEntry`) and `PLAN_自定义事件系统_2026-10-18.md`;
+the migration tool is `npx ts-node --transpile-only scripts/migrateEvents.ts <assetsDir> [--write]`
+(idempotent, rewrites only the `subtitle` block, prints a slot → event table, writes
+`enabled:false` for orphans).
 
 The three `*Kinds` fields are **structurally identical multi-selects**, one per trigger channel,
 with **deliberately different defaults** so that upgrading changes nothing:
@@ -126,18 +161,32 @@ with **deliberately different defaults** so that upgrading changes nothing:
 | `standbyKinds` | `'standby'` | idle longer than `standbyIdleMs`                            | `["chat"]`  |
 
 `*Kinds` is **required reading** for event scheduling. Each kind draws from **its own pool**
-(`chat` → the `chat` array, `greet` → the `greet` pool, `touch` → the `touch` array). When more
-than one kind is enabled the pools are **merged into one pool** and picked uniformly
+(entries whose `kind` matches), and a candidate must also list that channel in `on` — the
+only funnel is `index.ts`'s `resolveEvent` → `eventScheduler.resolveEventFrom`
+(permission → condition → quota/cooldown → priority tier + weighted random). When more than one
+kind is enabled the pools are **merged into one pool** and picked uniformly
 (`dialogue.mergeKindPools`), so classes are weighted by entry count. An empty array disables that
-entry point. Sole exception: a channel with **only `greet` enabled** goes through
-`pickGreetingEntry` so that `greetMode` (by clock / random) keeps working.
+entry point.
 
 The old boolean `greetInTouchPool` was **removed**; "clicks may also trigger greetings" is now
-`touchKinds: ["touch", "greet"]`. The legacy booleans `standbyGreetEnabled` /
-`standbyTouchEnabled` are still read but only affect the `standby` channel.
+`touchKinds: ["touch", "greet"]` **plus** those entries listing `on: ["touch"]`. The legacy
+booleans `standbyGreetEnabled` / `standbyTouchEnabled` are still read but only affect the
+`standby` channel.
 
-Every entry is an `actionId` from `subtitle.dialogues`. To add a candidate, append a number
-to the relevant array — no code change required.
+Custom events created from the panel live **outside** config.json: they are an overlay in
+`localStorage` (`wb.swe.events.v1`, `{added, disabled}`) merged by `eventOverrides.ts` before
+normalization. `disabled` is applied last on purpose (a custom event you switched off must stay
+off). The panel page is **zero-keyboard** — animation/particle/condition are point-and-click and
+`text`/`voice` are inherited from an existing entry; adding free-text input is v2 (PLAN §7).
+
+**`pick.weight: 0` means "manual only" and it must NOT occupy a priority tier.** `selectEvent`
+therefore filters `weight:0` out **before** computing the top tier. Doing it the other way round
+("pick the top tier, then drop zero-weight entries") lets one `{priority: 80, weight: 0}` entry
+kill the whole channel: the tier contains only that entry, becomes empty after filtering, and the
+funnel returns `null` — with **no log at all** (click is detected, pools look full,
+`firedCount`/`skippedCount` stay 0). That shipped once (2026-10-18, the `custom:hold-hand`
+sample); `_regress/86` A6b/A6c pin it, and `index.ts` warns at startup when an entire channel is
+manual-only.
 
 **Event families are a config-declared registry** (`subtitle.eventFamilies`, since 2026-10-15),
 and since 2026-10-17 they carry **two orthogonal jobs** — do not merge them again:

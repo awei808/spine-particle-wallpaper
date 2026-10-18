@@ -78,13 +78,43 @@ const ok = (name: string, cond: boolean, detail = ''): void => {
 /* ── 读真实 config ────────────────────────────────────────── */
 const cfg = JSON.parse(fs.readFileSync(CFG, 'utf8')) as Configs;
 const sub = cfg.subtitle;
-if (!sub || !sub.dialogues || !sub.touch || !sub.greeting) {
-  console.error(
-    'config 缺少 subtitle.{dialogues,touch,greeting}，无法回归: ' + CFG
-  );
+if (!sub || !sub.dialogues) {
+  console.error('config 缺少 subtitle.dialogues，无法回归: ' + CFG);
   process.exit(2);
 }
 const dialogues = sub.dialogues;
+
+/**
+ * ★ 2026-10-18（S8 迁移后）：真实 config 已经**没有** `touch` / `greeting` 旧池键，
+ *   候选资格写在条目的 `on` 上。本脚本 C 段只需要"哪几条属于触摸通道 / 哪几条是问候"
+ *   ⇒ 旧键缺席时**从条目派生**（判据与运行时 `poolOfKind` 一致：看 `on` 含哪个通道）；
+ *   旧键还在（未迁移的工作副本）就照旧用它，两种形状都能跑。
+ */
+const onOf = (d: DialogueEntry): string[] => {
+  const v = (d as { on?: unknown }).on;
+  if (Array.isArray(v)) {
+    return v.map((x) => String(x));
+  }
+  return typeof v === 'string' ? [v] : [];
+};
+const touchIdsInput: number[] = sub.touch
+  ? (sub.touch as number[])
+  : (dialogues
+      .filter((d) => onOf(d).indexOf('touch') >= 0)
+      .map((d) => d.actionId)
+      .filter((n): n is number => typeof n === 'number') as number[]);
+const greetIdsInput: number[] = sub.greeting
+  ? [sub.greeting.morning, sub.greeting.noon, sub.greeting.evening].filter(
+      (n): n is number => typeof n === 'number'
+    )
+  : (dialogues
+      .filter((d) => onOf(d).indexOf('resume') >= 0)
+      .map((d) => d.actionId)
+      .filter((n): n is number => typeof n === 'number') as number[]);
+if (!touchIdsInput.length) {
+  console.error('config 里没有任何触摸通道条目，无法回归: ' + CFG);
+  process.exit(2);
+}
 
 /** 造测例用的假条目（只需要 actionId，`mergeKindPools` 不碰别的字段） */
 const mk = (id: number): DialogueEntry => ({ actionId: id } as DialogueEntry);
@@ -92,7 +122,11 @@ const ids = (pool: DialogueEntry[]): number[] => pool.map((e) => e.actionId);
 
 /* ── A. resolveTouchIds：只去重，不再知道问候池 ───────────── */
 console.log('\nA. resolveTouchIds（归一 touch 数组：去重保序）');
-eq('A1 原样返回（保序）', resolveTouchIds(sub.touch), sub.touch.slice());
+eq(
+  'A1 原样返回（保序）',
+  resolveTouchIds(touchIdsInput),
+  touchIdsInput.slice()
+);
 eq(
   'A2 配重复了 ⇒ 去重（否则某条概率翻倍）',
   resolveTouchIds([64005, 64005, 64006]),
@@ -106,7 +140,14 @@ eq(
  */
 eq(
   'A3 非法值丢弃、数字串/EventKey 保留',
-  resolveTouchIds([64005, null, '64006', 'custom:x', '', {}] as unknown as number[]),
+  resolveTouchIds([
+    64005,
+    null,
+    '64006',
+    'custom:x',
+    '',
+    {},
+  ] as unknown as number[]),
   [64005, '64006', 'custom:x']
 );
 eq('A4 没配 ⇒ 空', resolveTouchIds(undefined), []);
@@ -203,12 +244,8 @@ ok(
 
 /* ── C. 池构造（buildPool 端到端，用真实 config） ─────────── */
 console.log('\nC. 池构造：id 列表 → 条目池（真实 config）');
-const touchPool = buildPool(dialogues, resolveTouchIds(sub.touch));
-const greetIds = [
-  sub.greeting?.morning,
-  sub.greeting?.noon,
-  sub.greeting?.evening,
-].filter((n): n is number => typeof n === 'number');
+const touchPool = buildPool(dialogues, resolveTouchIds(touchIdsInput));
+const greetIds = greetIdsInput;
 const greetPool = buildPool(dialogues, greetIds);
 
 const poolOnly = mergeKindPools(['touch'], {
@@ -222,11 +259,11 @@ const poolMerged = mergeKindPools(['touch', 'greet'], {
   touch: touchPool,
 });
 
-eq('C1 只勾 touch：池长 = touch 宽度', poolOnly.length, sub.touch.length);
+eq('C1 只勾 touch：池长 = touch 宽度', poolOnly.length, touchIdsInput.length);
 eq(
   'C2 勾 touch+greet：池长 = touch + 问候池条数',
   poolMerged.length,
-  sub.touch.length + greetIds.length
+  touchIdsInput.length + greetIds.length
 );
 eq(
   'C3 头部 = 问候池那几条（按 SLOT_ORDER 顺序，归一出池排在 touch 之前）',

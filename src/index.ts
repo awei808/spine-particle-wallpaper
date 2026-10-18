@@ -75,6 +75,11 @@ import {
 } from './eventModel';
 import { createEventLog, resolveEventFrom } from './eventScheduler';
 import {
+  mergeEventOverrides,
+  readEventOverrides,
+  writeEventOverrides,
+} from './eventOverrides';
+import {
   summarizeReport,
   validateEvents,
   ValidationReport,
@@ -870,7 +875,21 @@ const main = async () => {
    * ⚠️ 从这里往下**只认 `eventTable`**：池、漏斗、档案、探针全部消费它。
    *   任何一处再补一遍默认值，就会出现"引擎按 A 口径抽、档案按 B 口径显示"。
    */
-  const normalizedTable = normalizeEventTable(dialogues, {
+  /**
+   * ★★ **自定义事件覆盖层**（PLAN §7.1 / S9）—— config 表 + 用户新建（`added`）
+   *   再统一按 `disabled` 压 `enabled:false`。
+   *
+   * ⚠️ 必须在 `normalizeEventTable` **之前**合并：新建事件也要过同一套归一
+   *   （补 `on`/`kind`/`pick` 缺省、夹取优先级、丢非法 id），否则就会出现
+   *   "面板建的条目缺字段 ⇒ 漏斗与档案各判一半"。
+   * ⚠️ 合并顺序与"关掉自定义事件"的边界见 `eventOverrides.ts` 文件头。
+   */
+  const eventOverrides = readEventOverrides();
+  const eventSource: DialogueEntry[] = mergeEventOverrides(
+    dialogues,
+    eventOverrides
+  );
+  const normalizedTable = normalizeEventTable(eventSource, {
     legacy: {
       touch: subtitleCfg?.touch,
       chat: subtitleCfg?.chat,
@@ -1282,7 +1301,7 @@ const main = async () => {
      * 用户把三类**显式全关**（`resumeKinds: []`）时，不必再挂一堆永远返回 false 的监听。
      * ⚠️ 反过来说：**缺省（没配 `resumeKinds`）会勾上 `greet`** ⇒ 只要配了问候就一定会挂。
      */
-    if (dialogues.length && resumeKinds.length) {
+    if (eventSource.length && resumeKinds.length) {
       window.setTimeout(() => tryResumeEvent('boot'), greetingDelayMs);
       document.addEventListener(
         'visibilitychange',
@@ -1626,7 +1645,6 @@ const main = async () => {
                   validationReport.unplayable.length
                 );
               }
-
               /**
                * 常驻动作序列（config 顶层 `idleSequence`）：顶替 idle 占住 track 0。
                *
@@ -1861,13 +1879,31 @@ const main = async () => {
          * 用假字符串测出来的"能放几个字"无法回答"这 10 条里有没有会换行的"。
          */
         probeTexts: () =>
-          dialogues.map((it) => ({
+          eventTable.map((it) => ({
             actionId: it.actionId,
             /** 自定义事件没有 actionId ⇒ 用 `id` 定位 */
             id: it.id,
             text: it.text,
           })),
         isBusy: () => (touchController ? touchController.isBusy() : false),
+        /**
+         * **事件表快照**（只读）—— 归一 + 覆盖层之后的真相。
+         *
+         * 为什么需要：验收「自定义事件」时必须能回答"面板里新建的那条到底有没有进表、
+         * `on` / `when` 是不是我以为的那样"，而不是靠截图猜。
+         */
+        events: () =>
+          eventTable.map((e) => ({
+            id: eventKeyOf(e),
+            name: e.displayName || e.label || '',
+            on: channelsOf(e),
+            kind: kindOf(e),
+            when: e.when ?? null,
+            animation: e.animation,
+            particles: e.particles ?? null,
+            voice: e.voice ?? null,
+            enabled: e.enabled !== false,
+          })),
         playing: () =>
           touchController ? touchController.playingAnimation() : '',
         /**
@@ -2243,6 +2279,26 @@ const main = async () => {
           label: d.label,
           animation: d.animation,
         })),
+        /**
+         * ★★ 「自定义事件」页（2026-10-18 / S9）—— 面板只**展示**、不自己归一：
+         *   传归一后的 `eventTable`（含用户新建的条目、`enabled` 已按覆盖层压过）。
+         */
+        eventTable,
+        /**
+         * 粒子组名候选 = `config.meshes[]` 里 `type:'particle'` 的 `name`。
+         * ⚠️ 不能把**背景层**的名字也列进去：那是 `texture` 图层，写进 `particles`
+         *   只会得到一条 `E_PARTICLES_UNKNOWN`（coerce 掉、事件照播，但用户白选）。
+         */
+        particleNames: (configs.meshes ?? [])
+          .filter((m) => (m as { type?: string })?.type === 'particle')
+          .map((m) => (m as { name?: string })?.name)
+          .filter((n): n is string => typeof n === 'string' && !!n),
+        /** 触摸热区候选（`config.touch.zones`）—— 「热区」条件模板用 */
+        touchZones: touchZones.map((z) => ({ id: z.id, label: z.label })),
+        /** 覆盖层初值（`added` / `disabled`） */
+        eventOverrides,
+        /** 与设置项同一次保存（`onSave` 的重载之前落盘） */
+        onSaveEvents: (o) => writeEventOverrides(o),
       });
 
       if (PROBE_OPTS.enabled) {

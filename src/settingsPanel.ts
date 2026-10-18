@@ -108,7 +108,9 @@
  */
 
 import {
+  DialogueEntry,
   EventFamily,
+  TriggerChannel,
   TriggerEventKind,
   TriggerPhase,
   WallpaperSettingItem,
@@ -120,6 +122,10 @@ import {
   normalizeTriggerKinds,
   normalizeTriggerPhases,
 } from './dialogue';
+import { channelsOf, eventKeyOf } from './eventModel';
+import { describeCondition } from './conditions';
+import { EventOverrides, normalizeOverrides } from './eventOverrides';
+import { buildCustomEvent } from './eventBuilder';
 import { SettingsOverrides, SettingsView } from './settingsStore';
 import { UI_SCALE_VAR, fpx, getUiScale, initUiScale, uiPx } from './uiScale';
 
@@ -237,6 +243,35 @@ export type SettingsPanelOptions = {
    * @returns 是否真的播了（被打断规则挡下 = `false`）
    */
   onTriggerEvent?: (actionId: number) => boolean;
+  /**
+   * 「自定义事件」页要展示的**事件表**（= `index.ts` 归一后的 `eventTable`，**已合并**
+   * 用户覆盖层）。
+   *
+   * ★ 面板**不自己读 config、也不自己归一** —— 档案/引擎/面板必须消费同一份表，
+   *   否则"面板里列出来的条目"与"真的会播的条目"迟早对不上（PLAN 头号纪律）。
+   * 缺省（不传 / 空）⇒ 仍建这一页，但列表只显示用户新建的那些。
+   */
+  eventTable?: readonly DialogueEntry[];
+  /**
+   * 粒子组名候选（`config.meshes[].name` 里 `type:'particle'` 那批）。
+   * 缺省为空 ⇒ 「粒子」那一行不建（没有粒子系统的壁纸不该摆一排点不动的 chip）。
+   */
+  particleNames?: readonly string[];
+  /** 触摸热区候选（`config.touch.zones`）；为空 ⇒ 「热区」条件模板不可选 */
+  touchZones?: readonly { id: string; label?: string }[];
+  /**
+   * 自定义事件的**覆盖层初值**（`localStorage` 的 `added` / `disabled`）。
+   *
+   * ★ 面板只把它当草稿初值：真正写盘在「保存并应用」里由 `onSaveEvents` 交给调用方，
+   *   与设置项同一套"保存 → 重载"口径（不热切换）。
+   */
+  eventOverrides?: EventOverrides;
+  /**
+   * 保存自定义事件（与设置项**同一次**保存）。
+   *
+   * ⚠️ 调用方必须在 `onSave` 的重载**之前**把它落盘 —— 否则重载后新建的事件消失。
+   */
+  onSaveEvents?: (o: EventOverrides) => void;
 };
 
 export type SettingsPanel = {
@@ -898,6 +933,10 @@ export const createSettingsPanel = (
     //   原「触摸」→ **事件池**（管"能抽到哪些内容"）。位置不变、`id` 不变。
     { id: 'sequence', label: '事件触发' },
     { id: 'touch', label: '事件池' },
+    // ★ 2026-10-18（S9 / PLAN §7）：**零键盘**的自定义事件页 —— 新建 / 停用 / 删除。
+    //   念白与语音从现有条目**继承**，本页不做自由文本输入（WE 的 CEF 里没有可靠的
+    //   输入法焦点，见 PLAN §7 的成本说明）。
+    { id: 'events', label: '自定义事件' },
     { id: 'view', label: '画面调整' },
     // ★ 这里**没有**「调试」页了：2026-10-15 起调试独立成入口列里的一个按钮
     //   （见文件头与「调试面板」段）；字段仍是 `probeEnabled` 那四个，没改名。
@@ -2074,7 +2113,821 @@ export const createSettingsPanel = (
     );
   }
 
-  /* ── tab 5：画面调整 ───────────────────────── */
+  /* ── tab 5：自定义事件（2026-10-18 / PLAN §7 · S9） ─────────────
+   *
+   * ## 这一页为什么是"零键盘"
+   *
+   * WE 的 CEF 里**没有可靠的输入法焦点**（`agents.md` 已写明原生表单控件首帧崩），
+   * 自绘光标 + 隐藏 textarea 那条路（PLAN §7 的 v2）成本高一个数量级。
+   * ⇒ v1 的每个字段都是**点选**：
+   *
+   * | 字段 | 来源 |
+   * |---|---|
+   * | 触发通道 `on` | 三个 chip（可多选） |
+   * | 条件 `when` | 五个模板（无 / 时段 / 日期 / 热区 / 静置）+ 步进器 |
+   * | 动作 `animation` | 骨架动画表（chip，多选 = 每次随机一条） |
+   * | 粒子 `particles` | `config.meshes[].name`（chip，多选 = 每次随机一组） |
+   * | 念白 / 语音 | **从现有条目继承**（chip 选来源） |
+   * | 优先级 `pick.priority` | 五档分段 |
+   *
+   * ★★ **多选 = 随机** 的口径：`variants` 是"整包随机"（PLAN §2.3），所以
+   *   动作挑 2 个、粒子挑 2 个时生成的是 **2×2 的整包组合**（动作与粒子配对，
+   *   不会出现"打招呼的动作配生气的台词"）。单选用 1 个 ⇒ 不进 `variants`。
+   * ★ 面板**不写** `phase`：自定义事件落在缺省族（不换名、恒可见），这正是
+   *   PLAN §0 #6 的口径（"放进无 matchSuffix 的族"）。
+   */
+  rowTarget = pages.events;
+
+  /**
+   * 页内**限宽容器**：面板本身是 `80vw`（宽屏下能到 1200+ px），
+   * 直接把表单铺满整行会变成"左边一撮 chip、右边一片空白"，读起来没有成组关系。
+   */
+  const evInner = createEl('div', 'width:100%', pages.events);
+  evInner.id = 'wb-ev-page';
+
+  createEl(
+    'div',
+    'font-size:' +
+      fpx(11) +
+      ';opacity:.55;margin-bottom:' +
+      uiPx(5) +
+      ';line-height:1.5',
+    evInner
+  ).textContent =
+    '新建的事件只存在本机（不改 config.json），停用对内置事件同样有效。';
+
+  /** 覆盖层草稿：`added` / `disabled`（保存时整份交给调用方） */
+  let evDraft: EventOverrides = {
+    schema: 1,
+    added: (options.eventOverrides?.added ?? []).map((e) => ({ ...e })),
+    disabled: (options.eventOverrides?.disabled ?? []).slice(),
+  };
+  const zoneList = (options.touchZones ?? []).filter((z) => z && z.id);
+  const particleList = options.particleNames ?? [];
+  const CH_LABEL: Record<TriggerChannel, string> = {
+    touch: '触摸',
+    standby: '待机',
+    resume: '回到壁纸',
+  };
+
+  const evBar = createEl(
+    'div',
+    'display:flex;gap:' + uiPx(6) + ';margin:' + uiPx(4) + ' 0 ' + uiPx(2),
+    evInner
+  );
+  const btnNew = createEl('button', BTN_PRIMARY, evBar);
+  btnNew.id = 'wb-ev-new';
+  btnNew.textContent = '＋ 新建事件';
+  const btnClear = createEl('button', BTN_GHOST, evBar);
+  btnClear.id = 'wb-ev-clear';
+  btnClear.textContent = '清空自定义';
+
+  const evCount = createEl(
+    'div',
+    'font-size:' + fpx(11) + ';opacity:.6;margin:' + uiPx(2) + ' 0 ' + uiPx(3),
+    evInner
+  );
+  const evList = createEl(
+    'div',
+    'border-top:' + uiPx(1) + ' solid rgba(255,255,255,0.08)',
+    evInner
+  );
+  evList.id = 'wb-ev-list';
+
+  /** 自绘小方钮（每行一个「启用」开关；比 `createToggle` 那套带标签的行更省高度） */
+  const miniToggle = (on0: boolean, onChange: (v: boolean) => void) => {
+    let on = on0;
+    const el = createEl(
+      'div',
+      [
+        'flex:0 0 auto',
+        'display:flex',
+        'align-items:center',
+        'justify-content:center',
+        'width:' + uiPx(17),
+        'height:' + uiPx(17),
+        'border:' + uiPx(1) + ' solid rgba(255,255,255,0.28)',
+        'border-radius:' + uiPx(4),
+        'color:#fff',
+        'font-size:' + fpx(11),
+        'line-height:1',
+        'cursor:pointer',
+        'user-select:none',
+      ].join(';')
+    );
+    const paint = () => {
+      el.textContent = on ? '\u2713' : '';
+      el.style.background = on ? '#4a90e2' : 'transparent';
+      el.style.borderColor = on ? '#4a90e2' : 'rgba(255,255,255,0.28)';
+    };
+    paint();
+    el.addEventListener('click', () => {
+      on = !on;
+      paint();
+      onChange(on);
+    });
+    return el;
+  };
+
+  const renderList = () => {
+    evList.innerHTML = '';
+    /**
+     * 列表 = **生效事件表**（config 里的 + 已保存的自定义）+ 本会话新建的草稿。
+     *
+     * ⚠️ 不能按 `custom:` 前缀过滤"内置"：**作者也可以在 config.json 里写
+     *   `custom:*` 事件**（PLAN §2.1 支持的写法，S9 的两条示例就是），
+     *   那样筛会把它们从面板里整条漏掉 —— 用户就只能靠改 JSON 才能停用。
+     * 去重口径：草稿里已有的 id 以草稿为准（用户刚改过的就是它）。
+     */
+    const base = (options.eventTable ?? []).filter(
+      (e) => !evDraft.added.some((a) => eventKeyOf(a) === eventKeyOf(e))
+    );
+    const rows = base.concat(evDraft.added);
+    evCount.textContent =
+      '当前事件 ' +
+      rows.length +
+      ' 条 · 其中新建 ' +
+      evDraft.added.length +
+      ' 条';
+    if (!rows.length) {
+      createEl(
+        'div',
+        'font-size:' + fpx(11) + ';opacity:.5;padding:' + uiPx(8) + ' 0',
+        evList
+      ).textContent = '本壁纸没有事件条目（config.json 的 dialogues 为空）。';
+      return;
+    }
+    rows.forEach((e) => {
+      const id = eventKeyOf(e);
+      const row = createEl(
+        'div',
+        [
+          'display:flex',
+          'gap:' + uiPx(7),
+          'align-items:center',
+          'padding:' + uiPx(3) + ' 0',
+          'border-bottom:' + uiPx(1) + ' solid rgba(255,255,255,0.06)',
+        ].join(';'),
+        evList
+      );
+      row.setAttribute('data-wb-ev', id);
+      row.id = 'wb-ev-row-' + id.replace(/[^a-zA-Z0-9_-]/g, '_');
+      /** 生效值 = `enabled !== false`（归一 + 覆盖层已经合并过，面板不另算一遍） */
+      row.appendChild(
+        miniToggle(e.enabled !== false, (v) => {
+          const k = id;
+          const at = evDraft.disabled.indexOf(k);
+          if (v && at >= 0) {
+            evDraft.disabled.splice(at, 1);
+          } else if (!v && at < 0) {
+            evDraft.disabled.push(k);
+          }
+        })
+      );
+      /**
+       * ★ 一行式：`✓ 名称 · 条件 · 动画 · #id`（省略号截断）。
+       * 为什么不是两行：本页在 WE 里**不能滚动**（不转发 wheel），10 条内置事件
+       * 两行式会把「新建」区顶到可视区之外 —— 那样用户根本点不到新建。
+       */
+      const name = createEl(
+        'div',
+        [
+          'flex:0 1 auto',
+          'min-width:0',
+          'max-width:' + uiPx(300),
+          'font-size:' + fpx(12),
+          'line-height:1.4',
+          'white-space:nowrap',
+          'overflow:hidden',
+          'text-overflow:ellipsis',
+        ].join(';'),
+        row
+      );
+      name.textContent = e.displayName || e.label || id;
+      name.title = e.text || name.textContent;
+      const chans = channelsOf(e)
+        .map((c) => CH_LABEL[c] || c)
+        .join('/');
+      const fx =
+        e.particles && e.particles.length ? '·' + e.particles.join('+') : '';
+      const meta = createEl(
+        'div',
+        [
+          'flex:1 1 auto',
+          'min-width:0',
+          'font-size:' + fpx(10.5),
+          'opacity:.55',
+          'line-height:1.4',
+          'white-space:nowrap',
+          'overflow:hidden',
+          'text-overflow:ellipsis',
+        ].join(';'),
+        row
+      );
+      meta.textContent =
+        (chans || '不可达') +
+        ' · ' +
+        describeCondition(e.when) +
+        ' · ' +
+        (e.animation || '—') +
+        fx +
+        ' · ' +
+        id;
+      meta.title = meta.textContent;
+      /** 只有「本机新建」（在 `added` 里）才给删除；config 里的条目删不掉（也不该删） */
+      if (evDraft.added.some((a) => eventKeyOf(a) === id)) {
+        const del = createEl('button', BTN_GHOST, row);
+        del.id = 'wb-ev-del-' + id.replace(/[^a-zA-Z0-9_-]/g, '_');
+        del.className = 'wb-ev-del';
+        del.textContent = '删除';
+        del.style.padding = uiPx(3) + ' ' + uiPx(7);
+        del.style.fontSize = fpx(11);
+        del.addEventListener('click', () => {
+          evDraft.added = evDraft.added.filter((x) => eventKeyOf(x) !== id);
+          evDraft.disabled = evDraft.disabled.filter((k) => k !== id);
+          renderList();
+          relayoutPanel();
+        });
+      }
+    });
+    relayoutPanel();
+  };
+
+  /* ── 新建区 ──────────────────────────────── */
+  const builder = createEl(
+    'div',
+    [
+      'display:none',
+      'max-width:' + uiPx(760),
+      'margin-top:' + uiPx(8),
+      'padding-top:' + uiPx(6),
+      'border-top:' + uiPx(1) + ' solid rgba(255,255,255,0.10)',
+    ].join(';'),
+    evInner
+  );
+  builder.id = 'wb-ev-builder';
+  /** ⚠️ 之后所有 `addRow` 的默认父级 = 新建区（见 `rowTarget` 的说明） */
+  rowTarget = builder;
+
+  /** 新建草稿 */
+  const bd = {
+    /** ★ 默认**不选**：默认勾 touch 会让"点一下回到壁纸"变成 touch+resume 两条 */
+    channels: [] as TriggerChannel[],
+    cond: 'none' as 'none' | 'time' | 'date' | 'zone' | 'idle',
+    timeStart: 8,
+    timeEnd: 22,
+    month: 2,
+    day: 14,
+    zone: zoneList.length ? zoneList[0].id : '',
+    idleMin: 1,
+    animations: [] as string[],
+    particles: [] as string[],
+    source: '',
+    priority: 80,
+    dailyOnce: false,
+  };
+
+  /** chip 行（多选/单选都由 `onPick` 自己决定） */
+  const makeChips = (
+    items: ReadonlyArray<readonly [string, string]>,
+    isOn: (v: string) => boolean,
+    onPick: (v: string) => void,
+    idPrefix?: string
+  ): { el: HTMLElement; paint: () => void } => {
+    const wrap = createEl(
+      'div',
+      'display:flex;flex-wrap:wrap;gap:' + uiPx(4) + ';pointer-events:auto'
+    );
+    const btns: { v: string; el: HTMLElement }[] = [];
+    const paint = () => {
+      btns.forEach(({ v, el }) => {
+        const on = isOn(v);
+        el.style.borderColor = on ? '#4a90e2' : 'rgba(255,255,255,0.22)';
+        el.style.background = on
+          ? 'rgba(74,144,226,0.28)'
+          : 'rgba(255,255,255,0.06)';
+        el.style.color = on ? '#dce9fb' : 'rgba(238,241,246,0.72)';
+      });
+    };
+    items.forEach(([v, label]) => {
+      const b = createEl(
+        'button',
+        [
+          'flex:0 0 auto',
+          'padding:' + uiPx(3) + ' ' + uiPx(8),
+          'border:' + uiPx(1) + ' solid rgba(255,255,255,0.22)',
+          'border-radius:999px',
+          'background:rgba(255,255,255,0.06)',
+          'color:rgba(238,241,246,0.72)',
+          'font-size:' + fpx(11),
+          'font-family:inherit',
+          'cursor:pointer',
+          'white-space:nowrap',
+        ].join(';'),
+        wrap
+      );
+      b.textContent = label;
+      b.setAttribute('data-wb-ev-chip', v);
+      if (idPrefix) {
+        b.id = idPrefix + '-' + v.replace(/[^a-zA-Z0-9_-]/g, '_');
+      }
+      b.addEventListener('click', () => {
+        onPick(v);
+        paint();
+      });
+      btns.push({ v, el: b });
+    });
+    paint();
+    return { el: wrap, paint };
+  };
+
+  /** 步进器（小时 / 日期 / 分钟都是**整数**，滑块做不到精确到 1，所以用 ◀ ▶） */
+  const stepper = (
+    id: string,
+    min: number,
+    max: number,
+    step: number,
+    fmt: (n: number) => string,
+    get: () => number,
+    set: (n: number) => void
+  ) => {
+    const wrap = createEl(
+      'div',
+      'display:flex;align-items:center;gap:' + uiPx(5) + ';pointer-events:auto'
+    );
+    wrap.id = id;
+    const mkBtn = (text: string, delta: number) => {
+      const b = createEl(
+        'button',
+        [
+          'padding:' + uiPx(2) + ' ' + uiPx(7),
+          'border:' + uiPx(1) + ' solid rgba(255,255,255,0.22)',
+          'border-radius:' + uiPx(6),
+          'background:rgba(255,255,255,0.06)',
+          'color:rgba(238,241,246,0.85)',
+          'font-size:' + fpx(11.5),
+          'font-family:inherit',
+          'cursor:pointer',
+        ].join(';'),
+        wrap
+      );
+      b.textContent = text;
+      b.addEventListener('click', () => {
+        let v = get() + delta;
+        /** 越界**回绕**（23 点再往前一圈就是 0 点）—— 比"顶住不动"少一次误点 */
+        if (v > max) {
+          v = min;
+        }
+        if (v < min) {
+          v = max;
+        }
+        set(v);
+        paint();
+      });
+      return b;
+    };
+    mkBtn('\u25C0', -step);
+    const val = createEl(
+      'span',
+      'min-width:' +
+        uiPx(46) +
+        ';text-align:center;font-variant-numeric:tabular-nums',
+      wrap
+    );
+    mkBtn('\u25B6', step);
+    const paint = () => {
+      val.textContent = fmt(get());
+    };
+    paint();
+    return { el: wrap, paint };
+  };
+
+  /* ① 触发通道（多选；kind 按第一个通道推，与 `normalizeEventTable` 同一函数） */
+  const chChips = makeChips(
+    [
+      ['touch', '触摸'],
+      ['standby', '待机'],
+      ['resume', '回到壁纸'],
+    ] as const,
+    (v) => bd.channels.indexOf(v as TriggerChannel) >= 0,
+    (v) => {
+      const c = v as TriggerChannel;
+      const at = bd.channels.indexOf(c);
+      if (at >= 0) {
+        bd.channels.splice(at, 1);
+      } else {
+        bd.channels.push(c);
+        /** 优先级跟着通道给一个档（用户还能在下面改） */
+        bd.priority = c === 'touch' ? 80 : c === 'standby' ? 10 : 20;
+        selPriority.value = String(bd.priority);
+      }
+      paintChanTip();
+    },
+    'wb-ev-on'
+  );
+  addRow(
+    '触发方式',
+    chChips.el,
+    '点中哪个入口会考虑这条事件（可多选）。类别按第一个通道自动确定：触摸→touch类、待机→chat类、回到壁纸→greet类。',
+    builder,
+    true
+  );
+  const chanTip = createEl(
+    'div',
+    'font-size:' + fpx(10.5) + ';opacity:.5;margin-top:' + uiPx(2),
+    builder
+  );
+  const paintChanTip = () => {
+    const first = bd.channels[0];
+    chanTip.textContent = !first
+      ? '还没选触发方式 —— 至少选一个，否则添加不了。'
+      : '类别 = ' +
+        (first === 'touch'
+          ? 'touch类'
+          : first === 'standby'
+          ? 'chat类'
+          : 'greet类') +
+        '（决定它受哪个「可触发的事件」勾选约束）';
+  };
+  paintChanTip();
+
+  /* ② 条件模板 */
+  const condOpts: ReadonlyArray<readonly [string, string]> = [
+    ['none', '不设条件'],
+    ['time', '时段'],
+    ['date', '日期'],
+    ['idle', '静置'],
+    ...(zoneList.length ? ([['zone', '热区']] as const) : []),
+  ];
+  const selCond = createSegmented('wb-ev-cond', condOpts, true);
+  selCond.addEventListener('change', () => {
+    bd.cond = selCond.value as typeof bd.cond;
+    paintParams();
+  });
+  addRow(
+    '触发条件',
+    selCond.el,
+    '条件与通道是「与」的关系：例如"回到壁纸 + 时段 23:00–04:00"= 深夜回到桌面才播。',
+    builder,
+    true
+  );
+
+  const paramsBox = createEl('div', 'margin-top:' + uiPx(2), builder);
+  /* 时段 */
+  const timeRow = createEl(
+    'div',
+    'display:flex;align-items:center;gap:' +
+      uiPx(10) +
+      ';flex-wrap:wrap;padding:' +
+      uiPx(3) +
+      ' 0',
+    paramsBox
+  );
+  createEl(
+    'span',
+    'font-size:' + fpx(11) + ';opacity:.7',
+    timeRow
+  ).textContent = '从';
+  const stStart = stepper(
+    'wb-ev-time-start',
+    0,
+    23,
+    1,
+    (n) => String(n).padStart(2, '0') + ':00',
+    () => bd.timeStart,
+    (n) => {
+      bd.timeStart = n;
+    }
+  );
+  timeRow.appendChild(stStart.el);
+  createEl(
+    'span',
+    'font-size:' + fpx(11) + ';opacity:.7',
+    timeRow
+  ).textContent = '到';
+  const stEnd = stepper(
+    'wb-ev-time-end',
+    0,
+    23,
+    1,
+    (n) => String(n).padStart(2, '0') + ':00',
+    () => bd.timeEnd,
+    (n) => {
+      bd.timeEnd = n;
+    }
+  );
+  timeRow.appendChild(stEnd.el);
+  createEl(
+    'span',
+    'font-size:' + fpx(10.5) + ';opacity:.5',
+    timeRow
+  ).textContent = '（起点大于终点 = 跨零点）';
+
+  /* 日期 */
+  const dateRow = createEl(
+    'div',
+    'display:flex;align-items:center;gap:' +
+      uiPx(8) +
+      ';flex-wrap:wrap;padding:' +
+      uiPx(3) +
+      ' 0',
+    paramsBox
+  );
+  const stMonth = stepper(
+    'wb-ev-date-month',
+    1,
+    12,
+    1,
+    (n) => n + ' 月',
+    () => bd.month,
+    (n) => {
+      bd.month = n;
+    }
+  );
+  dateRow.appendChild(stMonth.el);
+  const stDay = stepper(
+    'wb-ev-date-day',
+    1,
+    31,
+    1,
+    (n) => n + ' 日',
+    () => bd.day,
+    (n) => {
+      bd.day = n;
+    }
+  );
+  dateRow.appendChild(stDay.el);
+  createEl(
+    'span',
+    'font-size:' + fpx(10.5) + ';opacity:.5',
+    dateRow
+  ).textContent = '（每年这一天；如 2 月 14 日）';
+
+  /* 热区 */
+  const zoneRow = createEl(
+    'div',
+    'display:flex;align-items:center;gap:' +
+      uiPx(6) +
+      ';flex-wrap:wrap;padding:' +
+      uiPx(3) +
+      ' 0',
+    paramsBox
+  );
+  const zoneChips = makeChips(
+    zoneList.map((z) => [z.id, z.label || z.id] as const),
+    (v) => bd.zone === v,
+    (v) => {
+      bd.zone = v;
+    },
+    'wb-ev-zone'
+  );
+  zoneRow.appendChild(zoneChips.el);
+
+  /* 静置 */
+  const idleRow = createEl(
+    'div',
+    'display:flex;align-items:center;gap:' +
+      uiPx(6) +
+      ';padding:' +
+      uiPx(3) +
+      ' 0',
+    paramsBox
+  );
+  createEl(
+    'span',
+    'font-size:' + fpx(11) + ';opacity:.7',
+    idleRow
+  ).textContent = '静置满';
+  const stIdle = stepper(
+    'wb-ev-idle',
+    1,
+    60,
+    5,
+    (n) => n + ' 分钟',
+    () => bd.idleMin,
+    (n) => {
+      bd.idleMin = n;
+    }
+  );
+  idleRow.appendChild(stIdle.el);
+  createEl(
+    'span',
+    'font-size:' + fpx(10.5) + ';opacity:.5',
+    idleRow
+  ).textContent = '（待机通道本身已经有阈值，这里用于"比它更久")';
+
+  const paintParams = () => {
+    timeRow.style.display = bd.cond === 'time' ? 'flex' : 'none';
+    dateRow.style.display = bd.cond === 'date' ? 'flex' : 'none';
+    zoneRow.style.display = bd.cond === 'zone' ? 'flex' : 'none';
+    idleRow.style.display = bd.cond === 'idle' ? 'flex' : 'none';
+    relayoutPanel();
+  };
+  paintParams();
+
+  /* ③ 动作（多选 = 每次随机一条） */
+  const animChips = makeChips(
+    options.animations.map((n) => [n, n] as const),
+    (v) => bd.animations.indexOf(v) >= 0,
+    (v) => {
+      const at = bd.animations.indexOf(v);
+      if (at >= 0) {
+        bd.animations.splice(at, 1);
+      } else {
+        bd.animations.push(v);
+      }
+    },
+    'wb-ev-anim'
+  );
+  addRow(
+    'spine 动作',
+    animChips.el,
+    options.animations.length > 1
+      ? '选 1 个 = 固定动作；选 2 个以上 = 每次随机抽一个（整包随机）。'
+      : '本骨架只有一个动画候选。',
+    builder,
+    true
+  );
+
+  /* ④ 粒子（多选 = 每次随机一组） */
+  if (particleList.length) {
+    const partChips = makeChips(
+      particleList.map((n) => [n, n] as const),
+      (v) => bd.particles.indexOf(v) >= 0,
+      (v) => {
+        const at = bd.particles.indexOf(v);
+        if (at >= 0) {
+          bd.particles.splice(at, 1);
+        } else {
+          bd.particles.push(v);
+        }
+      },
+      'wb-ev-fx'
+    );
+    addRow(
+      '粒子效果',
+      partChips.el,
+      '不选 = 按动画名回落 config 原有的特效绑定；选多个 = 每次随机抽一组（与动作整包配对）。',
+      builder,
+      true
+    );
+  }
+
+  /* ⑤ 念白 / 语音的来源（继承，不输入） */
+  const srcItems: ReadonlyArray<readonly [string, string]> = [
+    ['', '无念白（纯动作）'],
+    ...(options.eventTable ?? []).map(
+      (e) =>
+        [
+          eventKeyOf(e),
+          (e.displayName || e.label || eventKeyOf(e)) +
+            (e.voice ? ' \u266A' : ''),
+        ] as const
+    ),
+  ];
+  const srcChips = makeChips(
+    srcItems,
+    (v) => bd.source === v,
+    (v) => {
+      bd.source = v;
+    },
+    'wb-ev-src'
+  );
+  addRow(
+    '念白与语音',
+    srcChips.el,
+    '从现有条目**继承**台词与配音（本页不做文本输入）。带 ♪ 的条目有语音文件。',
+    builder,
+    true
+  );
+
+  /* ⑥ 优先级 + 配额 */
+  const selPriority = createSegmented(
+    'wb-ev-priority',
+    [
+      ['80', '用户操作'],
+      ['50', '节日'],
+      ['20', '时段问候'],
+      ['10', '日常'],
+      ['0', '默认'],
+    ] as const,
+    true
+  );
+  selPriority.addEventListener('change', () => {
+    bd.priority = Number(selPriority.value) || 0;
+  });
+  addRow(
+    '优先级',
+    selPriority.el,
+    '同一次触发里先比优先级（高的那档才有机会被抽到），同档再按权重随机。',
+    builder,
+    true
+  );
+  const cbDaily = createToggle(
+    'wb-ev-daily',
+    '每天最多一次',
+    '适合节日问候这类"一天只想听一次"的事件'
+  );
+  cbDaily.addEventListener('change', () => {
+    bd.dailyOnce = cbDaily.checked;
+  });
+
+  /* ⑦ 添加 */
+  const addBar = createEl(
+    'div',
+    'display:flex;gap:' + uiPx(8) + ';margin-top:' + uiPx(8),
+    builder
+  );
+  const btnAdd = createEl('button', BTN_PRIMARY, addBar);
+  btnAdd.id = 'wb-ev-add';
+  btnAdd.textContent = '添加到列表';
+  const addHint = createEl(
+    'div',
+    'font-size:' +
+      fpx(10.5) +
+      ';opacity:.55;margin-top:' +
+      uiPx(4) +
+      ';line-height:1.5',
+    builder
+  );
+
+  /**
+   * 把草稿编译成一条事件 —— **编译逻辑不在面板里**（`src/eventBuilder.ts`，
+   * 纯函数、有回归 `_regress/89`）。面板只把点选状态摊平成 `CustomEventDraft`。
+   */
+  const buildDef = (): { def: DialogueEntry; name: string } | null => {
+    const def = buildCustomEvent(
+      {
+        channels: bd.channels,
+        condition: bd.cond,
+        timeStart: bd.timeStart,
+        timeEnd: bd.timeEnd,
+        month: bd.month,
+        day: bd.day,
+        zone: bd.zone,
+        idleMinutes: bd.idleMin,
+        animations: bd.animations,
+        particles: bd.particles,
+        textSourceKey: bd.source,
+        priority: bd.priority,
+        dailyOnce: bd.dailyOnce,
+      },
+      {
+        animations: options.animations,
+        events: options.eventTable,
+        existingKeys: evDraft.added.map((e) => eventKeyOf(e)),
+      }
+    );
+    return def ? { def, name: String(def.displayName || def.id) } : null;
+  };
+
+  /**
+   * 列表 / 新建区**互斥显示**（不是上下叠放）。
+   *
+   * 理由：WE 不转发滚轮 ⇒ 面板内容一旦超高就够不着（见「面板自适应高度」那段）。
+   * 10 条内置事件 + 一片表单必然超高，所以让两者各占满一屏、点按钮切换。
+   */
+  const setBuilderOpen = (v: boolean) => {
+    builder.style.display = v ? 'block' : 'none';
+    evCount.style.display = v ? 'none' : '';
+    evList.style.display = v ? 'none' : '';
+    btnClear.style.display = v ? 'none' : '';
+    btnNew.textContent = v ? '← 返回列表' : '＋ 新建事件';
+    relayoutPanel();
+  };
+
+  btnAdd.addEventListener('click', () => {
+    const built = buildDef();
+    if (!built) {
+      addHint.textContent = '⚠ 至少要选一个触发方式和一个动作。';
+      return;
+    }
+    evDraft.added.push(built.def);
+    renderList();
+    addHint.textContent =
+      '✅ 已加入「' +
+      built.name +
+      '」—— 点底部「保存并应用」后生效（壁纸会重载）。';
+    setBuilderOpen(false);
+  });
+
+  btnNew.addEventListener('click', () => {
+    setBuilderOpen(builder.style.display === 'none');
+    addHint.textContent = '';
+  });
+
+  btnClear.addEventListener('click', () => {
+    evDraft.added = [];
+    evDraft.disabled = evDraft.disabled.filter(
+      (k) => k.indexOf('custom:') !== 0
+    );
+    renderList();
+    addHint.textContent = '已清空本机新建的事件（点「保存并应用」后生效）。';
+  });
+
+  renderList();
+
+  /* ── tab 6：画面调整 ───────────────────────── */
   rowTarget = pages.view;
 
   /**
@@ -2908,6 +3761,15 @@ export const createSettingsPanel = (
   });
 
   btnSave.addEventListener('click', () => {
+    /**
+     * ★ 自定义事件与设置项**同一次保存**（2026-10-18 / S9）。
+     *
+     * ⚠️ 必须在 `onSave` 之前落盘：`onSave` 的调用方会**立刻重载页面**
+     *   （`window.location.reload()`），晚一步写就等于"点了保存，新建事件没了"。
+     */
+    if (options.onSaveEvents) {
+      options.onSaveEvents(normalizeOverrides(evDraft));
+    }
     options.onSave({
       muteAll: draft.muteAll,
       bgmEnabled: draft.bgmEnabled,

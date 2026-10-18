@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>音频格式自检 · Spine Wallpaper</title>
+    <!--
+      ══════════════════════════════════════════════════════════════════════
+      多格式语音的**真机自检页**（PLAN §9 最后一条待办：m4a 在 WE 的 CEF 里）
+      ══════════════════════════════════════════════════════════════════════
+
+      ## 为什么需要这一页
+
+      Chrome 能解 m4a ≠ WE 的 CEF 能解（编译开关不同：专有编解码器可能没打包）。
+      而 WE 里**没有可靠的开发者工具入口**，光听声音判断不了"是文件不存在、
+      被自动播放策略拦下、还是这个容器真不支持"。
+
+      ⇒ 把所有判断拆成**能看见的读数**：
+
+      1. `canPlayType()` —— 浏览器声称支持什么（非空即算"能播"，
+         与 `voicePlayer` 的 `canPlay` 同口径）；
+      2. **真实解码** —— `new Audio(url)` 等 `canplaythrough` / `error`，
+         这才是"这个文件在这个宿主里到底能不能播"；
+      3. 环境指纹（UA / 是否 CEF），用来说明"这次结论是在哪个壳里测的"。
+
+      ## 用法
+
+      **浏览器**（本仓库 `dist/` 里就有一份）：直接打开
+      `http://127.0.0.1:8123/audio-check.html`
+
+      **WE 的 CEF**：把 `dist/` 目录作为**网页壁纸**加进 WE（或直接在内置
+      浏览器打开同一 URL）⇒ 页面顶部会打印 UA，把那段连同表格一起截图。
+
+      想测**指定文件**（例如你自己转的一个 .m4a）：
+        1. 把文件丢进 `public/assets/voice/`（或任意同目录位置）；
+        2. 打开 `audio-check.html?extra=我的.m4a,另一个.mp3`
+      页面只按 `<assets>/voice/<名字>` 拼 URL，不做目录遍历
+      （`file://` 下 `fetch` 拿不到目录列表，见 `scripts/voiceManifest.ts` 的说明）。
+
+      ## 自动化读数
+
+      `window.__AUDIO_CHECK__` = `{ ua, canPlay, results, done }`，
+      `results` 里每项是 `{ url, ok, detail }`。回归/验收脚本可以直接 wait 它。
+    -->
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 22px 26px 40px;
+        background: #0f1116;
+        color: #e8ecf3;
+        font:
+          13px/1.55 "Microsoft YaHei",
+          "PingFang SC",
+          system-ui,
+          sans-serif;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0 0 4px;
+        letter-spacing: 0.5px;
+      }
+      .sub {
+        opacity: 0.55;
+        font-size: 11.5px;
+        margin-bottom: 16px;
+      }
+      section {
+        margin: 0 0 18px;
+        padding: 12px 14px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.03);
+      }
+      h2 {
+        font-size: 12.5px;
+        margin: 0 0 8px;
+        opacity: 0.85;
+        font-weight: 600;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 11.5px;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 4px 8px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+        white-space: nowrap;
+      }
+      th {
+        opacity: 0.6;
+        font-weight: 500;
+      }
+      td.url {
+        max-width: 520px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        opacity: 0.8;
+        font-family: ui-monospace, Consolas, monospace;
+      }
+      .ok {
+        color: #67d08b;
+      }
+      .bad {
+        color: #ff7b72;
+      }
+      .warn {
+        color: #e3b341;
+      }
+      .kv {
+        display: grid;
+        grid-template-columns: 132px 1fr;
+        gap: 3px 10px;
+        font-size: 11.5px;
+      }
+      .kv b {
+        font-weight: 500;
+        opacity: 0.6;
+      }
+      code {
+        font-family: ui-monospace, Consolas, monospace;
+        background: rgba(255, 255, 255, 0.07);
+        padding: 1px 4px;
+        border-radius: 4px;
+      }
+      .pill {
+        display: inline-block;
+        padding: 1px 7px;
+        border-radius: 999px;
+        font-size: 10.5px;
+        border: 1px solid currentColor;
+        margin-left: 6px;
+        vertical-align: 1px;
+      }
+      .summary {
+        margin-top: 10px;
+        font-size: 11.5px;
+        line-height: 1.6;
+      }
+      .hint {
+        opacity: 0.5;
+        font-size: 11px;
+        margin-top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>音频格式自检</h1>
+    <div class="sub">
+      用来回答一个具体问题：<b>WE 的 CEF 到底能不能解 m4a</b>（以及另外几种容器）。
+      「声称支持」与「真的解码」是两列，别混看。
+    </div>
+
+    <section>
+      <h2>① 环境</h2>
+      <div class="kv" id="env"></div>
+    </section>
+
+    <section>
+      <h2>② canPlayType（浏览器<b>声称</b>支持什么）</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>格式</th>
+            <th>MIME</th>
+            <th>canPlayType</th>
+            <th>判定</th>
+          </tr>
+        </thead>
+        <tbody id="canplay"></tbody>
+      </table>
+      <div class="hint">
+        ★ 与 <code>voicePlayer</code> 同口径：<b>非空即算能播</b>（<code>maybe</code>
+        也算）。空串 = 明确不支持。
+      </div>
+    </section>
+
+    <section>
+      <h2>③ 真实解码（拿真实文件跑一遍）</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>文件</th>
+            <th>结果</th>
+            <th>读数</th>
+          </tr>
+        </thead>
+        <tbody id="decode">
+          <tr>
+            <td colspan="3" style="opacity: 0.5">正在读取 config.json …</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="summary" id="summary"></div>
+    </section>
+
+    <section>
+      <h2>④ 现场生成 m4a 并回读（<b>不需要任何素材</b>）</h2>
+      <div class="kv" id="enc"></div>
+      <table style="margin-top: 8px">
+        <thead>
+          <tr>
+            <th>步骤</th>
+            <th>结果</th>
+            <th>读数</th>
+          </tr>
+        </thead>
+        <tbody id="m4a"></tbody>
+      </table>
+      <div class="hint">
+        原理：用 <code>MediaRecorder</code> 录一段 0.6 秒的正弦波，容器选
+        <code>audio/mp4</code>（AAC）。能录 ⇒ 这个壳里有 **AAC/MP4 编码器**；
+        再把这段字节喂给 <code>decodeAudioData</code> 与 <code>&lt;audio&gt;</code>
+        ⇒ 直接回答"**解码器**在不在"，不必先去找一个 m4a 文件。
+        <br />⚠️ 编码器在 ≠ 解码器在（反之亦然），所以两个都测；两行都绿才算"m4a 可用"。
+      </div>
+    </section>
+
+    <section>
+      <h2>⑤ 怎么测一个你手上没有的文件</h2>
+      <div class="hint" style="opacity: 0.75">
+        把文件放进 <code>assets/voice/</code>，然后打开
+        <code>audio-check.html?extra=文件名.m4a</code>。可以逗号分隔多个。
+        页面**不做目录遍历**（<code>file://</code> 下拿不到目录列表）。
+      </div>
+    </section>
+
+    <script>
+      (function () {
+        /** 待测扩展名（顺序 = `subtitle.audio.extOrder` 的缺省值） */
+        var EXT_ORDER = (function () {
+          var q = new URLSearchParams(location.search).get('ext');
+          return (q || 'ogg,mp3,wav,m4a').split(',').map(function (s) {
+            return s.trim().replace(/^\./, '').toLowerCase();
+          });
+        })();
+
+        /** MIME 表（与 `voicePlayer.VOICE_MIME` 保持一致） */
+        var MIME = {
+          ogg: 'audio/ogg; codecs="vorbis"',
+          mp3: 'audio/mpeg',
+          wav: 'audio/wav',
+          m4a: 'audio/mp4; codecs="mp4a.40.2"',
+          aac: 'audio/aac',
+          flac: 'audio/flac',
+          webm: 'audio/webm',
+        };
+
+        var ua = navigator.userAgent || '';
+        var audio = document.createElement('audio');
+        var canPlay = {};
+        Object.keys(MIME).forEach(function (ext) {
+          try {
+            canPlay[ext] = audio.canPlayType(MIME[ext]);
+          } catch (e) {
+            canPlay[ext] = '';
+          }
+        });
+
+        var out = {
+          ua: ua,
+          isCef: /CEF|Wallpaper Engine/i.test(ua),
+          canPlay: canPlay,
+          results: [],
+          done: false,
+        };
+        window.__AUDIO_CHECK__ = out;
+
+        /* ① 环境 */
+        var env = document.getElementById('env');
+        function row(k, v, cls) {
+          var b = document.createElement('b');
+          b.textContent = k;
+          var s = document.createElement('span');
+          s.innerHTML = v;
+          if (cls) {
+            s.className = cls;
+          }
+          env.appendChild(b);
+          env.appendChild(s);
+        }
+        row('UA', '<code>' + ua.replace(/</g, '&lt;') + '</code>');
+        row(
+          '是否 CEF',
+          out.isCef
+            ? '<span class="ok">是</span>'
+            : '<span class="warn">否（这是普通浏览器，结论不能代表 WE）</span>'
+        );
+        row(
+          'AudioContext',
+          (function () {
+            var AC = window.AudioContext || window.webkitAudioContext;
+            if (!AC) {
+              return '<span class="bad">不存在（WebAudio 不可用）</span>';
+            }
+            try {
+              var ac = new AC();
+              var st = ac.state;
+              ac.close && ac.close();
+              return '<span class="' + (st === 'running' ? 'ok' : 'warn') + '">' + st + '</span>';
+            } catch (e) {
+              return '<span class="bad">' + e.message + '</span>';
+            }
+          })()
+        );
+        row('页面地址', '<code>' + location.href.replace(/</g, '&lt;') + '</code>');
+
+        /* ② canPlayType */
+        var tb = document.getElementById('canplay');
+        var extAll = Object.keys(MIME).filter(function (e) {
+          return EXT_ORDER.indexOf(e) >= 0 || ['aac', 'flac', 'webm'].indexOf(e) >= 0;
+        });
+        extAll.forEach(function (ext) {
+          var tr = document.createElement('tr');
+          var v = canPlay[ext] || '';
+          var verdict = v
+            ? '<span class="ok">能播（' + v + '）</span>'
+            : '<span class="bad">不支持</span>';
+          tr.innerHTML =
+            '<td>' +
+            ext +
+            '</td><td class="url">' +
+            MIME[ext] +
+            '</td><td>' +
+            (v ? '<code>' + v + '</code>' : '<code>""</code>') +
+            '</td><td>' +
+            verdict +
+            '</td>';
+          tb.appendChild(tr);
+        });
+
+        /* ③ 真实解码 */
+        var dbody = document.getElementById('decode');
+        var summary = document.getElementById('summary');
+
+        function testUrl(url, timeoutMs) {
+          return new Promise(function (resolve) {
+            var a = new Audio();
+            var done = false;
+            var t = setTimeout(function () {
+              finish(false, '超时 ' + timeoutMs + 'ms 内没有 canplaythrough');
+            }, timeoutMs);
+            function finish(okv, detail) {
+              if (done) {
+                return;
+              }
+              done = true;
+              clearTimeout(t);
+              try {
+                a.pause();
+                a.removeAttribute('src');
+                a.load();
+              } catch (e) {}
+              resolve({ url: url, ok: okv, detail: detail });
+            }
+            a.addEventListener('canplaythrough', function () {
+              finish(
+                true,
+                'duration=' + (isFinite(a.duration) ? a.duration.toFixed(2) + 's' : '?')
+              );
+            });
+            a.addEventListener('loadeddata', function () {
+              /** 有画面数据但没到 canplaythrough（短音频常见）⇒ 也算解码成功 */
+              if (a.readyState >= 2) {
+                finish(true, 'readyState=' + a.readyState + ' duration=' + (isFinite(a.duration) ? a.duration.toFixed(2) + 's' : '?'));
+              }
+            });
+            a.addEventListener('error', function () {
+              var err = a.error;
+              var code = err ? err.code : '?';
+              var map = {
+                1: 'ABORTED',
+                2: 'NETWORK',
+                3: 'DECODE',
+                4: 'SRC_NOT_SUPPORTED',
+              };
+              finish(false, map[code] || 'error ' + code);
+            });
+            try {
+              a.preload = 'auto';
+              a.src = url;
+              a.load();
+            } catch (e) {
+              finish(false, 'throw: ' + e.message);
+            }
+          });
+        }
+
+        function stemOf(v) {
+          return String(v).replace(/\.[a-z0-9]+$/i, '').replace(/^.*\//, '');
+        }
+
+        function renderResult(r) {
+          var tr = document.createElement('tr');
+          /** ★ "文件不存在" 与 "这个壳解不了" 是**两种结论**，不能都画成红叉 */
+          var missing = String(r.detail).indexOf('文件不存在') >= 0;
+          var verdict = missing
+            ? '<span style="opacity:.45">— 没有这个文件</span>'
+            : r.ok
+            ? '<span class="ok">✔ 能播</span>'
+            : '<span class="bad">✘ 不能播</span>';
+          tr.innerHTML =
+            '<td class="url" title="' +
+            r.url +
+            '">' +
+            r.url +
+            '</td><td>' +
+            verdict +
+            '</td><td>' +
+            '<code>' +
+            r.detail +
+            '</code></td>';
+          dbody.appendChild(tr);
+        }
+
+        (async function () {
+          var stems = [];
+          /** ① `?extra=` 显式点名 */
+          var extra = new URLSearchParams(location.search).get('extra');
+          if (extra) {
+            extra.split(',').forEach(function (s) {
+              var n = s.trim();
+              if (n) {
+                stems.push(stemOf(n));
+                var ext = (n.match(/\.([a-z0-9]+)$/i) || [])[1];
+                if (ext) {
+                  /** 点名的文件只测它自己（不扩成 4 个候选） */
+                  stems[stems.length - 1] = { stem: stemOf(n), only: ext.toLowerCase() };
+                }
+              }
+            });
+          }
+          /** ② 从 config.json 里取真实语音（与壁纸读同一份文件） */
+          if (!extra) {
+            try {
+              var res = await fetch('assets/config.json', { cache: 'no-store' });
+              var cfg = await res.json();
+              var ds = (cfg.subtitle && cfg.subtitle.dialogues) || [];
+              var seen = {};
+              ds.forEach(function (d) {
+                if (d && d.voice && !seen[d.voice]) {
+                  seen[d.voice] = 1;
+                  stems.push(stemOf(d.voice));
+                }
+              });
+              stems = stems.slice(0, 3);
+            } catch (e) {
+              dbody.innerHTML =
+                '<tr><td colspan="3" class="bad">读不到 assets/config.json（' +
+                e.message +
+                '）—— 用 <code>?extra=</code> 点名要测的文件</td></tr>';
+            }
+          }
+
+          if (!stems.length) {
+            if (!dbody.innerHTML) {
+              dbody.innerHTML =
+                '<tr><td colspan="3" style="opacity:.5">没有候选文件。</td></tr>';
+            }
+            summary.textContent =
+              '结论：没有可测文件 —— 用 ?extra= 点名，或确认 assets/config.json 里有 voice。';
+            out.done = true;
+            return;
+          }
+
+          dbody.innerHTML = '';
+          for (var i = 0; i < stems.length; i++) {
+            var item = stems[i];
+            var stem = typeof item === 'string' ? item : item.stem;
+            var exts = typeof item === 'string' ? EXT_ORDER : [item.only];
+            for (var j = 0; j < exts.length; j++) {
+              var url = 'assets/voice/' + stem + '.' + exts[j];
+              /**
+               * ★ 先确认**文件在不在**：`<audio>` 的 `error` 对"404"与"容器不支持"
+               *   给出的是同一类错误码，光看解码结果分不清"没转码"还是"CEF 不支持"。
+               *   `file://` 下 fetch 会抛（CORS）⇒ 那就跳过预检、直接实测。
+               */
+              var exists = true;
+              try {
+                var head = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+                exists = head.ok;
+              } catch (e) {
+                exists = true;
+              }
+              if (!exists) {
+                var miss = { url: url, ok: false, detail: '文件不存在（HTTP 404）' };
+                out.results.push(miss);
+                renderResult(miss);
+                continue;
+              }
+              var r = await testUrl(url, 5000);
+              out.results.push(r);
+              renderResult(r);
+            }
+          }
+
+          /** 汇总：按扩展名统计（这一行就是验收时最该截图的东西） */
+          var byExt = {};
+          out.results.forEach(function (r) {
+            var m = r.url.match(/\.([a-z0-9]+)$/i);
+            var e = m ? m[1].toLowerCase() : '?';
+            byExt[e] = byExt[e] || { ok: 0, total: 0 };
+            byExt[e].total += 1;
+            if (r.ok) {
+              byExt[e].ok += 1;
+            }
+          });
+          /**
+           * ★★ `file://` 下 **没法区分"文件不存在"与"这个壳不支持该容器"**：
+           *   `fetch` 做存在性预检会被 CORS 拦（于是上面的 `exists` 只能当作"未知"），
+           *   而 `<audio>` 对两者给的都是 `SRC_NOT_SUPPORTED`。
+           *   ⇒ 这一行必须写出来，否则用户会把"我没转这个格式"读成"CEF 不支持"。
+           *   判据用第 ④ 段交叉验证：同一个容器第 ④ 段能录能解 ⇒ 解码器在，
+           *   那 ③ 段的 `SRC_NOT_SUPPORTED` 就只能是**文件不存在**。
+           */
+          var hasUnsup = out.results.some(function (r) {
+            return String(r.detail).indexOf('SRC_NOT_SUPPORTED') >= 0;
+          });
+          summary.innerHTML = Object.keys(byExt)
+            .map(function (e) {
+              var s = byExt[e];
+              var cls = s.ok === s.total ? 'ok' : s.ok ? 'warn' : 'bad';
+              return (
+                '<span class="' +
+                cls +
+                '">' +
+                e +
+                '：' +
+                s.ok +
+                '/' +
+                s.total +
+                ' 可解码</span>'
+              );
+            })
+            .join(' · ');
+          if (hasUnsup) {
+            var foot = document.createElement('div');
+            foot.style.cssText = 'margin-top:8px;opacity:.6;font-size:11px';
+            foot.innerHTML =
+              '⚠️ <code>SRC_NOT_SUPPORTED</code> 有两种可能：<b>文件不存在</b>，' +
+              '或 <b>本壳没有该容器/编码的解码器</b>。' +
+              (location.protocol === 'file:'
+                ? '本页是 <code>file://</code> 打开的，<b>没法</b>先探文件在不在 ' +
+                  '（fetch 被 CORS 拦）⇒ 请用下面的 <b>第 ④ 段</b>交叉验证：' +
+                  '同一容器在第 ④ 段能录能解，说明解码器在，那这里的失败就只能是文件不存在。'
+                : '（http 下已先做存在性预检，判为 404 的会直接写"文件不存在"。）');
+            summary.appendChild(foot);
+          }
+          out.done = true;
+          runM4aSelfTest();
+        })();
+
+        /* ── ⑤ 现场生成 m4a 并回读 ─────────────────────────────── */
+        function runM4aSelfTest() {
+          var enc = document.getElementById('enc');
+          var body = document.getElementById('m4a');
+          function kv(k, v) {
+            var b = document.createElement('b');
+            b.textContent = k;
+            var s2 = document.createElement('span');
+            s2.innerHTML = v;
+            enc.appendChild(b);
+            enc.appendChild(s2);
+          }
+          function line(step, okv, detail) {
+            var tr = document.createElement('tr');
+            tr.innerHTML =
+              '<td>' +
+              step +
+              '</td><td>' +
+              (okv === null
+                ? '<span class="warn">跳过</span>'
+                : okv
+                ? '<span class="ok">✔ 成功</span>'
+                : '<span class="bad">✘ 失败</span>') +
+              '</td><td><code>' +
+              String(detail).replace(/</g, '&lt;') +
+              '</code></td>';
+            body.appendChild(tr);
+          }
+
+          var MR = window.MediaRecorder;
+          var mimes = [
+            'audio/mp4',
+            'audio/mp4;codecs=mp4a.40.2',
+            'audio/mp4;codecs=mp4a.40.5',
+            'audio/aac',
+            'audio/ogg;codecs=opus',
+            'audio/webm;codecs=opus',
+            'audio/mpeg',
+          ];
+          var supported = {};
+          mimes.forEach(function (m) {
+            supported[m] = !!(MR && MR.isTypeSupported && MR.isTypeSupported(m));
+          });
+          kv(
+            'MediaRecorder',
+            MR
+              ? '<span class="ok">存在</span>'
+              : '<span class="bad">不存在（老 CEF 没有）</span>'
+          );
+          kv(
+            'audio/mp4 可编码',
+            supported['audio/mp4']
+              ? '<span class="ok">是</span>'
+              : '<span class="bad">否</span>'
+          );
+          kv(
+            '支持的类型',
+            '<code>' +
+              (Object.keys(supported).filter(function (k) {
+                return supported[k];
+              }).join(' , ') || '(无)') +
+              '</code>'
+          );
+
+          var AC = window.AudioContext || window.webkitAudioContext;
+          var mime = supported['audio/mp4;codecs=mp4a.40.2']
+            ? 'audio/mp4;codecs=mp4a.40.2'
+            : supported['audio/mp4']
+            ? 'audio/mp4'
+            : '';
+          if (!MR || !AC || !mime) {
+            line('录制 0.6s AAC/MP4', null, '本壳没有 MediaRecorder 或 audio/mp4 编码器');
+            out.m4a = { supported: false };
+            return;
+          }
+          var ac = new AC();
+          var osc = ac.createOscillator();
+          var dest = ac.createMediaStreamDestination();
+          osc.frequency.value = 440;
+          osc.connect(dest);
+          var chunks = [];
+          var rec = new MR(dest.stream, { mimeType: mime });
+          rec.ondataavailable = function (e) {
+            if (e.data && e.data.size) {
+              chunks.push(e.data);
+            }
+          };
+          rec.onstop = async function () {
+            try {
+              osc.stop();
+              ac.close && ac.close();
+            } catch (e) {}
+            var blob = new Blob(chunks, { type: mime });
+            line(
+              '录制 0.6s AAC/MP4',
+              blob.size > 0,
+              blob.size + ' bytes · type=' + (blob.type || '?')
+            );
+            if (!blob.size) {
+              out.m4a = { supported: true, recorded: false };
+              return;
+            }
+            /* ① decodeAudioData（解码器本体） */
+            var decodeOk = null;
+            var decodeDetail = '';
+            try {
+              var buf = await blob.arrayBuffer();
+              /** ★ 用**新的** AudioContext：上面那个已经被 close 掉了 */
+              var ac2 = new AC();
+              var ab = await new Promise(function (res, rej) {
+                ac2.decodeAudioData(
+                  buf.slice(0),
+                  function (b) {
+                    res(b);
+                  },
+                  function (e) {
+                    rej(e || new Error('decodeAudioData 失败'));
+                  }
+                );
+              });
+              ac2.close && ac2.close();
+              decodeOk = !!ab && ab.duration > 0;
+              decodeDetail = ab
+                ? 'duration=' + ab.duration.toFixed(3) + 's / ' + ab.sampleRate + 'Hz'
+                : '解出空 buffer';
+            } catch (e) {
+              decodeOk = false;
+              decodeDetail =
+                'throw: ' + (e && (e.message || e.name || String(e)));
+            }
+            line('decodeAudioData 解 AAC/MP4', decodeOk, decodeDetail);
+            /* ② <audio> 播放链路 */
+            var playOk = false;
+            var playDetail = '';
+            try {
+              var url = URL.createObjectURL(blob);
+              var a = new Audio();
+              playOk = await new Promise(function (res) {
+                var t = setTimeout(function () {
+                  res(false);
+                }, 4000);
+                a.addEventListener('canplaythrough', function () {
+                  clearTimeout(t);
+                  playDetail = 'duration=' + (isFinite(a.duration) ? a.duration.toFixed(3) + 's' : '?');
+                  res(true);
+                });
+                a.addEventListener('error', function () {
+                  clearTimeout(t);
+                  playDetail = 'error code=' + (a.error && a.error.code);
+                  res(false);
+                });
+                a.preload = 'auto';
+                a.src = url;
+                a.load();
+              });
+              URL.revokeObjectURL(url);
+            } catch (e) {
+              playDetail = 'throw: ' + e.message;
+            }
+            line('<audio> 播 AAC/MP4', playOk, playDetail || '(4s 内无 canplaythrough)');
+            out.m4a = {
+              supported: true,
+              recorded: blob.size,
+              decode: decodeOk,
+              play: playOk,
+            };
+            out.m4aDone = true;
+          };
+          osc.start();
+          rec.start();
+          setTimeout(function () {
+            try {
+              rec.stop();
+            } catch (e) {}
+          }, 600);
+        }
+      })();
+    </script>
+  </body>
+</html>
