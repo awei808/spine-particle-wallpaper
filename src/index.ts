@@ -398,13 +398,31 @@ const main = async () => {
    */
   let lastFrameTime = Date.now() / 1000;
   /**
-   * 上一次**真正渲染**的时刻（ms）。只有 `configs.maxFps > 0` 时才被读取。
+   * 限帧的**累加器**（毫秒）与上一次 rAF 的时刻。
    *
-   * ★ 与 `lastFrameTime` 的区别很关键：`lastFrameTime` 记的是"上一次推进动画的时刻"，
-   *   而这里记的是"上一次执行渲染的时刻"。限帧时被跳过的那些帧**不更新本变量**，
-   *   于是省下的时间会累加进下一帧的 delta ⇒ 动画按真实经过的时间推进，不会变慢。
+   * ★ 与 `lastFrameTime` 的分工：`lastFrameTime` 记"上一次推进动画的时刻"，
+   *   被节流跳过的帧**不更新它** ⇒ 省下的时间累加进下一帧 delta
+   *   ⇒ 动画按真实经过的时间推进，不会变慢。
+   *
+   * ★★ 为什么用 `performance.now()` 而不是 `Date.now()`（2026-10-19）：
+   *   `Date.now()` 只有**整数毫秒**精度。120fps 需要 8.33ms 间隔，整数只能取 9ms
+   *   ⇒ 封顶 ~111fps（−7.5%）；60/30fps 也被系统性压低（58.8 / 29.4）。
+   *   `performance.now()` 亚毫秒且**单调**（不受系统校时跳变影响）。
+   *   ⚠️ 动画 delta 仍走 `Date.now()`（`lastFrameTime`）：那是墙钟语义，
+   *   与 WE 暂停恢复时的钳位配套，不跟着换。
+   *
+   * ★★ 为什么不能只比较"距上次渲染是否够一个 gap"（2026-10-19 实测）：
+   *   当 rAF 的节奏（如 6.1ms）**不能整除**目标间隔（120fps ⇒ 8.33ms）时，
+   *   `now - lastRender` 会在 6.1 / 12.2 / 6.1 / 12.2 … 之间跳，
+   *   于是只有"12.2 那一拍"能过 ⇒ 实际渲染间隔 12.2ms ⇒ **82fps**（目标 120，−32%）。
+   *   这不是精度问题，是**丢帧**。
+   *   累加器（WE 官方《FPS Limiter》用的也是这个写法）把每次 rAF 的间隔攒起来，
+   *   够一帧才渲染并**只减一帧的额度**（余量保留）⇒ 平均节奏精确等于目标。
    */
-  let lastRenderMs = Date.now();
+  let capAccumMs = 0;
+  let lastTickMs = performance.now();
+  /** 上一帧的 cap（变化时重置累加器，避免把上一档的余量带过来） */
+  let lastCapForAccum = 0;
   const spineAssetManager = new threejsSpine.AssetManager(ASSET_PATH);
   const threeAssetList: { [path: string]: THREE.Texture } = {};
   const meshUpdateCallbacks: Array<(delta: number) => void> = [];
@@ -2516,7 +2534,7 @@ const main = async () => {
   // ★★ `lastFrameTime` **只在真正渲染时更新** —— 被跳过的帧的时间会累加到下一帧的
   //   delta 上，动画按**真实经过的时间**推进，不会因为限帧/降帧而变慢。
   // ★★ 恢复必须"立刻"：鼠标一动 ⇒ `getLastCursorAtMs()` 变新 ⇒ 下一帧 idle=false
-  //   ⇒ 上限回到基准值；此时 gap 变小，`nowMs - lastRenderMs` 通常已经够 ⇒ 当帧就画。
+  //   ⇒ 上限回到基准值；累加器检测到 cap 变化会**重置**，下一帧就按新上限放行 ⇒ 当帧恢复。
   const maxFpsCfg = configs.maxFps ?? 0;
   /** 空闲帧率（`0` = 关闭空闲降帧；缺省关闭，避免改变未配置工程的行为） */
   const idleFps = Math.max(0, configs.idleFps ?? 0);
@@ -2532,7 +2550,11 @@ const main = async () => {
   const resolveBaseCap = (): number => (hasWeFps() ? getWeFps() : maxFpsCfg);
 
   const render = () => {
+    // ★ 两套时钟，别混：
+    //   nowMs   = Date.now()         → 墙钟（动画 delta / 空闲判据 / 探针读数）
+    //   nowPerf = performance.now()  → 单调（限帧节流，见 capAccumMs 的注释）
     const nowMs = Date.now();
+    const nowPerf = performance.now();
     const baseCap = resolveBaseCap();
     /**
      * 空闲判据**只看鼠标**（`mousemove` / `mousedown` 在 `initScene` 里打点）。
@@ -2562,17 +2584,33 @@ const main = async () => {
       idleAfterMs,
     };
 
+    if (capFps !== lastCapForAccum) {
+      // 上限变了（交互↔空闲、用户在 WE 里改 fps）⇒ 重置累加器，从这一刻重新计时
+      capAccumMs = 0;
+      lastTickMs = nowPerf;
+      lastCapForAccum = capFps;
+    }
+
     if (capFps > 0) {
-      const minFrameGap = 1000 / capFps;
-      const elapsedMs = nowMs - lastRenderMs;
-      if (elapsedMs < minFrameGap) {
-        // 还没到下一帧的时间点 ⇒ 跳过这次渲染（但把 rAF 续上）。
-        // 探针冻结时也要走这条路：冻结=不推进，但"重画"本身仍应被节流。
+      const frameMs = 1000 / capFps;
+      // ★ 累加 rAF 的实际间隔（`performance.now()`，亚毫秒 + 单调），够一帧才渲染。
+      //   只减一个 frameMs ⇒ 余量保留，平均节奏精确等于目标（不会像简单比较那样丢帧）。
+      capAccumMs += nowPerf - lastTickMs;
+      lastTickMs = nowPerf;
+      if (capAccumMs < frameMs) {
         requestAnimationFrame(render);
         return;
       }
+      capAccumMs -= frameMs;
+      // 长时间卡顿（或标签页刚回来）后不要连发：最多欠一帧
+      if (capAccumMs > frameMs) {
+        capAccumMs = frameMs;
+      }
+    } else {
+      // 不限帧：只推进时钟，不攒额度
+      lastTickMs = nowPerf;
+      capAccumMs = 0;
     }
-    lastRenderMs = nowMs;
 
     const now = nowMs / 1000;
     const delta = now - lastFrameTime;

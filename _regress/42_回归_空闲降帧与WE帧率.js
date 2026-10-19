@@ -178,10 +178,15 @@ setTimeout(function(){
     const r = await c.send('Runtime.evaluate', {
       expression: `(()=>new Promise((resolve)=>{
         let renders = 0, beats = 0;
+        const stamps = [];
         const cv = document.querySelector('canvas');
         const gl = cv.getContext('webgl2') || cv.getContext('webgl');
         const origClear = gl.clear.bind(gl);
-        gl.clear = function(...a){ renders++; return origClear(...a); };
+        gl.clear = function(...a){
+          renders++;
+          if (stamps.length < 30000) stamps.push(performance.now());
+          return origClear(...a);
+        };
         const fx = window.__WB_FX__;
         const snap = () => { try { return fx.idleState(); } catch (e) { return null; } };
         const s0 = snap();
@@ -204,9 +209,14 @@ setTimeout(function(){
           if (el < ${seconds * 1000}) { requestAnimationFrame(tick); return; }
           const elapsed = el / 1000;
           gl.clear = origClear;
+          const gaps = [];
+          for (let i = 1; i < stamps.length; i++) gaps.push(stamps[i] - stamps[i - 1]);
+          gaps.sort(function(a, b){ return a - b; });
+          const gapMedian = gaps.length ? +gaps[Math.floor(gaps.length / 2)].toFixed(2) : null;
           resolve(JSON.stringify({
             renders, beats, elapsed: +elapsed.toFixed(3),
             fps: +(renders / elapsed).toFixed(1),
+            gapMedian,
             s0, mid, s1: snap()
           }));
         })();
@@ -316,6 +326,27 @@ const fmt = (s) =>
     console.log(`     决策 ${fmt(we0.s1)}  实测 ${we0.fps}fps / ${we0.renders} 帧`);
     ok(we0.s1 && we0.s1.cap === 0, `上限为 0=不限（cap=${we0.s1 && we0.s1.cap}）`);
     ok(we0.fps > 45, `不再受 config 的 30 约束（实测 ${we0.fps} > 45）`);
+
+    console.log('\n【5】高帧率跟随：maxFps=120 ⇒ cap=120，且相邻帧间隔必须 ≈8.33ms（不是 Date.now 的 9ms）');
+    const r120 = await measure(
+      '120fps',
+      (c) => {
+        c.maxFps = 120;
+        delete c.idleFps;
+        return c;
+      },
+      4
+    );
+    results.push(r120);
+    console.log(
+      `     决策 ${fmt(r120.s1)}  实测 ${r120.fps}fps / ${r120.renders} 帧 / 中位间隔 ${r120.gapMedian}ms`
+    );
+    ok(r120.s1 && r120.s1.cap === 120, `上限跟随到 120（cap=${r120.s1 && r120.s1.cap}）`);
+    ok(r120.fps >= 105, `渲染帧率 ≥105（实测 ${r120.fps}）`);
+    ok(
+      r120.gapMedian !== null && r120.gapMedian <= 8.75,
+      `相邻帧间隔中位 ≤8.75ms（实测 ${r120.gapMedian}）—— 亚毫秒计时生效`
+    );
   } finally {
     fs.writeFileSync(CFG, ORIG, 'utf8');
     console.log('\nconfig.json 已还原');

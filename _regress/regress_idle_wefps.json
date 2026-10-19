@@ -1,15 +1,16 @@
 [
   {
     "label": "空闲",
-    "renders": 73,
+    "renders": 80,
     "beats": 0,
-    "elapsed": 4,
-    "fps": 18.3,
+    "elapsed": 4.002,
+    "fps": 20,
+    "gapMedian": 48.7,
     "s0": {
       "cap": 20,
       "baseCap": 30,
       "idle": true,
-      "cursorAgeMs": 9287,
+      "cursorAgeMs": 9334,
       "idleFps": 20,
       "idleAfterMs": 2000
     },
@@ -17,7 +18,7 @@
       "cap": 20,
       "baseCap": 30,
       "idle": true,
-      "cursorAgeMs": 11291,
+      "cursorAgeMs": 11344,
       "idleFps": 20,
       "idleAfterMs": 2000
     },
@@ -25,53 +26,55 @@
       "cap": 20,
       "baseCap": 30,
       "idle": true,
-      "cursorAgeMs": 13288,
+      "cursorAgeMs": 13341,
       "idleFps": 20,
       "idleAfterMs": 2000
     }
   },
   {
     "label": "交互",
-    "renders": 110,
+    "renders": 120,
     "beats": 44,
-    "elapsed": 4.001,
-    "fps": 27.5,
+    "elapsed": 4.006,
+    "fps": 30,
+    "gapMedian": 31.4,
     "s0": {
       "cap": 20,
       "baseCap": 30,
       "idle": true,
-      "cursorAgeMs": 9262,
+      "cursorAgeMs": 9349,
       "idleFps": 20,
       "idleAfterMs": 2000
     },
     "mid": {
-      "cap": 30,
-      "baseCap": 30,
-      "idle": false,
-      "cursorAgeMs": 87,
-      "idleFps": 20,
-      "idleAfterMs": 2000
-    },
-    "s1": {
       "cap": 30,
       "baseCap": 30,
       "idle": false,
       "cursorAgeMs": 73,
       "idleFps": 20,
       "idleAfterMs": 2000
+    },
+    "s1": {
+      "cap": 30,
+      "baseCap": 30,
+      "idle": false,
+      "cursorAgeMs": 42,
+      "idleFps": 20,
+      "idleAfterMs": 2000
     }
   },
   {
     "label": "WE15",
-    "renders": 58,
+    "renders": 60,
     "beats": 0,
-    "elapsed": 4.002,
-    "fps": 14.5,
+    "elapsed": 4.003,
+    "fps": 15,
+    "gapMedian": 66.8,
     "s0": {
       "cap": 15,
       "baseCap": 15,
       "idle": false,
-      "cursorAgeMs": 9238,
+      "cursorAgeMs": 9349,
       "idleFps": 0,
       "idleAfterMs": 10000
     },
@@ -79,7 +82,7 @@
       "cap": 15,
       "baseCap": 15,
       "idle": false,
-      "cursorAgeMs": 11248,
+      "cursorAgeMs": 11359,
       "idleFps": 0,
       "idleAfterMs": 10000
     },
@@ -87,22 +90,23 @@
       "cap": 15,
       "baseCap": 15,
       "idle": false,
-      "cursorAgeMs": 13245,
+      "cursorAgeMs": 13356,
       "idleFps": 0,
       "idleAfterMs": 10000
     }
   },
   {
     "label": "WE0",
-    "renders": 494,
+    "renders": 654,
     "beats": 0,
-    "elapsed": 4.005,
-    "fps": 123.3,
+    "elapsed": 4.001,
+    "fps": 163.5,
+    "gapMedian": 6.1,
     "s0": {
       "cap": 0,
       "baseCap": 0,
       "idle": false,
-      "cursorAgeMs": 9251,
+      "cursorAgeMs": 9355,
       "idleFps": 0,
       "idleAfterMs": 10000
     },
@@ -110,7 +114,7 @@
       "cap": 0,
       "baseCap": 0,
       "idle": false,
-      "cursorAgeMs": 11261,
+      "cursorAgeMs": 11359,
       "idleFps": 0,
       "idleAfterMs": 10000
     },
@@ -118,7 +122,39 @@
       "cap": 0,
       "baseCap": 0,
       "idle": false,
-      "cursorAgeMs": 13255,
+      "cursorAgeMs": 13356,
+      "idleFps": 0,
+      "idleAfterMs": 10000
+    }
+  },
+  {
+    "label": "120fps",
+    "renders": 480,
+    "beats": 0,
+    "elapsed": 4.001,
+    "fps": 120,
+    "gapMedian": 6.4,
+    "s0": {
+      "cap": 120,
+      "baseCap": 120,
+      "idle": false,
+      "cursorAgeMs": 9358,
+      "idleFps": 0,
+      "idleAfterMs": 10000
+    },
+    "mid": {
+      "cap": 120,
+      "baseCap": 120,
+      "idle": false,
+      "cursorAgeMs": 11361,
+      "idleFps": 0,
+      "idleAfterMs": 10000
+    },
+    "s1": {
+      "cap": 120,
+      "baseCap": 120,
+      "idle": false,
+      "cursorAgeMs": 13359,
       "idleFps": 0,
       "idleAfterMs": 10000
     }

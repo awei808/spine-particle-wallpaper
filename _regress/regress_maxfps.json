@@ -1,47 +1,47 @@
 [
   {
     "label": "默认(不限帧)",
-    "renders": 476,
-    "rafCalls": 477,
-    "elapsed": 4.003,
-    "fps": 118.9,
-    "startT": 11.12266642252603,
-    "endT": 15.1286664644877
+    "renders": 659,
+    "rafCalls": 660,
+    "elapsed": 4,
+    "fps": 164.7,
+    "startT": 12.079666821161897,
+    "endT": 16.08066674868265
   },
   {
     "label": "maxFps=20",
-    "renders": 73,
+    "renders": 81,
     "rafCalls": 661,
-    "elapsed": 4.002,
-    "fps": 18.2,
-    "startT": 11.125666681925445,
-    "endT": 15.114666525522857
+    "elapsed": 4.005,
+    "fps": 20.2,
+    "startT": 12.072666613260896,
+    "endT": 16.11666652361551
   },
   {
     "label": "maxFps=30",
-    "renders": 110,
-    "rafCalls": 661,
-    "elapsed": 4.006,
-    "fps": 27.5,
-    "startT": 11.077666584650665,
-    "endT": 15.084666554133086
+    "renders": 120,
+    "rafCalls": 659,
+    "elapsed": 4.001,
+    "fps": 30,
+    "startT": 12.061666695276887,
+    "endT": 16.06266686121622
   },
   {
     "label": "推进量@不限帧",
-    "renders": 457,
-    "rafCalls": 458,
-    "elapsed": 4.004,
-    "fps": 114.1,
-    "startT": 11.126666752497346,
-    "endT": 15.14066669146219
+    "renders": 659,
+    "rafCalls": 660,
+    "elapsed": 4.001,
+    "fps": 164.7,
+    "startT": 12.221666781107576,
+    "endT": 16.22366687456766
   },
   {
     "label": "推进量@20fps",
-    "renders": 73,
+    "renders": 80,
     "rafCalls": 661,
-    "elapsed": 4.001,
-    "fps": 18.2,
-    "startT": 10.997666899363189,
-    "endT": 14.981666866938262
+    "elapsed": 4.006,
+    "fps": 20,
+    "startT": 12.11666652361551,
+    "endT": 16.118666617075593
   }
 ]
