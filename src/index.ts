@@ -96,6 +96,7 @@ import { createVoicePlayer, voiceBasename, VoicePlayer } from './voicePlayer';
 import { createBgmPlayer, BgmPlayer } from './bgmPlayer';
 import { createAudioMaster, AudioMaster } from './audioMaster';
 import { subscribePause } from './wePauseSignal';
+import { getWeFps, hasWeFps, installWeFpsSignal } from './weFps';
 import {
   createIdleSequence,
   IDLE_TRACK,
@@ -296,6 +297,17 @@ installWallpaperPropertyListener((properties) => {
   }
   applyWePatch(patch);
 });
+
+/**
+ * 接 WE 的**帧率限制**（`applyGeneralProperties({ fps })`）。
+ *
+ * ★ 必须和 `installWallpaperPropertyListener` 一样在**模块顶层**安装：
+ *   WE 可能在页面很早期就下发通用属性，装晚了这一拨就丢了（之后只有用户
+ *   在设置里改帧率时才会再来一次）。
+ * ★ 消费点在 `render()`：它每帧读 `hasWeFps()/getWeFps()` ⇒ 用户改完立刻生效，
+ *   不需要重载页面。
+ */
+installWeFpsSignal();
 
 const main = async () => {
   /**
@@ -596,6 +608,28 @@ const main = async () => {
    */
   let idleSequence: IdleSequenceController = null;
   // ★ `settingsUI` 的声明已上移到 `applyWePatch` 之前（TDZ 时序要求），这里不再重复声明
+
+  /**
+   * 最近一帧的**限帧决策**（只给探针/回归读，不参与渲染逻辑）。
+   *
+   * 为什么要暴露它：`_regress/42_` 要验证"空闲降帧 / 交互恢复 / WE 优先"，
+   * 光看 fps 会被软渲染抖动和加载期噪声污染（实测同一配置能差 6 倍）。
+   * 直接读决策（cap / baseCap / idle / 光标年龄）就能把"逻辑对不对"和
+   * "这台机器跑不跑得动"分开判。
+   *
+   * 声明在这里（而不是 render 旁边）：`__WB_FX__`（约 2400 行）要闭包引用它，
+   * 必须在 `if (PROBE_OPTS.enabled)` 分支执行前完成声明。
+   */
+  let lastCapInfo = {
+    cap: 0,
+    baseCap: 0,
+    idle: false,
+    cursorAgeMs: 0,
+    /** 生效的 idleFps（0 = 关闭空闲降帧）—— 排查"为什么没降"时第一眼看这个 */
+    idleFps: 0,
+    /** 生效的空闲阈值（ms） */
+    idleAfterMs: 0,
+  };
 
   /**
    * 最近一次发起播放的语音文件名。只用于诊断/验证。
@@ -2388,10 +2422,16 @@ const main = async () => {
       });
 
       if (PROBE_OPTS.enabled) {
-        (window as unknown as { __WB_FX__: unknown }).__WB_FX__ = {
+        (window as unknown as { __WB_FX__: unknown }).        __WB_FX__ = {
           freeze: (v: boolean) => {
             fxFrozen = v;
           },
+          /**
+           * 最近一帧的限帧决策（`_regress/42_` 用）。
+           * 字段：`cap` 生效上限 / `baseCap` 基准上限（WE 或 config）/ `idle` 是否空闲 /
+           * `cursorAgeMs` 距最近一次光标更新多久。
+           */
+          idleState: () => lastCapInfo,
           snapshots: () => particleAnimators.map((a) => a.getSnapshot()),
           /**
            * 「动作 → 额外特效」的**只读**读数（2026-10-14）。
@@ -2461,29 +2501,72 @@ const main = async () => {
 
   // Render Loop
   //
-  // ★★ 帧率上限（2026-10-19，性能实测后新增）
+  // ★★ 帧率上限 + 空闲降帧（2026-10-19）
   //
-  // 此前这里是**裸 rAF、零节流**，于是有两个后果：
-  //  1. WE 把壁纸挂多屏 / 虚拟桌面时，rAF 可能被驱动到显示器刷新率之上 ⇒ 纯烧 CPU。
-  //  2. 单帧成本一旦降低（例如关掉 MSAA），浏览器会**自动多跑帧**把省下的时间填掉
-  //     （实测 fps 82→84）⇒ "每帧便宜了"并不等于"CPU 降了"。
-  //
-  // 实测（headless+软渲染，锁帧对比见 `_regress/37_`/`38_`）：
-  //   同样配置不限帧 ⇒ 主线程忙碌率 **87%**；限到 30fps ⇒ **22%**。
+  // 三层上限，**每帧重算**（三层都能在运行时立刻生效）：
+  //   ① WE 的「帧率限制」—— 用户界面上设的权威值（`applyGeneralProperties({fps})`）。
+  //      此前完全没接：真机实测用户在 WE 里设 30，壁纸仍按 60 跑，单核占用差 2 倍。
+  //   ② `config.maxFps` —— 只在 WE 没给值时兜底（浏览器预览 / 宿主不实现该回调）。
+  //   ③ 空闲降帧 —— 连续 `idleAfterSec` 没有鼠标或事件活动 ⇒ 压到 `idleFps`。
+  //      这是"看壁纸时流畅、用电脑时省电"的那一层，不依赖 WE 的暂停规则
+  //      （WE 只认全屏/最大化/焦点，窗口化时永远不暂停）。
   //
   // ★ 为什么"到点就 return"而不是排队补帧：那才是真节流（省下的是**整个回调**）。
   //   若被节流掉时仍然执行回调再 return，等于没节流。
-  // ⚠️ `lastFrameTime` **只在真正渲染时更新** —— 这样被节流掉的那些帧的时间
-  //   会累加到下一帧的 delta 上，动画按**真实经过的时间**推进，不会因为限帧而变慢。
-  const maxFps = configs.maxFps ?? 0;
-  const minFrameGap = maxFps > 0 ? 1000 / maxFps : 0;
+  // ★★ `lastFrameTime` **只在真正渲染时更新** —— 被跳过的帧的时间会累加到下一帧的
+  //   delta 上，动画按**真实经过的时间**推进，不会因为限帧/降帧而变慢。
+  // ★★ 恢复必须"立刻"：鼠标一动 ⇒ `getLastCursorAtMs()` 变新 ⇒ 下一帧 idle=false
+  //   ⇒ 上限回到基准值；此时 gap 变小，`nowMs - lastRenderMs` 通常已经够 ⇒ 当帧就画。
+  const maxFpsCfg = configs.maxFps ?? 0;
+  /** 空闲帧率（`0` = 关闭空闲降帧；缺省关闭，避免改变未配置工程的行为） */
+  const idleFps = Math.max(0, configs.idleFps ?? 0);
+  /** 多久没有交互算"空闲"（秒） */
+  const idleAfterMs = Math.max(0, (configs.idleAfterSec ?? 10) * 1000);
+
+  /**
+   * 基准上限（不含空闲降帧）。
+   * ★ WE 给过值就**完全听 WE**（包括它给 `0` = 无限制）；否则回退 `config.maxFps`。
+   *   理由见 `weFps.ts` 文件头：WE 的滑块是用户直接操作的权威入口，
+   *   若被 config 的固定值压住，"我在 WE 里调成 60"就会看起来没生效。
+   */
+  const resolveBaseCap = (): number => (hasWeFps() ? getWeFps() : maxFpsCfg);
 
   const render = () => {
     const nowMs = Date.now();
-    if (minFrameGap > 0) {
+    const baseCap = resolveBaseCap();
+    /**
+     * 空闲判据**只看鼠标**（`mousemove` / `mousedown` 在 `initScene` 里打点）。
+     *
+     * ★★ 为什么不把"事件播放"算进来（2026-10-19 实测踩到）：
+     *   待机事件是**自动播放**的（`standbyKinds` + `tickStandby` 每秒轮询），
+     *   `playEvent` 成功后会把 `lastActivityAt` 刷新成"刚刚"
+     *   ⇒ 空闲判据永远不成立 ⇒ 降帧**一次都不会触发**（实测 `idle` 恒 false、`cap` 恒 30）。
+     *   这个判据要回答的是"**用户**在不在"，不是"壁纸自己在不在动"。
+     *   用户点出来的动作本来就伴随 `mousedown`（已计入），不需要额外补偿。
+     */
+    const lastInputMs = Scene.getLastCursorAtMs();
+    const isIdle = idleFps > 0 && nowMs - lastInputMs >= idleAfterMs;
+    const capFps = isIdle
+      ? baseCap > 0
+        ? Math.min(baseCap, idleFps)
+        : idleFps
+      : baseCap;
+
+    // 诊断读数（探针可见）：即使本帧被节流掉也要更新，否则读数会落后一整拍
+    lastCapInfo = {
+      cap: capFps,
+      baseCap,
+      idle: isIdle,
+      cursorAgeMs: nowMs - Scene.getLastCursorAtMs(),
+      idleFps,
+      idleAfterMs,
+    };
+
+    if (capFps > 0) {
+      const minFrameGap = 1000 / capFps;
       const elapsedMs = nowMs - lastRenderMs;
       if (elapsedMs < minFrameGap) {
-        // 还没到下一帧的时间点 ⇒跳过这次渲染（但把rAF 续上）。
+        // 还没到下一帧的时间点 ⇒ 跳过这次渲染（但把 rAF 续上）。
         // 探针冻结时也要走这条路：冻结=不推进，但"重画"本身仍应被节流。
         requestAnimationFrame(render);
         return;

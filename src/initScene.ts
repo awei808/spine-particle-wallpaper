@@ -27,6 +27,25 @@ export let cursorY: number = 0;
 export let camera: THREE.PerspectiveCamera = null;
 
 /**
+ * 最近一次**光标位置更新**的时刻（ms）。
+ *
+ * ## 为什么记在这里
+ *
+ * 渲染循环要做"空闲降帧"（见 `index.ts` 的 `render()`）：一段时间没有鼠标活动
+ * 就把帧率压下来，鼠标一动立刻恢复。判据必须来自**已有的** mousemove/mousedown
+ * 监听 —— 再挂一套 `pointermove` 只会让高频事件多走一遍主线程。
+ *
+ * 所以由 `updateCursorFromClient`（`mousemove` / `mousedown` 的公共出口）打点，
+ * 对外只暴露一个只读取值函数。
+ *
+ * 初值取模块加载时刻：页面刚打开、资源还在解码时不该被判成"空闲"。
+ */
+let lastCursorAtMs = Date.now();
+
+/** 最近一次光标更新的时刻（ms）—— 空闲降帧的输入 */
+export const getLastCursorAtMs = (): number => lastCursorAtMs;
+
+/**
  * 把客户端像素坐标换算成 NDC（与 onMouseMove 里那份保持同一口径）。
  * 抽出来是因为后续"点击/按下"也要用同一套换算：
  * 原实现只在 mousemove 里更新，若用户直接在某点按下而未曾移动鼠标，
@@ -35,6 +54,8 @@ export let camera: THREE.PerspectiveCamera = null;
 export const updateCursorFromClient = (clientX: number, clientY: number) => {
   cursorX = (clientX / window.innerWidth) * 2 - 1;
   cursorY = -(clientY / window.innerHeight) * 2 + 1;
+  // 打点给「空闲降帧」用（见本文件同名变量的注释）
+  lastCursorAtMs = Date.now();
 };
 
 /**

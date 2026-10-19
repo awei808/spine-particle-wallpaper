@@ -5,6 +5,8 @@
   "dpr": "auto",
   "antialias": false,
   "maxFps": 30,
+  "idleFps": 20,
+  "idleAfterSec": 10,
   "touch": {
     "enabled": true,
     "showZones": false,

@@ -842,8 +842,8 @@ export const readView = (cfg: Configs): SettingsView => ({
  * 唯一的 `declare global` 位置），这里只是 import 过来用 —— 全局增补写两处会冲突。
  */
 import {
-  ensureWallpaperPropertyListener,
   WallpaperPropertyListener,
+  withWallpaperPropertyListener,
 } from './wePauseSignal';
 
 /**
@@ -877,33 +877,16 @@ export const installWallpaperPropertyListener = (
   retryMs = 200,
   maxRetries = 25
 ): void => {
-  if (typeof window === 'undefined') {
-    return;
-  }
-  const tryAttach = (): boolean => {
-    // ★ 无则建空壳、有则补字段：整体覆盖会丢 WE 早先下发的其它回调（`setPaused` 等）
-    const wpl: WallpaperPropertyListener | null =
-      ensureWallpaperPropertyListener();
-    if (!wpl) {
-      return false;
-    }
+  /**
+   * ★ 补字段 + 重试的循环**收敛在 `withWallpaperPropertyListener`**：
+   *   本函数（`applyUserProperties`）、`weFps.installWeFpsSignal`
+   *   （`applyGeneralProperties`）、`wePauseSignal.install`（`setPaused`）
+   *   三处都需要同一套"宿主晚到就重试"，各抄一遍会出现三份相同的定时器。
+   * ★ 依旧**只补字段、绝不整体替换**（会丢 WE 早先挂上的其它回调）。
+   */
+  withWallpaperPropertyListener((wpl: WallpaperPropertyListener) => {
     wpl.applyUserProperties = handler;
-    return true;
-  };
-
-  if (tryAttach()) {
-    return;
-  }
-  if (!retryMs || maxRetries <= 0) {
-    return;
-  }
-  let tries = 0;
-  const timer = window.setInterval(() => {
-    tries++;
-    if (tryAttach() || tries >= maxRetries) {
-      window.clearInterval(timer);
-    }
-  }, retryMs);
+  }, retryMs, maxRetries);
 };
 
 /* ── WE 属性值的类型宽容解析 ─────────────────────────────── */

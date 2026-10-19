@@ -66,6 +66,16 @@ export type WallpaperPropertyListener = {
   /** WE 暂停/恢复壁纸时调用。`true` = 已暂停（如全屏游戏、其他应用获得焦点）。由本模块安装 */
   setPaused?: (isPaused: boolean) => void;
   /**
+   * WE 下发**通用属性**（不是本壁纸的自定义属性）时调用。
+   * 目前唯一用到的是 `fps` —— 用户在「设置 → 性能 → 帧率限制」里选的值。
+   *
+   * ★ WE 官方《FPS Limiter》的口径：**宿主只负责告知，不负责限帧**，
+   *   "the page has to honour it"。所以这个字段必须真的被消费（见 `weFps.ts`）。
+   * ★ 与 `applyUserProperties` 一样：**可选**，且可能被局部更新调用
+   *   （只有部分字段）⇒ 读的时候必须逐字段判空，不能整体替换。
+   */
+  applyGeneralProperties?: (properties: Record<string, unknown>) => void;
+  /**
    * WE 下发用户属性时调用（值来自 `project.json` 的 `general.properties`）。
    * 由 `settingsStore.installWallpaperPropertyListener` 安装。
    *
@@ -145,6 +155,58 @@ export const ensureWallpaperPropertyListener = (): WallpaperPropertyListener | n
 
   window.wallpaperPropertyListener = {};
   return window.wallpaperPropertyListener;
+};
+
+/**
+ * 往 `window.wallpaperPropertyListener` 上**补一个字段**，带重试（幂等）。
+ *
+ * ## 为什么需要重试
+ *
+ * WE 的注入脚本不一定在 bundle 之前跑完：早期真机取证里 `wpl` 从 0.5s 到 4s
+ * 全程 `undefined`，之后才被补上。所以"挂一次、失败就放弃"会静默丢信号。
+ *
+ * ## 为什么收敛到这里（而不是每个模块各写一份）
+ *
+ * `settingsStore.installWallpaperPropertyListener`（`applyUserProperties`）、
+ * `weFps.installWeFpsSignal`（`applyGeneralProperties`）、
+ * `wePauseSignal.install`（`setPaused`）三处都需要同一套"补字段 + 重试"。
+ * 各自抄一遍就会出现三份 200ms × 25 的循环 —— 这正是本文件头注释里
+ * 收敛"单赋值信号"的同一个理由。
+ *
+ * @param apply 拿到 listener 对象后要做的补字段动作（可重复调用，必须幂等）
+ * @param retryMs 重试间隔（毫秒）；`0` = 不重试
+ * @param maxRetries 最多重试次数
+ */
+export const withWallpaperPropertyListener = (
+  apply: (wpl: WallpaperPropertyListener) => void,
+  retryMs = 200,
+  maxRetries = 25
+): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  const tryAttach = (): boolean => {
+    const wpl = ensureWallpaperPropertyListener();
+    if (!wpl) {
+      return false;
+    }
+    apply(wpl);
+    return true;
+  };
+
+  if (tryAttach()) {
+    return;
+  }
+  if (!retryMs || maxRetries <= 0) {
+    return;
+  }
+  let tries = 0;
+  const timer = window.setInterval(() => {
+    tries++;
+    if (tryAttach() || tries >= maxRetries) {
+      window.clearInterval(timer);
+    }
+  }, retryMs);
 };
 
 /** 订阅者：`true` = 已暂停 */

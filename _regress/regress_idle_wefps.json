@@ -1,0 +1,126 @@
+[
+  {
+    "label": "空闲",
+    "renders": 73,
+    "beats": 0,
+    "elapsed": 4,
+    "fps": 18.3,
+    "s0": {
+      "cap": 20,
+      "baseCap": 30,
+      "idle": true,
+      "cursorAgeMs": 9287,
+      "idleFps": 20,
+      "idleAfterMs": 2000
+    },
+    "mid": {
+      "cap": 20,
+      "baseCap": 30,
+      "idle": true,
+      "cursorAgeMs": 11291,
+      "idleFps": 20,
+      "idleAfterMs": 2000
+    },
+    "s1": {
+      "cap": 20,
+      "baseCap": 30,
+      "idle": true,
+      "cursorAgeMs": 13288,
+      "idleFps": 20,
+      "idleAfterMs": 2000
+    }
+  },
+  {
+    "label": "交互",
+    "renders": 110,
+    "beats": 44,
+    "elapsed": 4.001,
+    "fps": 27.5,
+    "s0": {
+      "cap": 20,
+      "baseCap": 30,
+      "idle": true,
+      "cursorAgeMs": 9262,
+      "idleFps": 20,
+      "idleAfterMs": 2000
+    },
+    "mid": {
+      "cap": 30,
+      "baseCap": 30,
+      "idle": false,
+      "cursorAgeMs": 87,
+      "idleFps": 20,
+      "idleAfterMs": 2000
+    },
+    "s1": {
+      "cap": 30,
+      "baseCap": 30,
+      "idle": false,
+      "cursorAgeMs": 73,
+      "idleFps": 20,
+      "idleAfterMs": 2000
+    }
+  },
+  {
+    "label": "WE15",
+    "renders": 58,
+    "beats": 0,
+    "elapsed": 4.002,
+    "fps": 14.5,
+    "s0": {
+      "cap": 15,
+      "baseCap": 15,
+      "idle": false,
+      "cursorAgeMs": 9238,
+      "idleFps": 0,
+      "idleAfterMs": 10000
+    },
+    "mid": {
+      "cap": 15,
+      "baseCap": 15,
+      "idle": false,
+      "cursorAgeMs": 11248,
+      "idleFps": 0,
+      "idleAfterMs": 10000
+    },
+    "s1": {
+      "cap": 15,
+      "baseCap": 15,
+      "idle": false,
+      "cursorAgeMs": 13245,
+      "idleFps": 0,
+      "idleAfterMs": 10000
+    }
+  },
+  {
+    "label": "WE0",
+    "renders": 494,
+    "beats": 0,
+    "elapsed": 4.005,
+    "fps": 123.3,
+    "s0": {
+      "cap": 0,
+      "baseCap": 0,
+      "idle": false,
+      "cursorAgeMs": 9251,
+      "idleFps": 0,
+      "idleAfterMs": 10000
+    },
+    "mid": {
+      "cap": 0,
+      "baseCap": 0,
+      "idle": false,
+      "cursorAgeMs": 11261,
+      "idleFps": 0,
+      "idleAfterMs": 10000
+    },
+    "s1": {
+      "cap": 0,
+      "baseCap": 0,
+      "idle": false,
+      "cursorAgeMs": 13255,
+      "idleFps": 0,
+      "idleAfterMs": 10000
+    }
+  }
+]
