@@ -31,6 +31,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Configs } from '../src/config.type';
 import { normalizeEventTable } from '../src/eventModel';
+import { parseEventsFile } from '../src/eventsFile';
 import { summarizeReport, validateEvents } from '../src/eventValidate';
 import {
   buildFamilyRegistry,
@@ -64,8 +65,38 @@ if (!fs.existsSync(configPath)) {
 const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Configs;
 const sub = cfg.subtitle;
 
+/**
+ * ★★ 事件表来源（2026-10-19）：优先 `assets/events.jsonc`，没有才回退
+ *   `config.subtitle.dialogues`（迁移前的工程）。
+ *
+ * 复用运行时的**同一个解析器**（`parseEventsFile`）—— 若这里另写一份
+ * "宽松版"解析，就会出现"CLI 通过、引擎读不了"这种最难查的分歧。
+ */
+const eventsPath = path.resolve(
+  assetsDir,
+  argv.indexOf('--file') >= 0
+    ? argv[argv.indexOf('--file') + 1]
+    : 'events.jsonc'
+);
+let dialogues = sub?.dialogues ?? [];
+let sourceLabel = 'config.subtitle.dialogues';
+if (fs.existsSync(eventsPath)) {
+  const parsed = parseEventsFile(fs.readFileSync(eventsPath, 'utf8'));
+  if (!parsed.ok) {
+    die(
+      '事件文件不可用（' +
+        path.relative(repoRoot, eventsPath) +
+        '）：' +
+        (parsed.error ?? '未知错误')
+    );
+  }
+  parsed.issues.forEach((it) => console.warn('[events] ' + it.detail));
+  dialogues = parsed.events;
+  sourceLabel = path.relative(repoRoot, eventsPath);
+}
+
 /* ── 归一（与运行时同一入口） ───────────────────────────── */
-const normalized = normalizeEventTable(sub?.dialogues ?? [], {
+const normalized = normalizeEventTable(dialogues, {
   legacy: {
     touch: sub?.touch,
     chat: sub?.chat,
@@ -194,6 +225,7 @@ if (asJson) {
   );
 } else {
   console.log('事件表校验：' + path.relative(repoRoot, configPath));
+  console.log('  事件来源：' + sourceLabel + '（' + normalized.events.length + ' 条）');
   console.log('  ' + summarizeReport({ ...report, issues, counts }));
   if (!issues.length) {
     console.log('  ✅ 没有发现问题');

@@ -1,12 +1,25 @@
 /**
- * 事件表**迁移 CLI**（PLAN §5 / S8）—— 把旧池键（`greeting` / `standby` / `touch` /
- * `greet` / `chat`）**一次性烧进条目**，然后删掉这些键。
+ * 事件表**迁移 CLI**（PLAN §5 / S8）+ **事件文件导出**（2026-10-19）
  *
  * ```bash
  * npx ts-node --transpile-only scripts/migrateEvents.ts public/assets              # 只打印计划（dry-run）
  * npx ts-node --transpile-only scripts/migrateEvents.ts public/assets --write      # 真写
  * npx ts-node --transpile-only scripts/migrateEvents.ts public/assets --json       # 机器可读
+ *
+ * # 2026-10-19：把事件搬进 events.jsonc（并把 config 的 dialogues 删掉）
+ * npx ts-node --transpile-only scripts/migrateEvents.ts public/assets --to-file            # dry-run
+ * npx ts-node --transpile-only scripts/migrateEvents.ts public/assets --to-file --write    # 真写
  * ```
+ *
+ * ## `--to-file` 做了什么
+ *
+ * 1. 旧池键 → 条目（同下面的 `normalizeEventTable`，不另写一套判据）；
+ * 2. 把条目写成 `<assets>/events.jsonc`（**带文件头注释**，见 `EVENTS_FILE_HEADER`）；
+ * 3. 从 config 的 `subtitle` 块里删掉 `dialogues`（**也删旧池键**）。
+ *
+ * 之后 config 只管环境参数（字幕样式 / 热区几何 / 音量…），引擎只从事件文件读事件。
+ * ⚠️ 幂等：第二次跑时 `dialogues` 已经没了 ⇒ 事件表为空 ⇒ 会拒绝覆盖非空文件
+ *   （见 `--to-file` 分支的保护），不会把文件写空。
  *
  * ## 为什么必须有这一步（而不是继续"运行期反推"）
  *
@@ -44,6 +57,8 @@ import { describeCondition } from '../src/conditions';
 const argv = process.argv.slice(2);
 const asJson = argv.indexOf('--json') >= 0;
 const write = argv.indexOf('--write') >= 0;
+/** 2026-10-19：把事件搬进 `events.jsonc`（而不是留在 `config.subtitle.dialogues`） */
+const toFile = argv.indexOf('--to-file') >= 0;
 const positional = argv.filter((a) => a.charAt(0) !== '-');
 
 const repoRoot = path.resolve(__dirname, '..');
@@ -52,6 +67,112 @@ const assetsDir = path.resolve(
   positional[0] || process.env.WK_ASSETS || 'public/assets'
 );
 const configPath = path.join(assetsDir, 'config.json');
+/** `--to-file` 的目标文件（与 config.json 同目录） */
+const eventsPath = path.join(assetsDir, 'events.jsonc');
+
+/**
+ * `events.jsonc` 的**文件头**（交付物的一部分）。
+ *
+ * ★ 为什么头注释这么长：这个文件的目标读者是"愿意手写 JSON 的进阶用户 / 开发者"，
+ *   而 `config.json` 是构建产物、注释会被生成器冲掉 —— 说明只能写在这里。
+ * ★ 只用 `//` 行注释（块注释会让后续维护时更容易踩 `*\/` 提前闭合的坑）。
+ */
+const EVENTS_FILE_HEADER = [
+  '// ════════════════════════════════════════════════════════════════════════',
+  '//  事件表 —— 本壁纸所有事件的唯一来源',
+  '// ════════════════════════════════════════════════════════════════════════',
+  '//',
+  '//  这个文件取代了 config.json 的 subtitle.dialogues：内置事件与自定义事件',
+  '//  都在这里，config.json 只管环境参数（字幕样式、热区几何、音量…）。',
+  '//',
+  '//  ── 怎么改 ─────────────────────────────────────────────────────────────',
+  '//  1. 直接编辑本文件（UTF-8）。允许 // 与 /* */ 注释、允许行尾多余逗号；',
+  '//     但**属性名和字符串必须用双引号**，不能写单引号/无引号。',
+  '//  2. 保存后，在 Wallpaper Engine 里重新加载壁纸（事件表在启动时一次性构建，',
+  '//     不做热重载）。',
+  '//  3. 改完可以先自检（不启动 WE）：',
+  '//     npx ts-node --transpile-only scripts/validateEvents.ts <本文件的目录>',
+  '//',
+  '//  ── 和设置面板的关系 ───────────────────────────────────────────────────',
+  '//  设置面板里的「事件开关」页**只负责开 / 关**，不提供增删改：',
+  '//    · 增删事件、改触发条件 / 动作 / 粒子 / 念白 / 语音 ⇒ 都改这个文件；',
+  '//    · 面板的开关存在本机（localStorage），不改本文件；',
+  '//    · 这里写 "enabled": false = 默认关闭（面板里仍可被用户打开）。',
+  '//',
+  '//  ── 一条事件有哪些字段 ─────────────────────────────────────────────────',
+  '//  id            "custom:xxx" 或 "game:64005"。省略则由 actionId 派生 game:<n>',
+  '//  actionId      仅内置事件：与游戏表对齐、供档案溯源',
+  '//  label         显示名（内置换行）      displayName  显示名（优先）',
+  '//  note          一句话备注（进档案细则）',
+  '//  enabled       缺省 true；false = 作者默认关闭',
+  '//  on            触发通道："touch" / "standby" / "resume"，可写数组；缺省 standby',
+  '//  kind          类别："touch" / "chat" / "greet"；缺省按 on[0] 推',
+  '//  when          条件（全部可选，可嵌套 and / or / not）：',
+  '//                  { "time":     { "start": 23, "end": 4 } }     时分，跨零点',
+  '//                  { "calendar": { "month": 2, "day": 14 } }    每年这一天',
+  '//                  { "ctx":      { "idleMs": 30000 } }          静置时长',
+  '//                  { "ctx":      { "zone": "hit1" } }           命中的热区 id',
+  '//                  { "and": [ ... ] } / { "or": [ ... ] } / { "not": {...} }',
+  '//  phase         事件族 id（建议**不写**：落缺省族 = 不换名、恒可见）',
+  '//  phaseAnimations  按族改动画名：{ "oath": "greet_marry" }',
+  '//  animation     spine 动画名；不写 = 纯台词事件',
+  '//  particles     本条的粒子组名（config.meshes[].name），不写 = 按动画名回落',
+  '//  variants      整包随机：[{ animation, text, voice }, ...]',
+  '//  text          念白          textTime  念白停留秒数',
+  '//  voice         语音文件名（相对 assets/，可带子目录与扩展名）',
+  '//  pick          选取策略：',
+  '//                  { "priority": 0..100 }   同一次触发先比优先级档',
+  '//                  { "weight": 0 }          0 = 不参加自动抽取，只能手动触发',
+  '//                  { "group": "g" }         互斥组：同一次触发至多出一条',
+  '//                  { "cooldownMs": 60000 }  最短间隔',
+  '//                  { "quota": { "max": 1, "per": "day" } }  配额（day / ever）',
+  '//                  { "interrupt": true }    允许打断当前动作',
+  '//',
+  '//  ── 优先级五档（约定，不是硬限制） ─────────────────────────────────────',
+  '//    80  用户操作（点击）      50  节日 / 特殊日期',
+  '//    20  时段问候              10  日常闲聊',
+  '//     0  缺省（不与别人抢）',
+  '//  同档内按 weight 加权随机；weight 缺省 1。',
+  '//',
+  '//  ── 三条示例（照抄改参数即可；示例本身不要解开注释以外的花括号） ───────',
+  '//',
+  '//  ① 内置型：上午 5–11 点回到壁纸时问候，带语音与念白',
+  '//     {',
+  '//       "id": "game:64001", "actionId": 64001,',
+  '//       "label": "晴日上午问候",',
+  '//       "on": ["resume"], "kind": "greet",',
+  '//       "when": { "time": { "start": 5, "end": 11 } },',
+  '//       "animation": "greet",',
+  '//       "text": "早上好，今天也要打起精神来。",',
+  '//       "textTime": 6,',
+  '//       "voice": "CV/Asuna/Morning_01.ogg"',
+  '//     }',
+  '//',
+  '//  ② 纯手动型：不参与自动抽取，只能从调试面板「触发事件」播',
+  '//     {',
+  '//       "id": "custom:hold-hand",',
+  '//       "on": ["touch"], "kind": "touch", "animation": "touch1",',
+  '//       "pick": { "weight": 0, "priority": 80 },',
+  '//       "text": "牵着手也不错。"',
+  '//     }',
+  '//',
+  '//  ③ 节日型：2 月 14 日回到壁纸时优先播，每天最多一次',
+  '//     {',
+  '//       "id": "custom:valentine",',
+  '//       "on": ["resume"], "kind": "greet", "animation": "greet",',
+  '//       "when": { "calendar": { "month": 2, "day": 14 } },',
+  '//       "pick": { "priority": 50, "quota": { "max": 1, "per": "day" } },',
+  '//       "text": "情人节快乐。",',
+  '//       "voice": "Valentine_Greet.ogg"',
+  '//     }',
+  '//',
+  '//  ── 常见坑 ─────────────────────────────────────────────────────────────',
+  '//  · 同一通道下所有事件的 weight 都是 0 ⇒ 该通道永远不会自动触发（启动时会 warn）',
+  '//  · 写了 "on": [] 或指向不存在的通道 ⇒ 这条不可达（档案里标「不可达」）',
+  '//  · particles 里写错组名 ⇒ 该组被忽略、事件照播（不会静默整条失效）',
+  '// ════════════════════════════════════════════════════════════════════════',
+  '',
+].join('\n');
 
 /** 迁移后要删掉的旧池键（PLAN §1 / §5.4） */
 const LEGACY_KEYS = [
@@ -223,10 +344,17 @@ const nextDialogue = events.map((e) =>
   )
 );
 
+/**
+ * 迁移后要从 `subtitle` 里删掉的键：
+ * - 旧池键：内容已经烧进条目；
+ * - `--to-file`：连 `dialogues` 一起删（事件搬进 `events.jsonc` 后它就是历史字段）。
+ */
+const dropKeys = toFile ? LEGACY_KEYS.concat(['dialogues']) : LEGACY_KEYS;
+
 /** 新 `subtitle` 块：删旧键、换 dialogues，**其余键与顺序原样** */
 const nextSubtitle: Record<string, unknown> = {};
 Object.keys(sub).forEach((k) => {
-  if (LEGACY_KEYS.indexOf(k) >= 0) {
+  if (dropKeys.indexOf(k) >= 0) {
     return;
   }
   if (k === 'dialogues') {
@@ -235,7 +363,7 @@ Object.keys(sub).forEach((k) => {
   }
   nextSubtitle[k] = (sub as Record<string, unknown>)[k];
 });
-if (!('dialogues' in nextSubtitle)) {
+if (!toFile && !('dialogues' in nextSubtitle)) {
   nextSubtitle.dialogues = nextDialogue;
 }
 
@@ -244,7 +372,8 @@ const detectIndent = (text: string): number => {
   const m = text.match(/\n( +)"/);
   return m ? m[1].length : 2;
 };
-const indentUnit = detectIndent(source);
+/** ⚠️ `let`：`--to-file` 生成新文件时临时改成 2（新文件不跟随 config 的缩进宽度） */
+let indentUnit = detectIndent(source);
 const crlf = /\r\n/.test(source);
 const nl = crlf ? '\r\n' : '\n';
 
@@ -394,7 +523,7 @@ const idempotent = (() => {
     });
     const next2: Record<string, unknown> = {};
     Object.keys(s2 ?? {}).forEach((k) => {
-      if (LEGACY_KEYS.indexOf(k) >= 0) {
+      if (dropKeys.indexOf(k) >= 0) {
         return;
       }
       if (k === 'dialogues') {
@@ -486,10 +615,70 @@ if (asJson) {
   }
 }
 
+/**
+ * `--to-file` 的产物：**带文件头注释**的事件文件正文。
+ *
+ * 缩进固定 2（新文件不跟随 config 的缩进宽度）；条目沿用 `shapeEntry` 的字段顺序，
+ * 空数组/短对象用紧凑写法（一个条目基本 3–6 行，手写时好改）。
+ */
+const buildEventsFile = (): string => {
+  indentUnit = 2;
+  const items = nextDialogue
+    .map((d) => '    ' + printValue(d, 2))
+    .join(',\n');
+  return (
+    EVENTS_FILE_HEADER +
+    '{\n  "schema": 1,\n  "events": [\n' +
+    items +
+    '\n  ]\n}\n'
+  );
+};
+
+/** 写完 config 之后再写事件文件（两个产物都在时，日志顺序更直观） */
+const writeEventsFile = (): void => {
+  const rel = path.relative(repoRoot, eventsPath);
+  /**
+   * 保护：事件表为空时绝不落盘。
+   * 触发场景 = 第二次跑 `--to-file`（config 里 `dialogues` 已经被删了），
+   * 若照样写就会把已经整理好（带人写的注释）的文件覆盖成空表 —— 这是灾难性的。
+   */
+  if (!nextDialogue.length) {
+    die(
+      '事件表是空的（config 的 subtitle 里已经没有 dialogues）⇒ 拒绝覆盖 ' + rel
+    );
+  }
+  const text = buildEventsFile();
+  const prev = fs.existsSync(eventsPath)
+    ? fs.readFileSync(eventsPath, 'utf8')
+    : null;
+  if (!write) {
+    console.log(
+      '  --to-file：将生成 ' +
+        rel +
+        '（' +
+        nextDialogue.length +
+        ' 条' +
+        (prev === null ? '，新建' : '，覆盖已有文件') +
+        '；dry-run，加 --write 落地）'
+    );
+    return;
+  }
+  if (prev === text) {
+    console.log('  ✅ 事件文件已是最新（字节相同）：' + rel);
+    return;
+  }
+  fs.writeFileSync(eventsPath, text, 'utf8');
+  console.log('  ✅ 已写入 ' + rel + '（' + nextDialogue.length + ' 条）');
+};
+
 if (write) {
   if (!idempotent) {
     die('幂等自检失败 ⇒ 拒绝写盘（先修脚本）');
   }
   fs.writeFileSync(configPath, nextSource, 'utf8');
   console.log('  ✅ 已写入 ' + path.relative(repoRoot, configPath));
+}
+
+if (toFile) {
+  writeEventsFile();
 }

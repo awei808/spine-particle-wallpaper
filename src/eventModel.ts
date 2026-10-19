@@ -113,6 +113,14 @@ export type IssueDisposition = 'reject' | 'coerce' | 'report';
 
 /** 码表见 PLAN §6.2 —— 每条码只声明一个处置，级别由处置派生 */
 export type IssueCode =
+  /**
+   * 事件**文件**级问题（`assets/events.jsonc` 缺失 / 解析失败 / 条目不是对象）。
+   * ★ 2026-10-19 起事件表只有一个来源 ⇒ 这类问题没有"降级继续"的余地，
+   *   处置统一 `coerce`（= warn 级别），真正的告警由启动日志与面板红字承担。
+   */
+  | 'E_EVENTS_FILE'
+  /** 文件 `schema` 比引擎新（向前兼容提示，不拦） */
+  | 'W_EVENTS_FILE_SCHEMA'
   | 'E_ID_INVALID'
   | 'E_ID_DUP'
   | 'E_ANIM_MISSING'

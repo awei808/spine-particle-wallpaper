@@ -79,10 +79,13 @@ import {
   resolveEventFrom,
 } from './eventScheduler';
 import {
-  mergeEventOverrides,
-  readEventOverrides,
-  writeEventOverrides,
+  applyEventState,
+  EventState,
+  pruneEventState,
+  readEventState,
+  writeEventState,
 } from './eventOverrides';
+import { loadEventsFile } from './eventsFile';
 import {
   summarizeReport,
   validateEvents,
@@ -307,6 +310,20 @@ const main = async () => {
   ).json();
   const configs: Configs = applyOverrides(rawConfigs, readOverrides());
   /**
+   * ★★ **事件表文件**（`assets/events.jsonc`，2026-10-19）—— 事件的**唯一来源**。
+   *
+   * config 只管环境参数（字幕样式、热区几何、音量…），事件（内置 + 自定义）
+   * 全部在这里。理由与格式见 `src/eventsFile.ts` 文件头。
+   *
+   * ⚠️ 没有 fallback：文件缺失 / 解析失败 ⇒ 0 条事件 + 控制台报错（含行:列）
+   *   + 面板红字。回退到 config 会把"语法写错了"伪装成"事件变少了但还能播"。
+   */
+  const eventsFile = await loadEventsFile();
+  if (!eventsFile.ok) {
+    console.error('[events] ' + (eventsFile.error ?? '事件文件不可用'));
+  }
+  eventsFile.issues.forEach((it) => console.warn('[events] ' + it.detail));
+  /**
    * ★ `'width'` 基准下剔除「黑遮幅」（`limitEdge` 标记的层）。
    *
    * 遮幅钉在世界坐标上，职责是盖住「超出设计画幅的部分」—— 这在**按高**下是对的
@@ -368,6 +385,14 @@ const main = async () => {
    * start here
    */
   let lastFrameTime = Date.now() / 1000;
+  /**
+   * 上一次**真正渲染**的时刻（ms）。只有 `configs.maxFps > 0` 时才被读取。
+   *
+   * ★ 与 `lastFrameTime` 的区别很关键：`lastFrameTime` 记的是"上一次推进动画的时刻"，
+   *   而这里记的是"上一次执行渲染的时刻"。限帧时被跳过的那些帧**不更新本变量**，
+   *   于是省下的时间会累加进下一帧的 delta ⇒ 动画按真实经过的时间推进，不会变慢。
+   */
+  let lastRenderMs = Date.now();
   const spineAssetManager = new threejsSpine.AssetManager(ASSET_PATH);
   const threeAssetList: { [path: string]: THREE.Texture } = {};
   const meshUpdateCallbacks: Array<(delta: number) => void> = [];
@@ -468,7 +493,13 @@ const main = async () => {
    * ⇒ 改文案、改字号、挪气泡位置都**免重建 bundle**（与 `touch.zones` 同理）。
    */
   const subtitleCfg = configs.subtitle;
-  const dialogues: DialogueEntry[] = subtitleCfg?.dialogues ?? [];
+  /**
+   * ★★ 事件表 = `assets/events.jsonc` 的内容（**逐字**，未归一）。
+   *
+   * ⚠️ `subtitle.dialogues` **不再参与**（2026-10-19）。它现在是历史字段：
+   *   迁移器（`scripts/migrateEvents.ts --to-file`）会把它搬进事件文件并从 config 删掉。
+   */
+  const dialogues: DialogueEntry[] = eventsFile.events;
   /** 气泡实例；未启用（`enabled:false`）或没配底图时为 `null` ⇒ 只播动作、不出字幕 */
   const voiceBubble: VoiceBubble = createVoiceBubble(subtitleCfg);
   /**
@@ -880,19 +911,14 @@ const main = async () => {
    *   任何一处再补一遍默认值，就会出现"引擎按 A 口径抽、档案按 B 口径显示"。
    */
   /**
-   * ★★ **自定义事件覆盖层**（PLAN §7.1 / S9）—— config 表 + 用户新建（`added`）
-   *   再统一按 `disabled` 压 `enabled:false`。
+   * ★★ **事件开关**（用户侧，`localStorage`）—— 2026-10-19 起面板只做这一件事：
+   *   决定某条事件在这台机器上播不播。增删改一律改 `assets/events.jsonc`。
    *
-   * ⚠️ 必须在 `normalizeEventTable` **之前**合并：新建事件也要过同一套归一
-   *   （补 `on`/`kind`/`pick` 缺省、夹取优先级、丢非法 id），否则就会出现
-   *   "面板建的条目缺字段 ⇒ 漏斗与档案各判一半"。
-   * ⚠️ 合并顺序与"关掉自定义事件"的边界见 `eventOverrides.ts` 文件头。
+   * ⚠️ 必须在 `normalizeEventTable` **之前**压：`enabled` 也在那一层被归成布尔
+   *   （见 `eventOverrides.ts` 文件头）。
    */
-  const eventOverrides = readEventOverrides();
-  const eventSource: DialogueEntry[] = mergeEventOverrides(
-    dialogues,
-    eventOverrides
-  );
+  const eventState = readEventState();
+  const eventSource: DialogueEntry[] = applyEventState(dialogues, eventState);
   const normalizedTable = normalizeEventTable(eventSource, {
     legacy: {
       touch: subtitleCfg?.touch,
@@ -905,12 +931,24 @@ const main = async () => {
     },
   });
   /**
-   * 归一阶段的 issue（`E_ID_INVALID` / `E_ID_DUP` / `E_PRIORITY_RANGE` / `W_LEGACY` …）。
+   * 事件表的问题分两段：
+   *   ① 文件本身（缺失 / 语法 / 形状）—— `eventsFile.issues`；
+   *   ② 归一（`E_ID_INVALID` / `E_ID_DUP` / `E_PRIORITY_RANGE` / `W_LEGACY` …）。
    * 运行时校验的 issue 在骨架就绪后再合并进来（见 `validationReport`）。
    */
-  const normalizeIssues = normalizedTable.issues;
+  const normalizeIssues = eventsFile.issues.concat(normalizedTable.issues);
   /** 归一后的事件表（**未**投影；投影会改动画名，校验要用原名） */
   const eventTable: DialogueEntry[] = normalizedTable.events;
+  if (eventTable.length === 0) {
+    /**
+     * 事件表空了 = 整个壁纸不会播任何念白/动作事件。
+     * 最常见的两种原因：`events.jsonc` 的 `events` 是空数组，或文件根本没进包。
+     * 只 warn 一行（不要 error 刷屏）—— 画面本身还能正常渲染。
+     */
+    console.warn(
+      '[events] 事件表为空 ⇒ 不会触发任何念白/动作事件。检查 assets/events.jsonc 的 events 数组。'
+    );
+  }
 
   /**
    * ★★ **投影到当前动作族**：动画名换成该族那一套（`greet` → `greet_marry`），
@@ -2140,6 +2178,12 @@ const main = async () => {
         visible: archiveVisible0,
         config: configs,
         /**
+         * ★★ 事件表由**这里**传入（2026-10-19）：档案不再自己从 config 归一。
+         *   传归一后的 `eventTable`（`enabled` 已按用户开关压过）——
+         *   表里列出的就是引擎真的会抽的那一份。
+         */
+        events: eventTable,
+        /**
          * ★ 把「动画 → 特效」映射交给档案面板显示「特效」列（2026-10-17）。
          *
          * 传的是**上面那份已建好的扁平索引**，不是让面板自己再解析一遍
@@ -2319,25 +2363,28 @@ const main = async () => {
           animation: d.animation,
         })),
         /**
-         * ★★ 「自定义事件」页（2026-10-18 / S9）—— 面板只**展示**、不自己归一：
-         *   传归一后的 `eventTable`（含用户新建的条目、`enabled` 已按覆盖层压过）。
+         * ★★ 「事件开关」页（2026-10-19）—— 面板只**展示 + 开关**，不自己归一：
+         *   传归一后的 `eventTable`（`enabled` 已按用户开关压过）。
          */
         eventTable,
         /**
-         * 粒子组名候选 = `config.meshes[]` 里 `type:'particle'` 的 `name`。
-         * ⚠️ 不能把**背景层**的名字也列进去：那是 `texture` 图层，写进 `particles`
-         *   只会得到一条 `E_PARTICLES_UNKNOWN`（coerce 掉、事件照播，但用户白选）。
+         * 事件**来源**：面板据此显示路径、条数与"解析失败：第 N 行 第 M 列"。
+         * ⚠️ 只传路径与错误，不传文件内容 —— 面板不需要、也不许有第二份表。
          */
-        particleNames: (configs.meshes ?? [])
-          .filter((m) => (m as { type?: string })?.type === 'particle')
-          .map((m) => (m as { name?: string })?.name)
-          .filter((n): n is string => typeof n === 'string' && !!n),
-        /** 触摸热区候选（`config.touch.zones`）—— 「热区」条件模板用 */
-        touchZones: touchZones.map((z) => ({ id: z.id, label: z.label })),
-        /** 覆盖层初值（`added` / `disabled`） */
-        eventOverrides,
-        /** 与设置项同一次保存（`onSave` 的重载之前落盘） */
-        onSaveEvents: (o) => writeEventOverrides(o),
+        eventsFile: {
+          path: 'assets/events.jsonc',
+          error: eventsFile.ok
+            ? null
+            : eventsFile.error ?? '事件文件不可用',
+        },
+        /** 事件开关初值（本机点过的键） */
+        eventState,
+        /**
+         * 与设置项**同一次**保存：`onSave` 的重载之前落盘。
+         * ★ 顺手把文件里已删掉的键剪掉（悬空键不会越攒越多）。
+         */
+        onSaveEventState: (s: EventState) =>
+          writeEventState(pruneEventState(s, eventTable.map(eventKeyOf))),
       });
 
       if (PROBE_OPTS.enabled) {
@@ -2413,8 +2460,38 @@ const main = async () => {
   };
 
   // Render Loop
+  //
+  // ★★ 帧率上限（2026-10-19，性能实测后新增）
+  //
+  // 此前这里是**裸 rAF、零节流**，于是有两个后果：
+  //  1. WE 把壁纸挂多屏 / 虚拟桌面时，rAF 可能被驱动到显示器刷新率之上 ⇒ 纯烧 CPU。
+  //  2. 单帧成本一旦降低（例如关掉 MSAA），浏览器会**自动多跑帧**把省下的时间填掉
+  //     （实测 fps 82→84）⇒ "每帧便宜了"并不等于"CPU 降了"。
+  //
+  // 实测（headless+软渲染，锁帧对比见 `_regress/37_`/`38_`）：
+  //   同样配置不限帧 ⇒ 主线程忙碌率 **87%**；限到 30fps ⇒ **22%**。
+  //
+  // ★ 为什么"到点就 return"而不是排队补帧：那才是真节流（省下的是**整个回调**）。
+  //   若被节流掉时仍然执行回调再 return，等于没节流。
+  // ⚠️ `lastFrameTime` **只在真正渲染时更新** —— 这样被节流掉的那些帧的时间
+  //   会累加到下一帧的 delta 上，动画按**真实经过的时间**推进，不会因为限帧而变慢。
+  const maxFps = configs.maxFps ?? 0;
+  const minFrameGap = maxFps > 0 ? 1000 / maxFps : 0;
+
   const render = () => {
-    const now = Date.now() / 1000;
+    const nowMs = Date.now();
+    if (minFrameGap > 0) {
+      const elapsedMs = nowMs - lastRenderMs;
+      if (elapsedMs < minFrameGap) {
+        // 还没到下一帧的时间点 ⇒跳过这次渲染（但把rAF 续上）。
+        // 探针冻结时也要走这条路：冻结=不推进，但"重画"本身仍应被节流。
+        requestAnimationFrame(render);
+        return;
+      }
+    }
+    lastRenderMs = nowMs;
+
+    const now = nowMs / 1000;
     const delta = now - lastFrameTime;
     lastFrameTime = now;
     /**

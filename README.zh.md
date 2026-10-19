@@ -53,29 +53,46 @@ Unity 手游里的 Spine 角色 + 粒子特效 + 触摸动作，搬上桌面并�
 
 ## 事件列表与触发规则
 
-「什么情况下角色会说哪句话」全部由 `config.json` 的 `subtitle` 段决定，**改完不用重新构建**：
+「什么情况下角色会说哪句话」全部写在 **`assets/events.jsonc`**（与 `config.json` 同目录）。
+一条事件自带**触发通道、条件、动画、粒子、念白、语音**；改完**不用重新构建**，
+在 Wallpaper Engine 里重新加载壁纸即可生效。
 
-```json
-"subtitle": {
-  "greet": [64001, 64002, 64003],
-  "chat":  [64004],
-  "touch": [64005, 64006, 64007, 64008, 64009, 64010],
-  "greetMode": "time",
-  "touchFeedbackMode": "immediate",
-  "standbyKinds": ["chat"],
-  "touchKinds": ["touch"],
-  "resumeKinds": ["greet"]
+> **为什么不在 `config.json` 里**：那份文件是构建产物（生成器会整块重写），注释必然被冲掉；
+> 而事件需要一段能写清楚"字段是什么、优先级怎么排"的说明。事件文件支持 `//`、`/* */`
+> 注释与行尾逗号，还能离线校验（`scripts/validateEvents.ts`）。
+> **文件开头就写着完整字段表 + 三条示例** —— 打开就能照着改，不需要翻文档。
+
+```jsonc
+{
+  "schema": 1,
+  "events": [
+    {
+      "id": "game:64001", "actionId": 64001, "label": "晴日上午问候",
+      "on": ["resume"], "kind": "greet",
+      "when": { "time": { "start": 5, "end": 12 } },   // 05:00–12:00（start>end = 跨零点）
+      "animation": "greet",
+      "text": "早上好。", "textTime": 6,
+      "voice": "CV/Asuna/Morning_01.ogg"
+    }
+  ]
 }
 ```
 
-| 列表         | 触发时机                                                              | 取哪一条                                                                             |
-| ------------ | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `greet` 问候 | 三个入口勾了 `greet` 类：回到壁纸（缺省）、待机（可选）、触摸（可选） | `greetMode`：`"time"` 按系统时刻取第 1/2/3 条（清晨/中午/傍晚）；`"random"` 整表随机 |
-| `chat` 聊天  | 三个入口勾了 `chat` 类（待机**缺省**就勾着）                          | 从 `chat` 池随机                                                                     |
-| `touch` 触摸 | 三个入口勾了 `touch` 类（触摸**缺省**就勾着）                         | 从 `touch` 池随机                                                                    |
+| 字段 | 说明 |
+| --- | --- |
+| `on` | 触发通道：`touch`（点击热区）/ `standby`（静置）/ `resume`（载入、回到桌面、回到前台）。可写数组 |
+| `kind` | 类别：`touch` / `chat` / `greet`。省略则按 `on[0]` 推 |
+| `when` | 条件：`time{start,end}`、`calendar{month,day}`、`ctx{idleMs,zone}`，可用 `and` / `or` / `not` 组合 |
+| `animation` | spine 动画名；不写 = 纯台词事件 |
+| `particles` | 本条专用粒子组（`config.meshes[].name`）；不写 = 按动画名回落 |
+| `variants` | 整包随机：动作 + 台词 + 语音来自同一包 |
+| `pick` | `priority`（同次触发先比档）、`weight`（同档加权；**0 = 只手动触发**）、`group`（互斥）、`cooldownMs`、`quota`、`interrupt` |
+| `enabled` | `false` = 作者默认关闭（用户仍可在面板打开） |
 
-三条列表的元素都是 `subtitle.dialogues` 里的 `actionId`，**想加一条候选就往数组里加一个数字**
-（例如把 `greet` 改成 `[64001, 64002, 64003, 64004]`）。
+**想加一条事件** = 往 `events` 数组里加一个对象；**想删** = 删掉那个对象。
+面板里的「事件开关」只能开 / 关（本机），**不改这个文件**。
+
+> ⚠️ 同一通道下如果所有事件都是 `weight: 0`，该通道永远不会自动触发（启动时会打 warn）。
 
 ### 语音文件格式：`ogg` / `mp3` / `wav` / `m4a` 混装都能放（2026-10-17）
 

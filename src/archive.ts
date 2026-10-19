@@ -116,10 +116,8 @@ import {
   eventKeyOf,
   kindOf as eventKindOf,
   normalizeEventKey,
-  normalizeEventTable,
 } from './eventModel';
 import { describeCondition } from './conditions';
-import { mergeEventOverrides } from './eventOverrides';
 import { summarizeReport, ValidationReport } from './eventValidate';
 
 /**
@@ -143,6 +141,16 @@ export type ArchiveOptions = {
    *   不是 `rawConfigs` —— 否则表里显示的是"出厂值"而不是用户当前生效值。
    */
   config: Configs;
+  /**
+   * **已经归一 + 已压过事件开关**的事件表（= `index.ts` 的 `eventTable`）。
+   *
+   * ★★ 2026-10-19：档案**不再自己从 config 归一**。事件表只有一个来源
+   *   （`assets/events.jsonc`），档案若自己再算一遍，就会出现"引擎按 A 表抽、
+   *   档案按 B 表显示"——这正是本次改动要消灭的那类偏差。
+   *   投影（动作族换名）与族闸门仍在这里做，因为它们是**本状态的**派生，
+   *   而"哪张表"不是。
+   */
+  events: readonly DialogueEntry[];
   /**
    * 「动作特效」映射（动画名 → 粒子组名）。缺省 `{}` ⇒ 特效列全为「—」。
    *
@@ -385,32 +393,17 @@ type ArchiveState = {
 
 const resolveState = (
   cfg: Configs,
+  events: readonly DialogueEntry[],
   validation: ValidationReport | null = null
 ): ArchiveState => {
   const sub = cfg.subtitle;
   /**
-   * ★ 2026-10-18：**先归一**再算池 —— 与 `index.ts` 同一入口（`normalizeEventTable`）。
-   *   ⇒ 自定义事件（显式 `on` / `kind`）会进表、进池；旧 config 由旧池键反推，内容不变。
+   * ★★ 2026-10-19：事件表**由调用方传入**（`index.ts` 归一后的 `eventTable`）。
+   *   档案不再自己 `normalizeEventTable(config.subtitle.dialogues)` ——
+   *   事件已搬到 `assets/events.jsonc`，config 里那份是空的；
+   *   更重要的是**不许有第二份表**（"引擎按 A 表抽、档案按 B 表显示"）。
    */
-  const normalized = normalizeEventTable(
-    /**
-     * ★ 2026-10-18（S9）：档案必须看到**用户新建的事件**（否则"面板里建了、
-     *   档案里没有"，用户会以为没生效）。合并口径与 `index.ts` 同一函数。
-     */
-    mergeEventOverrides(sub?.dialogues ?? []),
-    {
-      legacy: {
-        touch: sub?.touch,
-        chat: sub?.chat,
-        standby: sub?.standby,
-        greet: sub?.greet,
-        greeting: sub?.greeting,
-        greetingRanges: sub?.greetingRanges,
-        greetMode: sub?.greetMode,
-      },
-    }
-  );
-  const dialogues: DialogueEntry[] = normalized.events;
+  const dialogues: DialogueEntry[] = events.slice();
   // ★ 「新数组优先、空数组退回旧时段表」的口径集中在 `dialogue.resolveGreetSource` ——
   //   这里不另写 `??`（`??` 对空数组不回退 ⇒ 会把整类问候静默关掉）
   const greetSource = resolveGreetSource(sub?.greet, sub?.greeting);
@@ -984,6 +977,7 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
   // ★ 口径只算一次，表格与细则共用（见 `ArchiveState` 的注释）
   const st = resolveState(
     cfg,
+    options.events,
     options.validation ? options.validation() : null
   );
   const rows = buildRows(cfg, st, ae);

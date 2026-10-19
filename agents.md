@@ -31,12 +31,13 @@ src/
   eventModel.ts     * Event identity (EventKey) + normalizeEventTable (THE single normalizer:
                     legacy greet/chat/touch pools are inferred into per-entry on/kind/when)
                     + variant picking (whole-package random)
-  eventOverrides.ts * Per-user event overlay (localStorage `wb.swe.events.v1`: `added` +
-                    `disabled`). `mergeEventOverrides` is the ONLY merge point and must run
-                    BEFORE normalize (config → +added → disabled applied last)
-  eventBuilder.ts   * Pure builder for the panel's "自定义事件" page: a point-and-click draft
-                    becomes a DialogueEntry (condition template, whole-package random via
-                    `variants`, text/voice inherited from an existing entry)
+  eventsFile.ts     * Reads `assets/events.jsonc` (JSONC: //, /* */, trailing commas, BOM).
+                    THE ONLY event source since 2026-10-19 — no fallback to config.
+                    Comment stripping is offset-preserving so parse errors report the real
+                    file's line:column
+  eventOverrides.ts * Per-user event SWITCHES (localStorage `wb.events.state.v1`:
+                    `{enabled: {key: boolean}}`). `applyEventState` is the only merge point and
+                    must run BEFORE normalize. It NEVER creates/edits/deletes an event
   conditions.ts     * Condition AST: compile / inspect / describe (pure, injectable clock)
   eventScheduler.ts * selectEvent (priority tier + weighted random) + eventLog state
                     (cooldown / quota / mutex group; quota.day|ever persisted in localStorage)
@@ -116,15 +117,22 @@ Voice lines, trigger conditions, and several runtime switches are driven entirel
 `subtitle` block of `public/assets/config.json`. Editing it does **not** require a rebuild —
 copy `config.example.json` to `config.json`, edit, reload.
 
-**Since 2026-10-18 (PLAN S8) `subtitle.dialogues[]` is the only truth**: every entry carries
-its own `on` / `kind` / `when`, and the old pool keys (`greet` / `chat` / `touch` / `standby` /
-`greeting` / `greetInTouchPool`) are **gone from migrated configs**. They are still _read_ when
-present (legacy inference in `normalizeEventTable`, reported as `W_LEGACY`), so old copies keep
-working — but never write them into a new config.
+**Since 2026-10-19 `assets/events.jsonc` is the only truth** (see
+`PLAN_事件配置文件_2026-10-19.md`). Events — built-in and custom alike — live in that one
+JSONC file, so authors get comments, diffs and offline validation; `config.json` keeps only
+environment parameters (subtitle styling, hit zones, volumes…). `subtitle.dialogues` is a
+**legacy field**: the engine ignores it (and `src/eventsFile.ts` has no fallback), the
+migration tool removes it.
+
+**The settings panel no longer authors events.** Its tab is 「事件开关」 and only toggles each
+entry on/off (per-machine, `localStorage`). Adding / removing / editing an event = editing the
+file. Never add authoring UI back into the panel: WE's CEF has no reliable IME focus, and a
+half-capable editor is exactly what produced the "state the engine cannot see" bugs.
 
 ```jsonc
-"subtitle": {
-  "dialogues": [
+// assets/events.jsonc
+{ "schema": 1,
+  "events": [
     { "id": "game:64001", "actionId": 64001, "animation": "greet",
       "on": ["resume"], "kind": "greet",
       "when": { "time": { "start": 5, "end": 12 } },   // 05:00–12:00 (start>end ⇒ crosses midnight)
@@ -138,18 +146,32 @@ working — but never write them into a new config.
       "when": { "calendar": { "month": 2, "day": 14 } },
       "pick": { "priority": 50, "quota": { "max": 1, "per": "day" } },
       "variants": [ { "text": "…", "voice": "…" } ] }   // whole-package random
-  ],
+  ] }
+```
+
+…and `config.json` keeps the **environment / user-switch** half (never per-event data):
+
+```jsonc
+"subtitle": {
   "touchFeedbackMode": "immediate", // legacy | immediate | queue | none
   "standbyKinds": ["chat"],         // what may fire after a long idle: chat | greet | touch
   "touchKinds": ["touch"],          // what a hit-zone click may fire: chat | greet | touch
-  "resumeKinds": ["greet"]          // what the four auto signals may fire (startup/visible/focus/resume)
+  "resumeKinds": ["greet"],         // what the four auto signals may fire (startup/visible/focus/resume)
+  "eventFamilies": [ { "id": "normal", "label": "普通事件", "default": true } ]
 }
 ```
 
-Field semantics live in `config.type.ts` (`DialogueEntry`) and `PLAN_自定义事件系统_2026-10-18.md`;
-the migration tool is `npx ts-node --transpile-only scripts/migrateEvents.ts <assetsDir> [--write]`
-(idempotent, rewrites only the `subtitle` block, prints a slot → event table, writes
-`enabled:false` for orphans).
+Field semantics live in `config.type.ts` (`DialogueEntry`) and
+`PLAN_自定义事件系统_2026-10-18.md`; the file format itself is documented **inside**
+`public/assets/events.jsonc` (header comment block — keep it there, it is the only doc an
+author ever opens).
+
+Tools:
+- `scripts/migrateEvents.ts <assetsDir> --to-file [--write]` — move `subtitle.dialogues` into
+  `events.jsonc` (with the header) and drop it from config; refuses to overwrite with an empty
+  table, so it is safe to re-run.
+- `scripts/validateEvents.ts <assetsDir>` — offline check (reads `events.jsonc` first).
+- `_regress/91` — parser/JSONC; `_regress/89` — switch state. Both are `ts-node`, no DOM.
 
 The three `*Kinds` fields are **structurally identical multi-selects**, one per trigger channel,
 with **deliberately different defaults** so that upgrading changes nothing:

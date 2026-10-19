@@ -115,6 +115,29 @@
 
 ---
 
+## 1.3 事件文件化（2026-10-19 落地，A+B 批）
+
+- 裁定：自定义事件**不再**面向 0 基础用户；作者层改为**专门的事件配置文件**（带注释），
+  面板只保留开关。详见 `docx/PLAN_事件配置文件_2026-10-19.md`。
+- ✅ 事件唯一来源 = `assets/events.jsonc`（JSONC：`//`、`/* */`、尾逗号、BOM、CRLF）
+  - 解析：`src/eventsFile.ts`（剥注释**等长替换** ⇒ 报错给原始文件的行:列）
+  - **无 fallback**：文件缺失 / 语法错 ⇒ 0 条 + 控制台 error + 面板红字（不回退 config）
+- ✅ 面板第 5 页改名「事件开关」：只剩每行一个开关；`eventBuilder.ts` 整文件删除，
+  `mergeEventOverrides` 的 `added` / `disabled` 双轨一并删除
+- ✅ 开关状态：`localStorage['wb.events.state.v1'] = { schema:1, enabled:{key:bool} }`
+  （双向：文件写 `enabled:false` 也能被用户打开）；`pruneEventState` 清悬空键
+- ✅ `archive.ts` 不再自己归一（事件表由 `index.ts` 传入）⇒ 少一份"第二真相"
+- ✅ 迁移器：`scripts/migrateEvents.ts <assets> --to-file [--write]`
+  （写带注释头部的文件 + 从 config 删 `dialogues`；空表拒绝覆盖）
+- ✅ 离线校验：`scripts/validateEvents.ts` 优先读 `events.jsonc`
+- ✅ 回归：`_regress/91`（解析 43 条）、`_regress/89`（开关 18 条，已重写）
+- ✅ 无头验收：`_work_事件文件验收/10_验证_事件开关.js`（26 条断言，dist 与 S9 探针各跑一轮）
+- ✅ B 批：`12_探针_去灰线` 已迁移（10 条）+ 部署新 bundle（备份在 `_work_工坊更新/_备份/`）
+- ⬜ C 批：`_work_星语心恋/step2_web`（S8）+ `17_注入S8语音字幕.py` 改产出 events.jsonc
+- ⬜ D 批：`_work_芙丽希娅_蝶语吟花/step2_web{,_p3}`（S6）+ `49_生成交互配置.py`
+- ⚠️ C/D 之前：**不要**对已迁移工程重跑生成器（会把 `dialogues` 写回 config，虽不生效但会误导）
+
+
 ## 2. 将 D:\手游文件夹\灵魂潮汐\12*探针*去灰线的项目示例作为 demo，搬进本 git 仓库。并作为未来的项目展示窗口。
 
 ## 3. 将 D:\手游文件夹\灵魂潮汐里的测试文件搬进 git 仓库

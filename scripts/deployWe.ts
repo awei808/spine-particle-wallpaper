@@ -40,6 +40,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { parseEventsFile } from '../src/eventsFile';
 
 const argv = process.argv.slice(2);
 const positional = argv.filter((a) => a.charAt(0) !== '-');
@@ -174,26 +175,40 @@ if (!fs.existsSync(projectJson)) {
   console.log('  = project.json（已存在，保留原样）');
 }
 
-const cfgPath = path.join(target, 'assets', 'config.json');
-const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-const sub = cfg.subtitle || {};
 const voices = fs.existsSync(path.join(target, 'assets', 'voice'))
   ? fs.readdirSync(path.join(target, 'assets', 'voice')).length
   : 0;
 
 console.log('[deployWe] ' + target);
 console.log('  复制 ' + copied + ' 个文件');
+/**
+ * ★ 2026-10-19：事件的唯一来源是 `assets/events.jsonc`（不再读 `config.subtitle.dialogues`）。
+ *   ⇒ 部署时必须单独报一句"事件文件在不在、能不能解析"，否则最容易出现的故障是
+ *   **bundle 换新了、事件文件没跟着换/没放** —— 表现是"壁纸能显示，但从不说话"。
+ */
+const eventsPath = path.join(target, 'assets', 'events.jsonc');
+let eventCount = 0;
+let eventNote = '★ 缺 assets/events.jsonc ⇒ 本壁纸不会触发任何事件';
+if (fs.existsSync(eventsPath)) {
+  const parsed = parseEventsFile(fs.readFileSync(eventsPath, 'utf8'));
+  eventCount = parsed.events.length;
+  eventNote = parsed.ok ? '' : '★ events.jsonc 不可用：' + (parsed.error ?? '');
+  if (!parsed.ok) {
+    process.exitCode = 1;
+  }
+}
 console.log(
-  '  config: ' +
-    (sub.dialogues || []).length +
-    ' 条事件 · 旧池键 ' +
-    ['touch', 'greet', 'chat', 'standby', 'greeting'].filter(
-      (k) => sub[k] !== undefined
-    ).length +
-    ' 个 · voice ' +
+  '  events: ' +
+    eventCount +
+    ' 条（' +
+    (fs.existsSync(eventsPath) ? 'assets/events.jsonc' : '缺失') +
+    '）· voice ' +
     voices +
     ' 个文件'
 );
+if (eventNote) {
+  console.error('  ' + eventNote);
+}
 if (!fs.existsSync(path.join(target, 'assets', 'config.json'))) {
   console.error('  ★ 缺 assets/config.json ⇒ 壁纸会白屏');
   process.exit(1);
