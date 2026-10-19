@@ -1,0 +1,41 @@
+[
+  {
+    "label": "③ ①+②",
+    "msPerFrameRuns": [
+      2.67,
+      2.63,
+      2.75
+    ],
+    "msPerFrame": 2.67,
+    "pfMin": 2.63,
+    "pfMax": 2.75,
+    "busyPct": 21.9,
+    "fps": 82.1
+  },
+  {
+    "label": "⑥ ①+②+关探针",
+    "msPerFrameRuns": [
+      2.48,
+      2.4,
+      2.45
+    ],
+    "msPerFrame": 2.45,
+    "pfMin": 2.4,
+    "pfMax": 2.48,
+    "busyPct": 20.6,
+    "fps": 84
+  },
+  {
+    "label": "★不限帧(仅①+②)",
+    "msPerFrameRuns": [
+      31.97,
+      42.04,
+      51.4
+    ],
+    "msPerFrame": 42.04,
+    "pfMin": 31.97,
+    "pfMax": 51.4,
+    "busyPct": 93.7,
+    "fps": 18.7
+  }
+]

@@ -3,6 +3,8 @@
   "height": 750,
   "fov": 59.255924,
   "dpr": "auto",
+  "antialias": false,
+  "maxFps": 30,
   "touch": {
     "enabled": true,
     "showZones": false,

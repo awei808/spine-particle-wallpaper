@@ -1,0 +1,80 @@
+[
+  {
+    "label": "DSF2 auto(dpr2)+MSAA",
+    "dsf": 2,
+    "runs": [
+      87.38,
+      169.26
+    ],
+    "msPerFrame": 169.26,
+    "min": 87.38,
+    "max": 169.26,
+    "buf": "3400x1500",
+    "busy": 89.8
+  },
+  {
+    "label": "DSF2 dpr1.0 +MSAA",
+    "dsf": 2,
+    "runs": [
+      44.7,
+      49.28
+    ],
+    "msPerFrame": 49.28,
+    "min": 44.7,
+    "max": 49.28,
+    "buf": "1700x750",
+    "busy": 83.6
+  },
+  {
+    "label": "DSF2 auto(dpr2) 关MSAA",
+    "dsf": 2,
+    "runs": [
+      101.93,
+      49.11
+    ],
+    "msPerFrame": 101.93,
+    "min": 49.11,
+    "max": 101.93,
+    "buf": "3400x1500",
+    "busy": 71.5
+  },
+  {
+    "label": "DSF2 dpr1.0 关MSAA",
+    "dsf": 2,
+    "runs": [
+      2.79,
+      2.87
+    ],
+    "msPerFrame": 2.87,
+    "min": 2.79,
+    "max": 2.87,
+    "buf": "1700x750",
+    "busy": 23.3
+  },
+  {
+    "label": "DSF1.5 auto(dpr1.5)",
+    "dsf": 1.5,
+    "runs": [
+      34.07,
+      18.63
+    ],
+    "msPerFrame": 34.07,
+    "min": 18.63,
+    "max": 34.07,
+    "buf": "2550x1125",
+    "busy": 75
+  },
+  {
+    "label": "DSF1.5 dpr1.0",
+    "dsf": 1.5,
+    "runs": [
+      3.37,
+      3.13
+    ],
+    "msPerFrame": 3.37,
+    "min": 3.13,
+    "max": 3.37,
+    "buf": "1700x750",
+    "busy": 27.3
+  }
+]

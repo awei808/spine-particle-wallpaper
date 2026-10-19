@@ -447,7 +447,21 @@ export const initScene = (configs: Configs) => {
   camera.position.y = fit0.camY;
   camera.position.z = 0;
   // Create a renderer with Antialiasing
-  renderer = new THREE.WebGLRenderer({ antialias: true });
+  //
+  // ★★ `antialias` 改为可配置，缺省 **false**（2026-10-19，性能实测后翻的默认值）。
+  //
+  // 为什么翻：MSAA 让**每个片元按 4× 采样**跑，而这套画面是「12 层全屏半透明叠加」
+  //   （见 config.json 的 meshes），填充率本来就高。锁 30fps 后实测
+  //   主线程每帧成本 3.38ms → 2.64ms（**−22%**），且 3 次重复区间完全分离。
+  //
+  // 为什么"可配置"而不是直接删掉：MSAA 对**角色轮廓**确实有效。
+  //   画质优先的工程可以写 `antialias: true`换回来。
+  //
+  // ⚠️ 想省更多请优先降 `dpr`（实测收益 −71%~−97%，见 docx/REPORT_WE_CPU占用归因）：
+  //   MSAA 与 dpr 是**相乘**关系（都在放大填充率），关掉一个另一个还在。
+  renderer = new THREE.WebGLRenderer({
+    antialias: configs.antialias ?? false,
+  });
   // Configure renderer clear color
   renderer.setClearColor('#000000');
   // 渲染缓冲 = 内容视口 × dpr（`"auto"` 时跟随屏幕 DPI，
