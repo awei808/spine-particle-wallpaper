@@ -75,6 +75,23 @@
  *    `m4a/aac` 的 `canPlayType` 回答不可靠：说 "" 但实际能解码是真实存在的组合。
  *    "全都不支持 ⇒ 那就不播"会让整条语音静音且无从排查，代价远大于多试两次。
  *
+ * ### ★★ `ended` ≠ `paused`（2026-10-20，线上复现后补）
+ *
+ * 现象：**短语音**（在动作演完之前就播完）之后暂停 WE，恢复时**整条语音从头再放一遍**。
+ *
+ * 根因：`<audio>` 自然播完时 `paused === true` 且 `ended === true` —— 与被
+ * `pause()` 挂起在 API 层面**同值**。旧实现在 `resume()` 里只判
+ * `wasPlaying && el.paused`，而 `wasPlaying` 是 `attempt()` 置的"上次播过"，
+ * **播完不清**（只有 `stop()` / 自动播放被拒 / 整链失败才清）。
+ * ⇒ 恢复时对一条**已播完**的语音调了 `play()`；而规范要求对 `ended` 元素
+ * `play()` 先 seek 回最早位置 ⇒ **从头重播**。
+ * （Chromium 1228 实测：ended 后 `currentTime = duration`；`play()` 后立刻回 0。）
+ *
+ * ⇒ 三条口径，别退回去：
+ *   ① 元素挂 `ended` 监听，播完即清 `wasPlaying`；
+ *   ② `pause()` / `resume()` 都先判"是否已到末尾"，到末尾就不算"挂起中"；
+ *   ③ 判据必须含 `ended`，**不能**只看 `paused` —— 它俩在播完后没有区别。
+ *
  * ### 暂停期间不起播（不变式 1 的延伸）
  *
  * 降级链是异步的：候选 A 失败、正在试候选 B 的间隙里，WE 完全可能刚刚暂停壁纸。
@@ -273,6 +290,10 @@ export const createVoicePlayer = (
    *
    * 与 `bgmPlayer` 同一口径。不能用 `!el.paused` 反推：外部的 `pause()` 幂等保护
    * 会让第二次调用看到 `el.paused === true`，从而把已记好的意图抹成"没在播"。
+   *
+   * ★★ 它**只表示"上次播过"**，不表示"现在挂在进度上"（2026-10-20）：
+   *   自然播完（`ended`）也必须把它清掉，否则恢复时会重播整条 —— 见文件头
+   *   「`ended` ≠ `paused`」。清它的出口有三个：`stop()`、`ended` 监听、下面各失败分支。
    */
   let wasPlaying = false;
 
@@ -317,8 +338,38 @@ export const createVoicePlayer = (
     el = document.createElement('audio');
     el.preload = 'none';
     el.volume = volume;
+    /**
+     * ★★ 自然播完 ⇒ 立刻收回"续播意图"（2026-10-20，见文件头「`ended` ≠ `paused`」）。
+     *
+     * 不挂这个监听时，短语音播完后 `wasPlaying` 会一直悬着 true，让下一次
+     * `resume()` 把一条已经播完的语音当成"挂起中"再 `play()` 一遍（从头重播）。
+     * 只清标记，不动 `currentTime` / `src` —— 重播与否由 `play()` 决定，不在这里改语义。
+     */
+    if (typeof (el as any).addEventListener === 'function') {
+      el.addEventListener('ended', () => {
+        wasPlaying = false;
+      });
+    }
     // 不进 DOM 也能播（Chrome/CEF 均支持）；不 append 是为了不干扰页面结构
     return el;
+  };
+
+  /**
+   * 是否已到末尾（= 这条语音**播完了**，不是"被挂起"）。
+   *
+   * ★ 为什么两个判据都要：`ended` 是浏览器给的权威标记，但 DOM 桩 / 极老环境可能没有；
+   *   `currentTime` 贴 `duration` 是同一件事的数值表现。任一成立即算播完。
+   * ★ 反向不成立：`paused === true` **不能**当判据 —— 播完和被暂停时它都是 true。
+   */
+  const atEnd = (audio: HTMLAudioElement): boolean => {
+    if (!audio) {
+      return false;
+    }
+    if ((audio as any).ended === true) {
+      return true;
+    }
+    const d = audio.duration;
+    return isFinite(d) && d > 0 && audio.currentTime >= d - 0.05;
   };
 
   /** 摘掉当前候选的 `error` 监听（DOM 桩可能没有这两个方法，故都做存在性判断） */
@@ -467,6 +518,25 @@ export const createVoicePlayer = (
           // 成功 ⇒ 记住这条词干的可用扩展名（保留 error 监听：中途解码失败仍要降级）
           lastGood[stem] = cand.ext;
           resolved = cand.url;
+          /**
+           * ★★ `play()` 落定时总闸可能已经暂停了（2026-10-20）。
+           *
+           * `play()` 是**异步**的：从发起到真正出声之间，WE 完全可能已经暂停壁纸。
+           * 总闸那一次 `pause()` 早已跑完（它当时看到元素还没起播，可能直接退了），
+           * 之后没人再压一次 —— 结果就是"暂停中的壁纸上突然出声"。
+           * ⇒ 落定时补一次挂起，并**保留续播意图**（恢复后从当前位置接着说）。
+           *
+           * ⚠️ 已播完（极短语音在这个窗口里就结束了）就别留意图，否则命中 `resume()`
+           *   的 `atEnd` 分支白跑一次。
+           */
+          if (suspended) {
+            wasPlaying = !atEnd(audio);
+            try {
+              audio.pause();
+            } catch (e) {
+              /* 未加载源时 pause 一般安全，保险起见吞掉 */
+            }
+          }
         },
         (err: any) => {
           if (token !== generation) {
@@ -577,7 +647,21 @@ export const createVoicePlayer = (
 
   const pause = () => {
     suspended = true;
-    if (!el || el.paused) {
+    if (!el) {
+      return;
+    }
+    /**
+     * ★★ 已播完 ≠ 在播（2026-10-20）。
+     *
+     * 播完的元素 `paused` 也是 `true`，所以下面那行 `el.paused` 早退**看起来**没问题，
+     * 但它同时把"上次播过"的 `wasPlaying` 原封不动留下来了 —— 恢复时就变成"续播"。
+     * ⇒ 先认出"播完"，把意图清掉再退。
+     */
+    if (atEnd(el)) {
+      wasPlaying = false;
+      return;
+    }
+    if (el.paused) {
       return;
     }
     wasPlaying = true;
@@ -599,6 +683,17 @@ export const createVoicePlayer = (
       return;
     }
     if (!wasPlaying || !el || !el.paused) {
+      return;
+    }
+    /**
+     * ★★ 播完的语音**没有"续播"可言**（2026-10-20）。
+     *
+     * 对 `ended` 的元素调 `play()`，浏览器会先 seek 回最早位置 ⇒ 整条重播。
+     * 这正是"暂停一次、回来把上一句又听一遍"的来源（短语音最容易撞上）。
+     * 拦在调 `play()` 之前，顺手把残留意图清掉（`ended` 监听通常已经清过，这里是双保险）。
+     */
+    if (atEnd(el)) {
+      wasPlaying = false;
       return;
     }
     const p = el.play();

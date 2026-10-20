@@ -1257,6 +1257,26 @@ const main = async () => {
       reason === 'boot' || reason === 'visible' || reason === 'focus'
         ? reason
         : 'resume';
+    /**
+     * ★★ 语音还在念 ⇒ 这次问候**整体跳过**（2026-10-20）。
+     *
+     * 场景：语音比动作长（或语音来自常驻序列项 ⇒ 不占 `activeEntry`），
+     * 暂停/恢复时它被总闸续播着，紧接着 400ms 后这里又要播一条问候 ——
+     * `voicePlayer.play()` 的第一步就是 `stop()`，等于把刚续上的那句掐断。
+     * 动作闸门（`touch.ts` 的 `decidePlay`）只看**轨道**、看不见语音，挡不住它。
+     *
+     * ★ 选择"跳过"而不是"等它念完再播"：恢复问候的价值在于"你回来了"这个时刻，
+     *   延后十几秒再冒一句更奇怪；而那句正在续播的念白本身就是招呼。
+     * ★ 不更新 `lastGreetingAt`（= 不消耗去重窗口）：等语音念完，下一次信号
+     *   （如 focus）仍可正常触发。
+     */
+    if (voicePlayer && voicePlayer.isPlaying()) {
+      console.info(
+        '[subtitle] 语音仍在播 ⇒ 本次「%s」问候跳过（不掐断续播）',
+        reason
+      );
+      return false;
+    }
     const played = playEvent('resume', resumeKinds, 'greet', { signal });
     if (!played) {
       if (reason !== 'boot' && reason !== 'visible' && reason !== 'focus') {
@@ -1281,12 +1301,24 @@ const main = async () => {
    * （`subtitle.greetingDelayMs`），不需要本段。
    *
    * ★ 只有**离开得够久**才打招呼：切个窗口几秒就回来也说一句会很烦。
-   * ★ 恢复后先 `markActivity()` 压住待机轮询 —— 否则 `standby` 可能抢在 `greet`
-   *   前面播（两者都是自动行为，先到先得，见 `touch.ts` 的优先级表）。
+   * ★ 恢复后**无条件** `markActivity()` 压住待机轮询 —— 否则 `standby` 可能抢在
+   *   `greet` 前面播（两者都是自动行为，先到先得，见 `touch.ts` 的优先级表）；
+   *   短暂停（< 15s、不播问候）同样需要它，见 `onPauseChange` 里的注释。
    */
   const RESUME_GREET_MIN_SEC = 15;
   /** 恢复后延一拍再播：让画面先动起来，也避开与 boot/visible 撞在同一个去重窗口里 */
   const RESUME_GREET_DELAY_MS = 400;
+  /**
+   * 「回到壁纸」问候这一路是否**真的可用**（通道里有事件 且 用户勾了类目）。
+   *
+   * ★ 抽成常量（2026-10-20）：同一个判据现在有**两个**用处 ——
+   *   ① 决定要不要挂 boot / visible / focus 三个问候信号；
+   *   ② `onPauseChange` 决定"恢复后要不要真去播问候"（它还要复位活动计时，
+   *      所以订阅本身不能只挂在问候上，见 `startAutoPlay`）。
+   *   两处各写一遍 `eventSource.length && resumeKinds.length` 迟早漂移成
+   *   "订阅了却不播"或"没订阅却以为会播"。
+   */
+  const resumeGreetEnabled = eventSource.length > 0 && resumeKinds.length > 0;
   /** 进入暂停的时刻（秒）。`0` = 当前没在暂停中 */
   let pausedAt = 0;
   const onPauseChange = (isPaused: boolean) => {
@@ -1300,10 +1332,25 @@ const main = async () => {
     }
     const away = Date.now() / 1000 - pausedAt;
     pausedAt = 0;
+    /**
+     * ★★ 恢复时**无条件**复位活动计时（2026-10-20）。
+     *
+     * 暂停期间 `Date.now()` 照走（WE 冻结的是渲染进程，墙钟不停），而 `lastActivityAt`
+     * 还停在暂停前那一秒 ⇒ 不复位时，"离开的这段时间"全被算成静置
+     * ⇒ 恢复后第一个 `tickStandby`（最多 1 秒后）就满足 `standbyIdleMs`，
+     *   在语音刚续播起来的时候插一条待机念白，把它掐掉。
+     *
+     * ⚠️ 必须在下面 `away < RESUME_GREET_MIN_SEC` 的**早退之前** ——
+     *   短暂停（切个窗口几秒）同样要复位，那是最常见的一档。
+     */
+    markActivity();
     if (away < RESUME_GREET_MIN_SEC) {
       return;
     }
-    markActivity();
+    // 问候这一路没开（通道空 / 用户把三类全关了）⇒ 到这里就结束，只要上面那次复位
+    if (!resumeGreetEnabled) {
+      return;
+    }
     window.setTimeout(() => tryResumeEvent('resume'), RESUME_GREET_DELAY_MS);
   };
 
@@ -1325,8 +1372,25 @@ const main = async () => {
       return;
     }
     const now = Date.now() / 1000;
-    if (touchController.isBusy()) {
-      // 还有动作在播 ⇒ 视为"仍在活动"，计时重新起算
+    /**
+     * ★★ 暂停期间不推进待机（2026-10-20）。
+     *
+     * 两条理由：
+     *   ① 总闸暂停时**不放任何自动事件** —— 此刻起播只会被 `voicePlayer` 记成
+     *      `deferredFile`，恢复时从头重跑（等于"暂停里偷偷排了一条"）；
+     *   ② 计入静置就更糟：恢复瞬间 `idleMs` 直接过线，念白在画面还没动时就冒出来。
+     * ⚠️ 不能只依赖"WE 会冻结进程" —— 冻结边界上那一两个 tick 仍可能落地。
+     */
+    if (audioMaster.isPaused()) {
+      lastActivityAt = now;
+      return;
+    }
+    /**
+     * ★ `isBusy()` 只看得见**轨道**（动作），看不见语音。而念白比动作长是常态
+     *   ⇒ 语音还在念时同样要算"有事在做"，否则待机会在上一句刚说完半截时插一条新的。
+     */
+    if (touchController.isBusy() || (voicePlayer && voicePlayer.isPlaying())) {
+      // 还有动作/念白在播 ⇒ 视为"仍在活动"，计时重新起算
       lastActivityAt = now;
       return;
     }
@@ -1390,13 +1454,14 @@ const main = async () => {
     }
 
     /**
-     * ★★「回到壁纸可触发的事件」（`resumeKinds`）的四个信号入口。
+     * ★★「回到壁纸可触发的事件」（`resumeKinds`）的**前三个**信号入口 ——
+     *   第四个（WE 暂停/恢复）在下面单独订阅，因为它的订阅条件更宽。
      *
      * 判据用 `resumeKinds`（已勾选**且**可用）而不是"配了 greet 条目"：
      * 用户把三类**显式全关**（`resumeKinds: []`）时，不必再挂一堆永远返回 false 的监听。
      * ⚠️ 反过来说：**缺省（没配 `resumeKinds`）会勾上 `greet`** ⇒ 只要配了问候就一定会挂。
      */
-    if (eventSource.length && resumeKinds.length) {
+    if (resumeGreetEnabled) {
       window.setTimeout(() => tryResumeEvent('boot'), greetingDelayMs);
       document.addEventListener(
         'visibilitychange',
@@ -1408,8 +1473,17 @@ const main = async () => {
         false
       );
       window.addEventListener('focus', () => tryResumeEvent('focus'), false);
-      // ★ WE 的暂停/恢复信号（"回到主界面"）。订阅而非直接写 `wpl.setPaused`
-      //   —— 那个字段是单赋值，BGM 也在用它，写两次必有一个静默失效。
+    }
+    /**
+     * ★ WE 的暂停/恢复信号（"回到主界面"）。订阅而非直接写 `wpl.setPaused`
+     *   —— 那个字段是单赋值，BGM 也在用它，写两次必有一个静默失效。
+     *
+     * ★★ 订阅条件**不再等于**"问候可用"（2026-10-20）：`onPauseChange` 还负责
+     *   恢复时复位活动计时（见那里的注释）。若只挂了待机通道、问候全关，
+     *   没有这个订阅就没人复位 ⇒ 恢复后第一个 tick 立刻弹待机念白。
+     *   ⇒ 只要**待机或问候**有一路要用，就得订阅；播不播问候由 `onPauseChange` 内部判。
+     */
+    if (resumeGreetEnabled || standbyKinds.length) {
       subscribePause(onPauseChange);
     }
     /**
