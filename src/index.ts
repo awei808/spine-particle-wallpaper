@@ -1831,8 +1831,13 @@ const main = async () => {
                   ['resume', resumeKinds],
                 ] as [TriggerChannel, TriggerEventKind[]][]
               ).forEach(([ch, ks]) => {
+                /**
+                 * ★ 2026-10-21（B 案）：`on` 不再限制通道 ⇒ 这里**不能再按通道过滤**，
+                 *   否则告警会漏报（勾了 touch 类的待机通道，实际候选全在这里）。
+                 *   只保留"非空 = 可达"这一条，与漏斗 / `poolOfKind` 同口径。
+                 */
                 const pool = mergeKindPools(ks, KIND_POOLS, fams).filter(
-                  (e) => channelsOf(e).indexOf(ch) >= 0
+                  (e) => channelsOf(e).length > 0
                 );
                 if (!pool.length) {
                   return;
@@ -1888,7 +1893,8 @@ const main = async () => {
                   isActionAllowed: (id) => {
                     const key = normalizeEventKey(id);
                     return (
-                      !!key && phasedDialogues.some((d) => eventKeyOf(d) === key)
+                      !!key &&
+                      phasedDialogues.some((d) => eventKeyOf(d) === key)
                     );
                   },
                   onItem: (entry, animation) => showDialogue(entry, animation),
@@ -2516,9 +2522,7 @@ const main = async () => {
          */
         eventsFile: {
           path: 'assets/events.jsonc',
-          error: eventsFile.ok
-            ? null
-            : eventsFile.error ?? '事件文件不可用',
+          error: eventsFile.ok ? null : eventsFile.error ?? '事件文件不可用',
         },
         /** 事件开关初值（本机点过的键） */
         eventState,
@@ -2531,7 +2535,7 @@ const main = async () => {
       });
 
       if (PROBE_OPTS.enabled) {
-        (window as unknown as { __WB_FX__: unknown }).        __WB_FX__ = {
+        (window as unknown as { __WB_FX__: unknown }).__WB_FX__ = {
           freeze: (v: boolean) => {
             fxFrozen = v;
           },

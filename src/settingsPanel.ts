@@ -2197,8 +2197,7 @@ export const createSettingsPanel = (
 
   const paintCount = () => {
     const on = Object.keys(eff).filter((k) => eff[k]).length;
-    evCount.textContent =
-      '共 ' + evRows.length + ' 条 · 已开启 ' + on + ' 条';
+    evCount.textContent = '共 ' + evRows.length + ' 条 · 已开启 ' + on + ' 条';
   };
 
   if (evFile.error) {
@@ -2206,7 +2205,8 @@ export const createSettingsPanel = (
     evSource.textContent = '⚠ ' + evFile.error;
   } else if (!evRows.length) {
     evSource.style.color = 'rgba(238,241,246,0.55)';
-    evSource.textContent = '文件里还没有事件 —— 在 ' + evFile.path + ' 的 events 数组里加一条。';
+    evSource.textContent =
+      '文件里还没有事件 —— 在 ' + evFile.path + ' 的 events 数组里加一条。';
   } else {
     evSource.style.color = 'rgba(238,241,246,0.55)';
     evSource.textContent = '来源：' + evFile.path;
@@ -2255,10 +2255,15 @@ export const createSettingsPanel = (
     return el;
   };
 
+  /**
+   * `on` 的显示名。★ 2026-10-21（B 案）起它**不再是"这条只能在哪些入口播"**，
+   * 只是分组 / 来源标记（通道筛子已撤，见 `eventScheduler.collectCandidates`）。
+   * 行里带「组:」前缀，避免被误读成可达性。
+   */
   const CH_TEXT: Record<TriggerChannel, string> = {
-    touch: '触摸',
-    standby: '待机',
-    resume: '回到壁纸',
+    touch: '组:触摸',
+    standby: '组:待机',
+    resume: '组:回到壁纸',
   };
   /** 键里可能有 `:` ⇒ DOM id 只留安全字符（验证脚本按同样规则拼） */
   const domKey = (k: string) => k.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -2288,7 +2293,7 @@ export const createSettingsPanel = (
     row.appendChild(tgl);
 
     /**
-     * 一行式：`名称 · 通道 · 条件 · 动画 · #id`（省略号截断）。
+     * 一行式：`名称 · 分组 · 条件 · 动画 · #id`（省略号截断）。
      * 为什么不是两行：WE 不转发滚轮（见「面板自适应高度」那一段），
      * 两行式在 13 条工程上会把内容顶出可视区。
      */
@@ -2312,7 +2317,8 @@ export const createSettingsPanel = (
     const chans = channelsOf(e)
       .map((c) => CH_TEXT[c] || c)
       .join('/');
-    const fx = e.particles && e.particles.length ? '·' + e.particles.join('+') : '';
+    const fx =
+      e.particles && e.particles.length ? '·' + e.particles.join('+') : '';
     const manual = e.pick?.weight === 0 ? ' · 仅手动' : '';
     const meta = createEl(
       'div',

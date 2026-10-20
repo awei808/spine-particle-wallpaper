@@ -336,7 +336,28 @@ export type ResolveOptions = {
  * 收集**过了 ①~③ 层**的候选（不排序、不记账）。
  *
  * 顺序写死：权限 → 条件 → 限流；`kind` 判据用 `kindOf(e, channel)`。
- * `on: []`（不可达）自然被 `channelsOf` 挡掉。
+ *
+ * ## ★★ 2026-10-21：`on` **不再限制通道**（B 案，开源口径「把权限放开」）
+ *
+ * 从前这里有一条 `channelsOf(e).indexOf(channel) < 0 ⇒ 丢弃`。它与设置面板
+ * 「事件池」页的三行**类别多选**是两根不同的轴，撞在一起就出了静默失效：
+ * 面板说"待机勾 touch 类就能播"，而 `events.jsonc` 里每条内置事件的 `on` 都是
+ * 迁移时从旧三池（`touch` / `chat` / `greeting`）**1:1 反推**成单通道的
+ * ⇒ 跨类选择在漏斗里被整条挡光（触摸通道还会退化成"只播动画、没声音"）。
+ *
+ * 现在唯一的口径是：**`kind` 管类别（唯一筛子），`on` 只是一份"分组 / 来源"标记**
+ * （缺省 `kind` 由 `on[0]` 推、档案与调试面板按它分组显示）。
+ * 作者若真要"这条只准某个信号/热区触发"，请用条件而不是通道：
+ * `when.ctx.signal`（boot / visible / focus / resume）、`when.ctx.zone`（热区 id）——
+ * 那两条在闸门撤掉之后依然有效（见 `conditions.ts`）。
+ *
+ * ⚠️ 唯一保留的 `on` 判据是**非空**：`on: []` 仍永远抽不到 —— 与 `index.ts` 的
+ * `poolOfKind`、`eventModel` 的 `W_ORPHAN`、档案的「不可达」完全同一口径。
+ * 这条不能省：否则"池/档案里查不到、运行时却在播"会成为新的静默谎言。
+ *
+ * ⚠️ 放开后的已知代价（作者侧）：`pick.priority` 是**全局档位**，不再按通道隔离
+ * ⇒ 一条 `priority: 20` 的触摸事件会夺走待机/问候的档位（`weight: 0` 除外）。
+ * 要把某条约束在某个入口，只能靠 `when`。
  */
 export const collectCandidates = (
   events: readonly DialogueEntry[],
@@ -359,7 +380,11 @@ export const collectCandidates = (
     if (!key || unplayable[key]) {
       return;
     }
-    if (channelsOf(e).indexOf(channel) < 0) {
+    /**
+     * ★★ 2026-10-21：**不再判"包含本通道"** —— `on` 只是分组标记，不是一个闸门。
+     * 只保留"非空 = 可达"（`on: []` 是显式的"这条不播"，见函数注释）。
+     */
+    if (!channelsOf(e).length) {
       return;
     }
     if (kinds.indexOf(kindOf(e, channel)) < 0) {

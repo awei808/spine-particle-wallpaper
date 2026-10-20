@@ -30,7 +30,9 @@ src/
   dialogue.ts       Voice scheduling: family registry, action-phase projection, legacy pools
   eventModel.ts     * Event identity (EventKey) + normalizeEventTable (THE single normalizer:
                     legacy greet/chat/touch pools are inferred into per-entry on/kind/when)
-                    + variant picking (whole-package random)
+                    + variant picking (whole-package random).
+                    `on` is a GROUPING label only since 2026-10-21 — it no longer limits
+                    which channel can reach an entry (`on: []` still means unreachable)
   eventsFile.ts     * Reads `assets/events.jsonc` (JSONC: //, /* */, trailing commas, BOM).
                     THE ONLY event source since 2026-10-19 — no fallback to config.
                     Comment stripping is offset-preserving so parse errors report the real
@@ -40,7 +42,9 @@ src/
                     must run BEFORE normalize. It NEVER creates/edits/deletes an event
   conditions.ts     * Condition AST: compile / inspect / describe (pure, injectable clock)
   eventScheduler.ts * selectEvent (priority tier + weighted random) + eventLog state
-                    (cooldown / quota / mutex group; quota.day|ever persisted in localStorage)
+                    (cooldown / quota / mutex group; quota.day|ever persisted in localStorage).
+                    The funnel's only per-entry permission test is `enabled` + `on` non-empty
+                    + `kind` being one of the user-checked kinds — `on` is NOT a channel gate
   eventValidate.ts  * 16-code validation, 3 dispositions (reject / coerce / report);
                     wiring point is the funnel in index.ts, NOT the consumers
   touch.ts          Hit zones + action gating (mutual exclusion / interrupt rules);

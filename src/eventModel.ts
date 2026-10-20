@@ -25,6 +25,14 @@
  * 反推成功的条目会带一条 `W_LEGACY`（每工程一条，不刷屏）。
  * **没有任何旧池键引用、也没有显式 `on`** 的内置条目 ⇒ `on: []`（不可达，`W_ORPHAN`），
  * 绝不按 `['standby']` 缺省悄悄上线（PLAN §5.3 的第二个缺口）。
+ *
+ * ## ⚠️ `on` 的语义在 2026-10-21 变了（B 案）
+ *
+ * 上表的反推把"类别"（旧三池）**1:1 焊到了"通道"上**，而 `on` 又是漏斗的硬闸门
+ * ⇒ 用户在面板里跨类勾选（待机勾 `touch类` 等）时一条也抽不到，且完全静默。
+ * 现在：**`kind` 是唯一筛子**，`on` 只作分组 / 来源标记（+ 缺省 `kind` 推导）；
+ * 漏斗里只剩"`on` 非空 = 可达"这一条判据（见 `eventScheduler.collectCandidates`）。
+ * 本模块的反推规则**保持不变** —— 它产出的 `on` 现在只是分组信息，不再限制可达性。
  */
 
 import {
@@ -207,7 +215,7 @@ export const kindOf = (
   return 'chat';
 };
 
-/** 条目的生效通道列表（归一后应当已写死；没写 ⇒ 空 = 不可达） */
+/** 条目的生效分组（归一后应当已写死；没写 ⇒ 空 = 不可达）。★ 2026-10-21 起不参与通道筛选 */
 export const channelsOf = (e: DialogueEntry): TriggerChannel[] =>
   normalizeChannels(e?.on);
 
@@ -453,8 +461,8 @@ export const normalizeEventTable = (
     if (!explicitOn.length && derivedOn.length) {
       usedLegacy[key] = true;
     }
-    /** 既不是自定义、又没被任何旧池引用、也没显式 on ⇒ 不可达（`W_ORPHAN`） */
-    const isCustom = key.indexOf('custom:') === 0;
+    /** 既不是自定义、又没被任何旧池引用、也没显式 on ⇒ 不可达（`W_ORPHAN`） */ const isCustom =
+      key.indexOf('custom:') === 0;
     const finalOn = on.length
       ? on
       : isCustom
@@ -488,7 +496,7 @@ export const normalizeEventTable = (
         makeIssue(
           'W_ORPHAN',
           'report',
-          '没有任何通道可达（旧池未引用、也没写 on）⇒ 永不播放',
+          '没有分组（旧池未引用、也没写 on ⇒ `on: []`）⇒ 永不播放',
           key
         )
       );

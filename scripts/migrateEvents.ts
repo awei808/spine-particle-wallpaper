@@ -105,8 +105,11 @@ const EVENTS_FILE_HEADER = [
   '//  label         显示名（内置换行）      displayName  显示名（优先）',
   '//  note          一句话备注（进档案细则）',
   '//  enabled       缺省 true；false = 作者默认关闭',
-  '//  on            触发通道："touch" / "standby" / "resume"，可写数组；缺省 standby',
+  '//  on            分组标记："touch" / "standby" / "resume"，可写数组；缺省 standby',
+  '//                ★ 不限制通道（2026-10-21）：能播到哪个入口由面板勾的「类别」决定，',
+  '//                  这里只影响缺省 kind 与档案分组。要限制时机请用 when.ctx.signal/zone',
   '//  kind          类别："touch" / "chat" / "greet"；缺省按 on[0] 推',
+  '//                ★ 这是**唯一**的筛子：待机能不能播触摸类，就看用户勾没勾 touch类',
   '//  when          条件（全部可选，可嵌套 and / or / not）：',
   '//                  { "time":     { "start": 23, "end": 4 } }     时分，跨零点',
   '//                  { "calendar": { "month": 2, "day": 14 } }    每年这一天',
@@ -167,8 +170,10 @@ const EVENTS_FILE_HEADER = [
   '//     }',
   '//',
   '//  ── 常见坑 ─────────────────────────────────────────────────────────────',
-  '//  · 同一通道下所有事件的 weight 都是 0 ⇒ 该通道永远不会自动触发（启动时会 warn）',
-  '//  · 写了 "on": [] 或指向不存在的通道 ⇒ 这条不可达（档案里标「不可达」）',
+  '//  · 某个入口勾中的类别里所有事件的 weight 都是 0 ⇒ 该入口永远不会自动触发（启动时会 warn）',
+  '//  · 写了 "on": [] ⇒ 这条不可达（档案里标「不可达」）；只写一个通道**不会**再限制入口',
+  '//  · 想让某条只在开机 / 某个热区播，用 when.ctx.signal / when.ctx.zone，别靠 on',
+  '//  · pick.priority 是**全局档位**（不按通道隔离）：高优先级的事件会从所有入口抢戏',
   '//  · particles 里写错组名 ⇒ 该组被忽略、事件照播（不会静默整条失效）',
   '// ════════════════════════════════════════════════════════════════════════',
   '',
@@ -623,9 +628,7 @@ if (asJson) {
  */
 const buildEventsFile = (): string => {
   indentUnit = 2;
-  const items = nextDialogue
-    .map((d) => '    ' + printValue(d, 2))
-    .join(',\n');
+  const items = nextDialogue.map((d) => '    ' + printValue(d, 2)).join(',\n');
   return (
     EVENTS_FILE_HEADER +
     '{\n  "schema": 1,\n  "events": [\n' +
