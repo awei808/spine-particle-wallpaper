@@ -192,8 +192,13 @@ export const resolveSequence = (
          *   ⚠️ 不能退化成"只播 `it.animation`"—— 那等于让序列绕过全局闸门。
          */
         if (options.isActionAllowed && !options.isActionAllowed(key)) {
+          /**
+           * ⚠️ 判据是"这个键**当前可触发吗**"，两种原因都会走到这里：
+           *   ① 所属事件族没勾选（`subtitle.phases`）；② 表里根本没这条 / 被判 reject。
+           *   文案两者都写，别让人只往闸门一个方向查（2026-10-20）。
+           */
           console.warn(
-            '[idleSequence] items[%d] 的 %s 所属事件族未勾选 ⇒ 跳过该项',
+            '[idleSequence] items[%d] 的 %s 当前不可触发（事件族未勾选，或表里没有该条目）⇒ 跳过该项',
             i,
             key
           );

@@ -129,16 +129,24 @@ import { SettingsOverrides, SettingsView } from './settingsStore';
 import { UI_SCALE_VAR, fpx, getUiScale, initUiScale, uiPx } from './uiScale';
 
 /**
- * 调试面板「触发事件」的一条候选 —— 就是 `config.subtitle.dialogues` 里的一条念白。
+ * 调试面板「触发事件」的一条候选 —— 就是事件表（`assets/events.jsonc`）里的一条。
  *
- * ★ 只带**显示用**的字段（actionId / 动作名 / 动画名）：面板不解析念白内容，
- *   触发一律交给调用方（它手里才有 `touchController` 与打断闸门）。
+ * ★ 只带**显示用**的字段：面板不解析念白内容，触发一律交给调用方
+ *   （它手里才有 `touchController` 与打断闸门）。
+ *
+ * ⚠️ **2026-10-20 修**：凭据从 `actionId` 换成 `EventKey`（`key`）。
+ *   自定义事件**没有** `actionId`（`custom:hold-hand` 这种），旧口径下
+ *   `String(e.actionId)` ⇒ 面板显示 `undefined`、多条共用 DOM id
+ *   `wb-debug-ev-undefined`、点击传 `NaN` 永远播不出来。
+ *   `key` 与 `__WB_DIALOGUE__.trigger` / 档案 / 漏斗用的是同一个身份，不新增第二判据。
  */
 export type DebugEventItem = {
-  /** 动作表 ID（`CfgSoulSpineActionTable.Id`）—— **触发的唯一凭据** */
-  actionId: number;
-  /** 官方动作名（仅显示） */
-  label?: string;
+  /** 事件键（`game:64005` / `custom:hold-hand`）—— **触发的唯一凭据** */
+  key: string;
+  /** 面板上显示的名字：`displayName || label || key` */
+  name: string;
+  /** 动作表 ID（内置事件才有，**仅显示**） */
+  actionId?: number;
   /** 该条对应的动画名（仅显示） */
   animation?: string;
 };
@@ -237,11 +245,11 @@ export type SettingsPanelOptions = {
    */
   onPlayAnimation?: (name: string) => boolean;
   /**
-   * 调试面板「触发事件」：按 actionId 播**一整条念白**（动作+字幕+语音，走完整闸门）。
+   * 调试面板「触发事件」：按 **`EventKey`** 播**一整条念白**（动作+字幕+语音，走完整闸门）。
    *
    * @returns 是否真的播了（被打断规则挡下 = `false`）
    */
-  onTriggerEvent?: (actionId: number) => boolean;
+  onTriggerEvent?: (key: string) => boolean;
   /**
    * 「事件开关」页要展示的**事件表**（= `index.ts` 归一后的 `eventTable`，
    * `enabled` 已按用户开关压过）。
@@ -2547,6 +2555,32 @@ export const createSettingsPanel = (
       'border-color:#ffffff',
       'transition:background-color .12s ease,color .12s ease,border-color .12s ease',
     ].join(';');
+  /**
+   * 「没播出来」的反馈态（2026-10-20）。
+   *
+   * ★ 为什么需要：`onPlayAnimation` / `onTriggerEvent` 都返回"到底播没播"
+   *   （被打断闸门 / 事件族闸门 / 找不到条目 ⇒ `false`），但此前这个返回值被**丢弃**，
+   *   于是"点了、白了、没播"三者长得一模一样 —— 诊断面板最不该有这种沉默。
+   *   现在成功 = 白闪，失败 = 红闪，并写 `data-wb-last="fail"` 供回归断言。
+   */
+  const TRIGGER_CHIP_FAIL =
+    TRIGGER_CHIP +
+    ';' +
+    [
+      'background:rgba(198,58,58,0.92)',
+      'color:#fff',
+      'border-color:rgba(255,140,140,0.95)',
+      'transition:background-color .12s ease,color .12s ease,border-color .12s ease',
+    ].join(';');
+
+  /** 一个触发方块：`key` 是回调载荷，`domId` 只用来拼 DOM id（见下面事件组的用法） */
+  type ChipItem = {
+    key: string;
+    text: string;
+    hint?: string;
+    /** 拼 `id="<前缀><domId>"` 用；缺省 = `key`。事件键含 `:`，必须换成安全字符 */
+    domId?: string;
+  };
 
   /** 渲染一组触发 chips（标题 + 说明 + 换行方块）。items 为空 ⇒ 整组不建。 */
   const makeChipGroup = (
@@ -2554,8 +2588,8 @@ export const createSettingsPanel = (
     tip: string,
     /** chip id 前缀（如 `wb-debug-anim-`）；便于测试与用户定位单个方块 */
     idPrefix: string,
-    items: { key: string; text: string; hint?: string }[],
-    onClick: (it: { key: string; text: string; hint?: string }) => boolean
+    items: ChipItem[],
+    onClick: (it: ChipItem) => boolean
   ) => {
     if (!items.length) {
       return;
@@ -2586,7 +2620,7 @@ export const createSettingsPanel = (
     );
     items.forEach((it) => {
       const chip = createEl('button', TRIGGER_CHIP, box);
-      chip.id = idPrefix + it.key;
+      chip.id = idPrefix + (it.domId ?? it.key);
       chip.textContent = it.text;
       if (it.hint) {
         chip.title = it.hint;
@@ -2594,11 +2628,15 @@ export const createSettingsPanel = (
       /** 本 chip 的"变白"倒计时；0 = 没在计时。连点则重置（重新白 3s） */
       let flashTimer = 0;
       chip.addEventListener('click', () => {
+        /** ① 先看"到底播没播"（回调的返回值就是答案，别猜） */
+        let played = false;
         try {
-          onClick(it);
+          played = onClick(it);
         } catch (_e) {
-          /* 视觉反馈照给：点没点上，画面也得有反应 */
+          /* 抛错也当"没播"—— 视觉反馈照给，画面不能没反应 */
+          played = false;
         }
+        chip.setAttribute('data-wb-last', played ? 'ok' : 'fail');
         /* ── 变白 3s → 淡化回原色 ─────────────────────────────
          * 变白态用**整块** `TRIGGER_CHIP_FLASH`（基础块 + 覆盖色），还原时整块换回
          * `TRIGGER_CHIP` —— 绝不能逐条 `style.X = ''`：基础色就写在同一条内联块里，
@@ -2606,8 +2644,9 @@ export const createSettingsPanel = (
          * 过渡的不对称靠"块里的 transition 谁在后面"实现：
          *   变白 → 块尾是 .12s ⇒ 白得干脆；
          *   还原 → 块尾是基础 .6s ⇒ 淡回原色。
+         * ★ 失败时换成红块（同一套手法），3s 后一起淡回。
          */
-        chip.style.cssText = TRIGGER_CHIP_FLASH;
+        chip.style.cssText = played ? TRIGGER_CHIP_FLASH : TRIGGER_CHIP_FAIL;
         if (flashTimer) {
           window.clearTimeout(flashTimer);
         }
@@ -2634,17 +2673,24 @@ export const createSettingsPanel = (
   if (options.events && options.events.length > 0) {
     makeChipGroup(
       '触发事件（动作+字幕+语音）',
-      '点一下按 actionId 播整条念白（含打断闸门）',
+      '点一下按事件键播整条念白（含打断闸门；白闪=播了，红闪=被挡住）',
       'wb-debug-ev-',
       options.events.map((e) => ({
-        key: String(e.actionId),
-        text: String(e.actionId),
-        hint: [e.label, e.animation ? '动画:' + e.animation : '']
+        /** 载荷 = 事件键，**不是** actionId（自定义事件没有 actionId） */
+        key: e.key,
+        /** 显示名优先（自定义事件只有 `displayName`），缺省退回键 */
+        text: e.name || e.key,
+        hint: [
+          e.key,
+          e.actionId !== undefined ? '#' + e.actionId : '',
+          e.animation ? '动画:' + e.animation : '',
+        ]
           .filter(Boolean)
           .join(' ｜ '),
+        /** 键里含 `:` ⇒ DOM id 只留安全字符（与「事件开关」页同一个 `domKey`） */
+        domId: domKey(e.key),
       })),
-      (it) =>
-        options.onTriggerEvent ? options.onTriggerEvent(Number(it.key)) : false
+      (it) => (options.onTriggerEvent ? options.onTriggerEvent(it.key) : false)
     );
   }
 
@@ -2779,6 +2825,23 @@ export const createSettingsPanel = (
    */
   const renderChips = () => {
     chips.innerHTML = '';
+    /**
+     * ★ 2026-10-20：序列里可能还有**不是裸动画名**的项（`{key}` / `{actionId}`），
+     *   本页只排动画名 ⇒ 它们没有对应的 chip。以前这种项在 `readView` 阶段就被
+     *   `filter(!!s)` 吃掉，保存时被整表覆盖（**不可逆**）。现在它们以
+     *   `@custom:xxx` / `#64005` 的形式留在 `draft.idleSequenceItems` 里原样保存，
+     *   这里只报个数 —— 既不在页面上假装能编辑，也不会悄悄丢。
+     */
+    const extra = draft.idleSequenceItems.filter(
+      (s) => s.charAt(0) === '@' || s.charAt(0) === '#'
+    ).length;
+    seqTip.textContent =
+      '点选动画名即可按顺序加入序列（只排序列、不带台词）。' +
+      (extra
+        ? '另有 ' +
+          extra +
+          ' 项按「事件键 / 动作 ID」引用，本页不展示、保存时原样保留（改它们请编辑 config.json）。'
+        : '');
     options.animations.forEach((name) => {
       const idx = draft.idleSequenceItems.indexOf(name);
       const on = idx >= 0;

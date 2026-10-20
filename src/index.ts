@@ -70,6 +70,7 @@ import {
   channelsOf,
   eventKeyOf,
   kindOf,
+  normalizeEventKey,
   normalizeEventTable,
   resolveEventVariant,
 } from './eventModel';
@@ -1802,11 +1803,20 @@ const main = async () => {
                     resolveAnimationName(name, fams, actionPhase),
                   /**
                    * ★ 事件族是**全局闸门**（2026-10-17）：被勾掉的族的条目不能经由常驻序列
-                   *   漏出来 ⇒ 序列项写 `actionId` 时先问一句"这个 id 现在允许吗"。
+                   *   漏出来 ⇒ 序列项写 `key` / `actionId` 时先问一句"这个 id 现在允许吗"。
                    *   ⚠️ 判据来自 `phasedDialogues`（同一套闸门），本模块不自己判族。
+                   *
+                   * ★★ 2026-10-20 修：入参是 `idleSequence.resolveSequence` **归一后的
+                   *   `EventKey`（字符串）**，而表里的 `actionId` 是 `number` ——
+                   *   `d.actionId === id` 恒假 ⇒ 所有 `{actionId}` / `{key}` 项都被误判成
+                   *   "所属事件族未勾选"整项跳过（内置事件也一样）。必须两边都归一再比。
                    */
-                  isActionAllowed: (id) =>
-                    phasedDialogues.some((d) => d.actionId === id),
+                  isActionAllowed: (id) => {
+                    const key = normalizeEventKey(id);
+                    return (
+                      !!key && phasedDialogues.some((d) => eventKeyOf(d) === key)
+                    );
+                  },
                   onItem: (entry, animation) => showDialogue(entry, animation),
                 }
               );
@@ -2385,10 +2395,15 @@ const main = async () => {
           return ok;
         },
         /**
-         * 调试面板「触发事件」：按 actionId 播**一整条念白**（动作+字幕+语音，
-         * 走完整打断闸门）。找不到该 actionId ⇒ 返回 false（面板据此回显 ✗）。
+         * 调试面板「触发事件」：按 **`EventKey`** 播**一整条念白**（动作+字幕+语音，
+         * 走完整打断闸门）。找不到该键 ⇒ 返回 false（面板据此回显 ✗/红闪）。
+         *
+         * ★★ 2026-10-20：凭据从 `actionId` 换成 `EventKey`。自定义事件没有 actionId，
+         *   旧写法（`find(it => it.actionId === actionId)`）对它们恒为 `undefined`/`NaN`
+         *   ⇒ 面板显示 undefined、点了不播。查表改用 `findByEventKey` —— 与
+         *   `__WB_DIALOGUE__.trigger`（下面 2055 行）**同一条**路径，不新增第二判据。
          */
-        onTriggerEvent: (actionId: number) => {
+        onTriggerEvent: (key: string) => {
           if (!touchController) {
             return false;
           }
@@ -2396,10 +2411,9 @@ const main = async () => {
            * ★★ 从 `phasedDialogues` 里找（动作族投影 + 存在性 + **全局事件族闸门**）：
            *   ① 用 `activeDialogues` 会播婚前动画名，看起来像"动作族没生效"；
            *   ② 不过闸门 ⇒ 点一条被事件族勾掉的条目居然能播，与真实触发不符。
-           *   条目被闸门挡住时返回 false，面板回显 ✗ —— 这正是它该有的诊断信息。
+           *   条目被闸门挡住时返回 false，面板红闪 —— 这正是它该有的诊断信息。
            */
-          const entry =
-            phasedDialogues.find((it) => it.actionId === actionId) ?? null;
+          const entry = findByEventKey(phasedDialogues, key);
           return touchController.trigger(entry, 'touch');
         },
         /**
@@ -2407,11 +2421,14 @@ const main = async () => {
          *
          * ★ 这里**故意不按事件族闸门收窄**：被勾掉的条目也要能看见、能试着点一下，
          *   否则"为什么这条不触发"就查不到原因。真点下去时由 `onTriggerEvent` 的闸门
-         *   判定（返回 false ⇒ 面板回显 ✗），两者分工明确。
+         *   判定（返回 false ⇒ 面板红闪），两者分工明确。
+         * ★ 2026-10-20：`key` = `eventKeyOf(d)`（自定义事件靠它定位），
+         *   `name` = `displayName || label || key` —— 面板不再拿 actionId 当显示名。
          */
         events: activeDialogues.map((d) => ({
+          key: eventKeyOf(d),
+          name: d.displayName || d.label || eventKeyOf(d),
           actionId: d.actionId,
-          label: d.label,
           animation: d.animation,
         })),
         /**

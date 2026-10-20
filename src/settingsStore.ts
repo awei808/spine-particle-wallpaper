@@ -50,6 +50,7 @@ import {
   Configs,
   FerrisWheelConfig,
   GreetMode,
+  IdleSequenceItem,
   TriggerEventKind,
   TriggerPhase,
   TouchFeedbackMode,
@@ -622,7 +623,14 @@ export const applyOverrides = (cfg: Configs, o: SettingsOverrides): Configs => {
       out.idleSequence.enabled = o.idleSequenceEnabled;
     }
     if (o.idleSequenceItems !== undefined) {
-      out.idleSequence.items = o.idleSequenceItems.slice();
+      /**
+       * ★ 2026-10-20：**解码**回 config 的三类形状（见 `parseSequenceItem`）。
+       *   只写裸字符串会把 `{key}` / `{actionId}` 项永久抹掉 —— 那是数据丢失，
+       *   不是"设置生效"。
+       */
+      out.idleSequence.items = o.idleSequenceItems.map(
+        (s) => parseSequenceItem(s) as IdleSequenceItem
+      );
     }
     if (o.idleSequenceGapMs !== undefined) {
       out.idleSequence.gapMs = o.idleSequenceGapMs;
@@ -695,21 +703,60 @@ export const applyOverrides = (cfg: Configs, o: SettingsOverrides): Configs => {
   return out;
 };
 
-/** 把 `idleSequence.items` 的任意写法折成一个可比较的字符串（用于"有没有变化"的判断） */
+/**
+ * 把 `idleSequence.items` 的任意写法折成一个**可还原**的字符串。
+ *
+ * ★★ 2026-10-20 从"只用于比较"升级为**编解码的一半**（另一半是 `parseSequenceItem`）。
+ * 为什么必须可还原：面板「常驻动作序列」只能排裸动画名，保存时会把整表
+ * `idleSequence.items` 换成这个字符串数组（`applyOverrides`）。此前 `{key}` 项
+ * 被折成 `''` 再 `filter` 掉 ⇒ **点一次保存就把这些项永久删掉**；
+ * `{animation,key}` 这种混写还会把身份换成动画名（`key` 才是取条凭据）。
+ *
+ * 编码（前缀避开合法动画名：spine 动画名里不会出现 `@` / `#` 打头）：
+ *
+ * | 输入 | 输出 | 还原 |
+ * |---|---|---|
+ * | `'chat'` | `'chat'` | `'chat'` |
+ * | `{ key: 'custom:x' }` | `'@custom:x'` | `{ key: 'custom:x' }` |
+ * | `{ actionId: 64005 }` | `'#64005'` | `{ actionId: 64005 }` |
+ * | `{ animation: 'chat' }` | `'chat'` | `'chat'` |
+ *
+ * ⚠️ 同时给了 `key` 与 `actionId` 时**按 `key` 编码** —— 与
+ *   `idleSequence.resolveSequence` 的"key 优先"同一条口径。
+ */
 const stringifyItem = (it: unknown): string => {
   if (typeof it === 'string') {
     return it;
   }
   if (it && typeof it === 'object') {
-    const obj = it as { animation?: string; actionId?: number };
-    if (typeof obj.animation === 'string') {
-      return obj.animation;
+    const obj = it as { animation?: string; actionId?: number; key?: unknown };
+    if (typeof obj.key === 'string' && obj.key) {
+      return '@' + obj.key;
     }
     if (typeof obj.actionId === 'number') {
       return '#' + obj.actionId;
     }
+    if (typeof obj.animation === 'string') {
+      return obj.animation;
+    }
   }
   return '';
+};
+
+/**
+ * `stringifyItem` 的逆运算（写覆盖层时用）。
+ *
+ * 只认三个形状：`@<EventKey>` / `#<actionId>` / 其余当裸动画名 ——
+ * 与 `idleSequence.resolveSequence` 接受的三类输入一一对应。
+ */
+const parseSequenceItem = (s: string): unknown => {
+  if (typeof s === 'string' && s.charAt(0) === '@' && s.length > 1) {
+    return { key: s.slice(1) };
+  }
+  if (/^#\d+$/.test(s)) {
+    return { actionId: Number(s.slice(1)) };
+  }
+  return s;
 };
 
 /** 从（合并后的）配置读出"当前生效值"给面板渲染 */

@@ -304,7 +304,13 @@ const makeRow = (
   ae: ActionEffectNames
 ): Row => {
   const reg = st.families;
-  const short = shortLabel(e.label);
+  /**
+   * 念白列的人话名：**`displayName` 优先**（自定义事件只有这个；`label` 是游戏侧动作名）。
+   *
+   * ★ 2026-10-20：自定义事件不再单独占一行（见 `buildRows` 的 ⑥ 段），若这里还只读
+   *   `label`，它们在表里就只剩 `#custom:xxx` —— 用户写的 `displayName` 反而看不见了。
+   */
+  const short = e.displayName ? e.displayName : shortLabel(e.label);
   /**
    * ★ 非**缺省族**的条目在角标后**缀上事件族名**（2026-10-10）——
    *   缺省池里既有缺省族、又有别的族时，光看 `#63004` 分不出属于哪一族；
@@ -316,6 +322,14 @@ const makeRow = (
   const phTail =
     reg.families.length && ph !== reg.fallbackId ? ' · ' + reg.label(ph) : '';
   const key = eventKeyOf(e);
+  /**
+   * ★ 2026-10-20：记进"已逐条列出"账本（`ArchiveState.enumerated`）。
+   *   所有逐条行都经过 `makeRow` ⇒ 账本天然完整，末尾的「自定义事件」段据此
+   *   只补"上面没列过的"，同一张表里不会再出现两行同一条。
+   */
+  if (key) {
+    st.enumerated.push(key);
+  }
   /**
    * 念白标识：内置保持 `#64005`（老观感）；自定义事件没有 `actionId` ⇒ `#custom:xxx`。
    * 被校验判 `reject` 的条目加 `⚠`（档案是用户唯一能看出"这条不会播"的地方）。
@@ -389,6 +403,29 @@ type ArchiveState = {
   rejected: { [key: string]: boolean };
   /** 校验报告（表下汇总用） */
   validation: ValidationReport | null;
+  /**
+   * **本机事件开关关掉的条数**（`EventState` → `enabled:false`）。
+   *
+   * ★ 2026-10-20：运行时第一层就剔（`eventScheduler.collectCandidates`），
+   *   档案此前完全无视它 ⇒ "关掉的条目仍占着池里的名额"，与引擎口径相反。
+   *   现在池按 `enabled` 过滤，这里只留一个计数给「细则」说明"少掉的那几条去哪了"。
+   */
+  disabledCount: number;
+  /**
+   * 被**事件族闸门**挡在外面的条目（`subtitle.phases` 没勾它所属的族）。
+   *
+   * ★ 池里不会有它们（与引擎一致），但「自定义事件」段仍要列出来并标注，
+   *   否则用户会以为"文件里写了、档案里没有 = 引擎吞了"。
+   */
+  gatedOut: { [key: string]: boolean };
+  /**
+   * `buildRows` 内部账本：**已被逐条列出过**的事件键。
+   *
+   * ★ 为什么需要（2026-10-20）：通道枚举 2026-10-18 起改成"按池 + `on`"，自定义事件
+   *   自动入选 ⇒ 10-18 加的「自定义事件」段会把同一条**再列一遍**（一张表里两行同一条）。
+   *   现在该段只补"上面没列过的"，账本由 `makeRow` 记（所有逐条行都经过它）。
+   */
+  enumerated: string[];
 };
 
 const resolveState = (
@@ -449,13 +486,33 @@ const resolveState = (
    * ★ 池**由事件表派生**（与 `index.ts` 的 `poolOfKind` 同一条判据）：
    *   旧 config 的 `kind` 是旧池键反推来的 ⇒ 内容逐条不变；自定义事件自动进池。
    *   ⚠️ 不再调 `buildPool(旧 id 列表)` —— 那会把没写进旧数组的自定义事件漏掉。
+   *
+   * ★★ 2026-10-20 补一层"运行时本来就有、档案却漏了"的过滤：
+   *   `enabled: false`（本机事件开关 / 文件里写死）—— `collectCandidates` 第一层就剔。
+   *   池只装"真的会被抽到"的条目，`autoCount` / 池 #k/N 才不会虚高。
    */
+  const playable: DialogueEntry[] = active.filter((e) => e.enabled !== false);
   const phased: DialogueEntry[] =
     phaseFilter === undefined
-      ? active
-      : active.filter(
+      ? playable
+      : playable.filter(
           (e) => phaseFilter.indexOf(resolveDialoguePhase(e, families)) >= 0
         );
+  /**
+   * 被事件族闸门挡住的条目（**只用于标注**，不进池）。由差集得出，
+   * 不另写一遍 `resolveDialoguePhase` 比较（两套判据必然漂移）。
+   */
+  const gatedOut: { [key: string]: boolean } = {};
+  if (phaseFilter !== undefined) {
+    playable.forEach((e) => {
+      if (phased.indexOf(e) < 0) {
+        const k = eventKeyOf(e);
+        if (k) {
+          gatedOut[k] = true;
+        }
+      }
+    });
+  }
   const reachable = phased.filter((e) => channelsOf(e).length > 0);
   const pools: Record<TriggerEventKind, DialogueEntry[]> = {
     chat: reachable.filter((e) => eventKindOf(e) === 'chat'),
@@ -524,6 +581,10 @@ const resolveState = (
       ),
     },
     greetMode: sub?.greetMode === 'random' ? 'random' : 'time',
+    disabledCount: active.length - playable.length,
+    gatedOut,
+    /** 由 `buildRows` 填（每次重新渲染前清空），见字段注释 */
+    enumerated: [],
   };
 };
 
@@ -563,6 +624,8 @@ const buildRows = (
   const dialogues = st.dialogues;
   const rows: Row[] = [];
   const greetModeText = st.greetMode === 'random' ? '随机' : '按时段';
+  /** 重新渲染前清空"已逐条列出"账本（`makeRow` 往里写，见其注释） */
+  st.enumerated.length = 0;
 
   /**
    * ★ 待机与「回到壁纸」共用同一套排版：勾中的类别**逐类列举**，
@@ -778,26 +841,52 @@ const buildRows = (
     touch: '点击',
     resume: '回到壁纸',
   };
-  st.dialogues
-    .filter((e) => {
-      const k = eventKeyOf(e);
-      return k.indexOf('custom:') === 0 && st.legacyKeys.indexOf(k) < 0;
-    })
-    .forEach((e, i) => {
-      const chans = channelsOf(e)
-        .map((c) => CH_LABEL[c] ?? c)
-        .join(' / ');
-      const name = e.displayName || e.label || eventKeyOf(e);
-      rows.push(
-        makeRow(
-          '自定义 #' + (i + 1) + ' · ' + name,
-          (chans || '不可达') + ' · ' + describeCondition(e.when),
-          e,
-          st,
-          ae
-        )
-      );
-    });
+  /**
+   * 只列**上面没逐条列过**的自定义事件（`st.enumerated` 由 `makeRow` 记账）。
+   *
+   * ★ 2026-10-20 修重复：通道枚举改成"按池 + `on`"之后，自定义事件本来就会出现在
+   *   通道行里（`点击触摸 · 仅手动` / `回到壁纸 · greet类 …`），本段再列一次
+   *   就成了"一张表两行同一条"。留着本段的意义只剩：**通道行看不到的那几种**
+   *   ——不可达（`on: []`）、被事件开关关掉、被事件族闸门挡住、所在通道没勾该类。
+   */
+  const restCustom = st.dialogues.filter((e) => {
+    const k = eventKeyOf(e);
+    return (
+      k.indexOf('custom:') === 0 &&
+      st.legacyKeys.indexOf(k) < 0 &&
+      st.enumerated.indexOf(k) < 0
+    );
+  });
+  restCustom.forEach((e, i) => {
+    const chans = channelsOf(e)
+      .map((c) => CH_LABEL[c] ?? c)
+      .join(' / ');
+    const name = e.displayName || e.label || eventKeyOf(e);
+    const key = eventKeyOf(e);
+    /** 为什么没进通道行 —— 逐条写清楚，别让人只往一个方向查 */
+    const why: string[] = [];
+    if (!chans) {
+      why.push('不可达（没写 on）');
+    }
+    if (e.enabled === false) {
+      why.push('已被「事件开关」关闭');
+    }
+    if (st.gatedOut[key]) {
+      why.push('所属事件族未勾选');
+    }
+    rows.push(
+      makeRow(
+        '自定义 #' + (i + 1) + ' · ' + name,
+        (why.length ? why.join(' · ') + ' · ' : '') +
+          (chans || '不可达') +
+          ' · ' +
+          describeCondition(e.when),
+        e,
+        st,
+        ae
+      )
+    );
+  });
 
   /* ⑤ 背景音乐（环境音，不是"触发"但也应当能查到） */
   if (cfg.bgm?.enabled !== false && cfg.bgm?.file) {
@@ -880,6 +969,18 @@ const buildNotes = (cfg: Configs, st: ArchiveState): string[] => {
     0,
     Math.round((sub?.standbyIdleMs ?? 25000) / 1000)
   );
+
+  /**
+   * ★ 2026-10-20：本机「事件开关」关掉的条目**不进池**（与运行时同判据）。
+   *   只剔不说明会被当成"事件丢了"，所以必须报一句总数、并指路。
+   */
+  if (st.disabledCount > 0) {
+    notes.push(
+      '「事件开关」：本机另有 ' +
+        st.disabledCount +
+        ' 条被关闭（不在上面的池里，也不会被抽到）—— 在设置面板第 5 页「事件开关」重新打开。'
+    );
+  }
 
   /**
    * ★★ **事件族闸门**（2026-10-17 起对所有入口生效）—— 必须写在第一条：

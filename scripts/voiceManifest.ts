@@ -1,5 +1,5 @@
 /**
- * 语音清单：目录里有什么格式、config 里引用的文件在不在。
+ * 语音清单：目录里有什么格式、**事件表**里引用的文件在不在。
  *
  * ```bash
  * npx ts-node --transpile-only scripts/voiceManifest.ts
@@ -20,9 +20,16 @@
  * 扩展名白名单与词干/候选规则**直接复用** `src/voicePlayer`（`VOICE_MIME` /
  * `splitVoiceName` / `buildVoiceCandidates`），脚本里不另写一份 —— 否则
  * "脚本说能找到、运行时却找不到"的分裂迟早发生。
+ *
+ * ★★ 2026-10-20：数据源从 `config.subtitle.dialogues` 改为 **`assets/events.jsonc`**。
+ *   事件自 2026-10-19 起只存在那个文件里，`config` 里的 `dialogues` 已被迁移器删除
+ *   ⇒ 旧版脚本会"检查 0 条、报无缺失"——最坏的一种通过。现在：
+ *   有 `events.jsonc` 就只认它；没有才回退到旧字段并明确 warn。
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import { eventKeyOf, normalizeEventTable } from '../src/eventModel';
+import { parseEventsFile } from '../src/eventsFile';
 import { buildVoiceCandidates, splitVoiceName } from '../src/voicePlayer';
 
 const argv = process.argv.slice(2);
@@ -94,7 +101,7 @@ if (dupStems.length) {
   }
 }
 
-/* ── 3. 对照 config ────────────────────────────────────────── */
+/* ── 3. 对照事件表 ────────────────────────────────────────── */
 
 type Issue = { level: 'error' | 'warn'; text: string };
 const issues: Issue[] = [];
@@ -107,8 +114,31 @@ if (fs.existsSync(configPath)) {
   } catch (e) {
     console.error('[voice-manifest] config 解析失败：' + (e as Error).message);
   }
-  const dialogues: any[] =
-    (cfg && cfg.subtitle && cfg.subtitle.dialogues) || [];
+  /**
+   * 事件来源（2026-10-19 起唯一真相 = 与 config 同目录的 `events.jsonc`）。
+   * ⚠️ 回退分支只为"仓库还没迁移"的旧副本留的，命中时会 warn。
+   */
+  const eventsPath = path.join(path.dirname(configPath), 'events.jsonc');
+  let dialogues: any[] = [];
+  if (fs.existsSync(eventsPath)) {
+    const parsed = parseEventsFile(fs.readFileSync(eventsPath, 'utf8'));
+    if (!parsed.ok) {
+      console.error(
+        '[voice-manifest] ' + eventsPath + ' 解析失败：' + (parsed.error ?? '')
+      );
+    }
+    dialogues = normalizeEventTable(parsed.events ?? []).events;
+    console.log('[voice-manifest] 事件表 ' + eventsPath + '：' + dialogues.length + ' 条');
+  } else {
+    dialogues = (cfg && cfg.subtitle && cfg.subtitle.dialogues) || [];
+    if (dialogues.length) {
+      console.warn(
+        '[voice-manifest] 没找到 events.jsonc ⇒ 回退读 config.subtitle.dialogues（' +
+          dialogues.length +
+          ' 条）。事件已迁到 events.jsonc，请更新检查目标。'
+      );
+    }
+  }
   const audio = (cfg && cfg.subtitle && cfg.subtitle.audio) || {};
   const extOrder: string[] | undefined = audio.extOrder;
 
@@ -121,7 +151,8 @@ if (fs.existsSync(configPath)) {
     const base = voice.split('/').pop() || voice;
     const { stem, ext } = splitVoiceName(base);
     const hits = byStem[stem];
-    const id = d.actionId != null ? '#' + d.actionId : '(无 actionId)';
+    /** 2026-10-20：自定义事件没有 actionId ⇒ 用 `EventKey` 标识（与档案/日志同一身份） */
+    const id = eventKeyOf(d as never) || '(无事件键)';
 
     if (!hits || hits.length === 0) {
       const tried = buildVoiceCandidates(base, extOrder)
@@ -175,7 +206,7 @@ if (fs.existsSync(configPath)) {
 }
 
 if (issues.length) {
-  console.log('\n引用校验（config.subtitle.dialogues[].voice）：');
+  console.log('\n引用校验（事件表 events[].voice）：');
   for (const it of issues) {
     console.log(
       '  [' + (it.level === 'error' ? 'ERROR' : 'WARN ') + '] ' + it.text
