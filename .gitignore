@@ -6,3 +6,4 @@ _regress/_out_*.txt
 public/assets/*
 !public/assets/README*.md
 !public/assets/config.example.json
+docx/_archive

@@ -1,7 +1,9 @@
 # TODO
 
-> 最后更新：2026-10-18
+> 最后更新：2026-10-20
 > 本节的设计定稿：`PLAN_自定义事件系统_2026-10-18.md`（字段 / 条件 / 调度 / 校验 / 面板 / 迁移，唯一真相）
+> 事件文件格式：`PLAN_事件配置文件_2026-10-19.md`（A / B / C / D 四批已全部落地）
+> **未完成项统一看 §4**（§1.3 是事件文件化的落地记录，不再是待办清单）
 
 ## 1. 自定义事件系统
 
@@ -133,11 +135,78 @@
 - ✅ 回归：`_regress/91`（解析 43 条）、`_regress/89`（开关 18 条，已重写）
 - ✅ 无头验收：`_work_事件文件验收/10_验证_事件开关.js`（26 条断言，dist 与 S9 探针各跑一轮）
 - ✅ B 批：`12_探针_去灰线` 已迁移（10 条）+ 部署新 bundle（备份在 `_work_工坊更新/_备份/`）
-- ⬜ C 批：`_work_星语心恋/step2_web`（S8）+ `17_注入S8语音字幕.py` 改产出 events.jsonc
-- ⬜ D 批：`_work_芙丽希娅_蝶语吟花/step2_web{,_p3}`（S6）+ `49_生成交互配置.py`
-- ⚠️ C/D 之前：**不要**对已迁移工程重跑生成器（会把 `dialogues` 写回 config，虽不生效但会误导）
+- ✅ **C 批（2026-10-20）**：`_work_星语心恋/step2_web`（S8，13 条）+ `out/proj`
+  - 迁移：`migrateEvents.ts --to-file --write`（备份 `config.json.bak_20261019_前事件文件`）
+  - `17_注入S8语音字幕.py` 改为**产出 `assets/events.jsonc`**（`write_events_jsonc`：从已有文件继承注释头，
+    正文按 `migrateEvents` 的 `printValue` 同口径 2 空格排版）；config 不再有 `subtitle.dialogues`
+  - 自检改成「文件条数 = 13 / 首条 `game:63001` / 与成品 `step2_web/assets/events.jsonc` 逐字节一致」
+- ✅ **D 批（2026-10-20）**：`_work_芙丽希娅_蝶语吟花/step2_web{,_p3}`（S6，各 13 条）+ `49_` / `21_` / `22_`
+  - `49_生成交互配置.py` 不再写 `dialogues`，改写 `events`（落 `49_交互配置.json`）
+  - `21_生成配置.py` 消费 `events` → 调 `write_events_jsonc` 产 `assets/events.jsonc`（同一份排版函数）
+  - `22_组装工程.py` 自检改从事件文件读（`load_events`），断言仍是 13 条 / 10·0·3 族 / actionId 唯一
+  - ⚠️ 三个脚本（`21_`/`22_`/`49_`）的目标都只有 `step2_web`；`step2_web_p3` 是**手工渲染对照副本**
+    （复制 `step2_web` 再补 `renderer` 段），所以它的 `events.jsonc` 是这次**单独迁移**出来的，
+    以后重跑 `21_` 不会同步过去 —— 要同步就重跑一次 `migrateEvents --to-file --write` 或整份复制
+- ✅ 顺带修的三处旧校验（都写死了 `subtitle.dialogues`，迁移后必挂）：
+  `18_部署S8到WE.py`、`19_部署step2到WE.py`（另把 `meshes == 11` 改成 ≥1 并打印实际条数）、
+  `55_验证_调试面板.js`（改读 `events.jsonc` 找 `44001` 的 voice）
+- ✅ `step2_web_p3/bundle.js` 之前是旧包（不含 `events.jsonc` 读取）⇒ 已换成本次构建
+  （备份 `bundle.js.bak_20261020_前事件文件`），否则这份"渲染对照副本"一部署就事件全空
+- ✅ 验收：`_work_事件文件验收/10_验证_事件开关.js` 对**三工程各跑一轮 26/26 全 PASS**
+  （S8 `step2_web`、S6 `step2_web`、S6 `step2_web_p3`；日志在 `_out/S8_验收3.log`、`S6_验收.log`、`S6p3_验收.log`）
+  - 该脚本原先写死 `A2 第一条 = game:64001`（那是 S9 示例的编号）⇒ 改成**从文件读首条 id**，
+    现在 63001 / 44001 都能跑
+- ✅ 离线校验：`validateEvents.ts` 对 4 个 `assets`（含 `out/proj`）全绿
+- ⚠️ 已解除：C/D 之前"不要对已迁移工程重跑生成器"的红线（现在重跑也是产 `events.jsonc`）
 
 
 ## 2. 将 D:\手游文件夹\灵魂潮汐\12*探针*去灰线的项目示例作为 demo，搬进本 git 仓库。并作为未来的项目展示窗口。
 
 ## 3. 将 D:\手游文件夹\灵魂潮汐里的测试文件搬进 git 仓库
+
+> 2026-10-20 状态：B 批只做了"迁移 + 部署新 bundle"，**两个目录都还没进 git**（仓库默认 gitignore `public/assets/*`，
+> 搬进来要先定一个 `demo/` 之类的白名单方案）。
+
+---
+
+## 4. 现存未完成（唯一清单，2026-10-20 复核）
+
+### 4.1 事件 / 面板
+
+| # | 项 | 状态（已回代码核对） |
+|---|---|---|
+| 1 | **m4a 在 WE 的 CEF 里真机取证** | 工具就绪未跑：`npx ts-node --transpile-only scripts/deployWe.ts "<WE>\projects\myprojects\音频自检_验收" --audio-check`。本机 headless 已绿（录 AAC/MP4、解码 0.511s/44100Hz）。取到证据前 `audio.extOrder` 里 m4a 保持末位 |
+| 2 | 面板 v2：自绘单行文本输入（隐藏 textarea + 自绘 caret） | ⬜ 未开工（v1 只能继承现有台词） |
+| 3 | 面板开放 `pick.group`（互斥组）/ `pick.cooldownMs`（最短间隔） | ⬜ 未开工；`settingsPanel.ts` 里确实没有这两个控件 |
+| 4 | `greetingRanges` 彻底退场 | ⬜ 只剩"参考值"身份，引擎不读 |
+| 5 | 热区分区（「手」「头」…） | ⬜ 仍是整屏 `hit1` ⇒ `custom:hold-hand` 只能靠 `weight:0` 手动触发 |
+
+### 4.2 CPU（原 P2 清理项；分析报告已归档到 `docx/_archive/2026-10/`）
+
+| # | 项 | 状态（已回代码核对） |
+|---|---|---|
+| 6 | `initScene.ts:517` 删 `mousemove` 的 `preventDefault()` | ⬜ 仍在（行号已从 :496 移到 :517） |
+| 7 | 6 个骨架的 mousedown/mouseup 收敛成共享分发器 | ⬜ 未做（仍各自 `addEventListener`） |
+| 8 | 发布态探针默认关 | ⬜ 未做（`webpack.common.js:75` 仍是 `env?.probe ?? 'on'`） |
+| 9 | `ParticleAnimator.buildGeometry` 加 dirty 判定 | ⬜ 未做 |
+
+**待你拍板（不是待实现）**：`maxFps` 要不要做成 WE 属性面板可调；WE 性能页「其他应用获得焦点时」是否从 `run` 改 `暂停`。
+「12 层静态贴图层合并」查过 z 序不连续 ⇒ **方向性搁置**。
+
+### 4.3 粒子系统（2026-10-17 你定的"用到再做"）
+
+Sub Emitters 引擎接线（P5-b）、真皮肤验收（P5-c）、Shape 缺的 Donut / Rectangle / BoxShell / BoxEdge / Mesh / Sprite —— 三个产物 0 用例，不算欠账。
+
+---
+
+## 5. 文档归档
+
+2026-10-20 把**已完结**的分析报告移进 `docx/_archive/2026-10/`（只移动，没有删除）：
+
+- CPU 五连（`REPORT_CPU飙升_…`、`REPORT_WE_CPU占用归因_…`、`REPORT_WE_CPU_定量实测_…`、
+  `REPORT_WE_CPU_交互与事件机制_…`、`REPORT_降低CPU占用_实施与验证_…`）
+- `PLAN_誓约态与事件族_2026-10-17.md`
+
+留在 `docx/` 的是**还在服役**的：本清单、`PLAN_事件配置文件`（格式真相）、`PLAN_自定义事件系统`（字段真相）、
+`PLAN_触摸热区自定义与重叠`（§4.1-5 的前置设计）、`RESEARCH_粒子系统复刻参考`（引用型资料）。
+归档索引见 `docx/_archive/README.md`。

@@ -478,7 +478,7 @@ export const initScene = (configs: Configs) => {
   // 为什么"可配置"而不是直接删掉：MSAA 对**角色轮廓**确实有效。
   //   画质优先的工程可以写 `antialias: true`换回来。
   //
-  // ⚠️ 想省更多请优先降 `dpr`（实测收益 −71%~−97%，见 docx/REPORT_WE_CPU占用归因）：
+  // ⚠️ 想省更多请优先降 `dpr`（实测收益 −71%~−97%，见 docx/_archive/2026-10/REPORT_WE_CPU占用归因）：
   //   MSAA 与 dpr 是**相乘**关系（都在放大填充率），关掉一个另一个还在。
   renderer = new THREE.WebGLRenderer({
     antialias: configs.antialias ?? false,

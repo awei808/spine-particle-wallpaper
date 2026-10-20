@@ -28,7 +28,7 @@
  *
  * 而本工程原先只消费 `setPaused`（`wePauseSignal`）与 `applyUserProperties`
  * （`settingsStore`），**从未注册这个回调** ⇒ 实测用户在 WE 里设 30fps，
- * 壁纸仍按 60fps 跑，单核占用约为限帧后的 2 倍（`docx/REPORT_WE_CPU_定量实测`）。
+ * 壁纸仍按 60fps 跑，单核占用约为限帧后的 2 倍（`docx/_archive/2026-10/REPORT_WE_CPU_定量实测`）。
  *
  * ## 语义
  *
