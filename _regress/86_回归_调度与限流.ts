@@ -152,6 +152,20 @@ ok('B2 冷却内不可用', !log.allows(cd, T0 + 30000));
 log.beginTick();
 ok('B3 冷却外恢复可用', log.allows(cd, T0 + 60001));
 
+/**
+ * ★★ B3b 时钟回拨（2026-10-21）：把系统日期改到 `lastAt` 之前做节日验收时，
+ *   `now - lastAt` 为负；负差恒 `< cooldownMs` 会让该事件**永久冷却**（静默）。
+ *   口径：负差 = 上次播放落在"未来" ⇒ 冷却已无意义，应放行。
+ */
+const cdBack = E('custom:cd-back', { cooldownMs: 60000 });
+log.beginTick();
+log.commit(cdBack, T0 + 30 * 24 * HOUR);
+log.beginTick();
+ok(
+  'B3b 时钟回拨（now < lastAt）不应永久冷却',
+  log.allows(cdBack, T0)
+);
+
 const quotaEver = E('custom:ever', { quota: { max: 1, per: 'ever' } });
 log.beginTick();
 log.commit(quotaEver, T0);

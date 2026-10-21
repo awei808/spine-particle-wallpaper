@@ -1259,7 +1259,14 @@ const main = async () => {
       return false;
     }
     const now = Date.now() / 1000;
-    if (now - lastGreetingAt < GREETING_DEDUPE_SEC) {
+    /**
+     * ★★ 5 秒去重。**必须判负差**（2026-10-21）：改系统日期（验收节日）会让
+     *   `now` 退到 `lastGreetingAt` 之前，负差恒 `< 5` ⇒ 问候通道**整体静默**
+     *   （连普通问候都不播），且只 `return false`、不留一行日志。
+     *   口径：负差 = 时钟被回拨 ⇒ 去重无意义，照常尝试。
+     */
+    const sinceLast = now - lastGreetingAt;
+    if (sinceLast >= 0 && sinceLast < GREETING_DEDUPE_SEC) {
       return false;
     }
     const signal =
@@ -1353,7 +1360,12 @@ const main = async () => {
      *   短暂停（切个窗口几秒）同样要复位，那是最常见的一档。
      */
     markActivity();
-    if (away < RESUME_GREET_MIN_SEC) {
+    /**
+     * ★★ 时钟回退（改系统日期做节日验收）会让 `away` 为负。旧写法 `away < 15`
+     *   把负差当成"刚暂停就回来"⇒ 恢复问候**永不触发**。负差 = 时钟被回拨，
+     *   按"离开很久"处理（放行到下面的问候）。
+     */
+    if (away >= 0 && away < RESUME_GREET_MIN_SEC) {
       return;
     }
     // 问候这一路没开（通道空 / 用户把三类全关了）⇒ 到这里就结束，只要上面那次复位

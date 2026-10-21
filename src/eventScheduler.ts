@@ -243,7 +243,14 @@ export const createEventLog = (storage?: LogStorage | null): EventLog => {
       }
       /** ③-b 冷却 */
       if (pick?.cooldownMs && rec.lastAt > 0) {
-        if (nowMs - rec.lastAt < pick.cooldownMs) {
+        /**
+         * ★★ 2026-10-21：**时钟回退**（把系统日期改到 `lastAt` 之前）会让
+         *   `nowMs - rec.lastAt` 变成负数，而负差恒 `< cooldownMs` ⇒ 这条事件
+         *   **永久冷却**，且没有任何日志。改系统日期做节日验收时会稳定踩到。
+         *   口径：负差 = "上次播放发生在未来" ⇒ 冷却已无意义，直接放行。
+         */
+        const dt = nowMs - rec.lastAt;
+        if (dt >= 0 && dt < pick.cooldownMs) {
           return false;
         }
       }
