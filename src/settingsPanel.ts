@@ -124,7 +124,7 @@ import {
 } from './dialogue';
 import { channelsOf, eventKeyOf } from './eventModel';
 import { describeCondition } from './conditions';
-import { EventState } from './eventOverrides';
+import { changedEventKeys, EventState } from './eventOverrides';
 import { SettingsOverrides, SettingsView } from './settingsStore';
 import { UI_SCALE_VAR, fpx, getUiScale, initUiScale, uiPx } from './uiScale';
 
@@ -271,6 +271,14 @@ export type SettingsPanelOptions = {
    */
   eventState?: EventState;
   /**
+   * 事件**文件里的缺省开关**（键 → 是否默认开启），由 `eventOverrides.eventDefaultsOf`
+   * 从 `assets/events.jsonc` 的**原始条目**算出（未压过用户开关）。
+   *
+   * ★ 2026-10-21：这一份数据就是本页「已改 N 项」与「恢复本页默认」的依据。
+   *   不传 ⇒ 视作"全部默认开启"，两个功能降级（不会崩，只是计数不准）。
+   */
+  eventDefaults?: { [key: string]: boolean };
+  /**
    * 保存事件开关（与设置项**同一次**保存）。
    *
    * ⚠️ 调用方必须在 `onSave` 的重载**之前**落盘 —— 否则重载后开关回到原样。
@@ -380,6 +388,26 @@ const BTN_GHOST = [
   'color:rgba(238,241,246,0.8)',
   'font-size:' + fpx(12.5),
   'font-family:inherit',
+  'cursor:pointer',
+].join(';');
+
+/**
+ * 行内小按钮（「恢复本页默认」这类**页内**操作）。
+ *
+ * ★ 为什么不复用 `BTN_GHOST`：底部那两个是 12.5px + 7px 内边距的**主操作**；
+ *   页内按钮排在统计行右侧，用同样的尺寸会把「事件开关」页的行高顶起来
+ *   （WE 不转发滚轮 ⇒ 内容一旦超高就只能靠分页）。
+ */
+const BTN_TINY = [
+  'flex:0 0 auto',
+  'padding:' + uiPx(2) + ' ' + uiPx(8),
+  'border:' + uiPx(1) + ' solid rgba(255,255,255,0.2)',
+  'border-radius:' + uiPx(6),
+  'background:transparent',
+  'color:rgba(238,241,246,0.72)',
+  'font-size:' + fpx(10.5),
+  'font-family:inherit',
+  'line-height:1.5',
   'cursor:pointer',
 ].join(';');
 
@@ -2131,6 +2159,7 @@ export const createSettingsPanel = (
    * |---|---|
    * | 新建 / 删除 / 改条件·动作·念白·语音 | `assets/events.jsonc`（面板顶部写明路径） |
    * | 开 / 关某一条 | 本页（`EventState` → localStorage，与设置项同一次保存 → 重载） |
+   * | 恢复本页默认（2026-10-21 补回） | 本页右上角按钮：清空草稿里的开关，回落到文件缺省 |
    *
    * ★ 面板**不读文件、不归一**：`eventTable` 是 `index.ts` 归一后那份（`enabled` 已压过），
    *   所以"面板列出来的"与"真的会抽的"必然是同一份。
@@ -2183,21 +2212,66 @@ export const createSettingsPanel = (
     eff[eventKeyOf(e)] = e.enabled !== false;
   });
 
+  /**
+   * 文件里的缺省开关（由调用方从 `events.jsonc` 原始条目算好传进来）。
+   * ⚠️ 不传 ⇒ 全部视作默认开启（`evDefaults[k] !== false` 恒真）。
+   */
+  const evDefaults: { [key: string]: boolean } = options.eventDefaults ?? {};
+
   let evState: EventState = {
     schema: 1,
     enabled: { ...(options.eventState?.enabled ?? {}) },
   };
 
-  const evCount = createEl(
+  /**
+   * 统计行 + 「恢复本页默认」（2026-10-21 补回）。
+   *
+   * ★ 与底部「恢复默认」的分工：
+   *   · 本按钮 = **只**把本页的开关恢复成 `events.jsonc` 的缺省（草稿），
+   *     仍要按「保存并应用」才落盘 —— 与其它控件同一套"草稿 → 保存 → 重载"口径；
+   *   · 底部按钮 = 清掉**全部**覆盖层（含事件开关），立即重载。
+   */
+  const evBar = createEl(
     'div',
-    'font-size:' + fpx(11) + ';opacity:.6;margin:' + uiPx(3) + ' 0',
+    'display:flex;align-items:center;justify-content:space-between;gap:' +
+      uiPx(8) +
+      ';margin:' +
+      uiPx(3) +
+      ' 0',
     evInner
   );
+  const evCount = createEl(
+    'div',
+    'font-size:' + fpx(11) + ';opacity:.6;min-width:0',
+    evBar
+  );
   evCount.id = 'wb-ev-count';
+  const btnEvReset = createEl('button', BTN_TINY, evBar);
+  btnEvReset.id = 'wb-ev-reset';
+  btnEvReset.textContent = '恢复本页默认';
+  btnEvReset.title =
+    '只把这一页的开关恢复成事件文件（events.jsonc）里的默认值；还要点底部「保存并应用」才生效。';
+
+  /** 恢复后的即时反馈（只在点过之后出现，避免常驻多占一行） */
+  const evResetHint = createEl(
+    'div',
+    'font-size:' + fpx(10.5) + ';opacity:.55;line-height:1.5;margin-bottom:' + uiPx(3),
+    evInner
+  );
+  evResetHint.id = 'wb-ev-reset-hint';
+  /** 没点过就完全不占位（这一页在 13 条工程上已经贴着可视区底边） */
+  evResetHint.style.display = 'none';
 
   const paintCount = () => {
     const on = Object.keys(eff).filter((k) => eff[k]).length;
-    evCount.textContent = '共 ' + evRows.length + ' 条 · 已开启 ' + on + ' 条';
+    const changed = changedEventKeys(evDefaults, evState).length;
+    evCount.textContent =
+      '共 ' +
+      evRows.length +
+      ' 条 · 已开启 ' +
+      on +
+      ' 条' +
+      (changed ? ' · 已改 ' + changed + ' 项' : '');
   };
 
   if (evFile.error) {
@@ -2220,7 +2294,11 @@ export const createSettingsPanel = (
   );
   evList.id = 'wb-ev-list';
 
-  /** 自绘小方钮（每行一个开关；比 `createToggle` 那套带标签的行更省高度） */
+  /**
+   * 自绘小方钮（每行一个开关；比 `createToggle` 那套带标签的行更省高度）。
+   *
+   * @returns `set` 供「恢复本页默认」从外部把勾选状态刷回去（内部状态不暴露）
+   */
   const miniToggle = (on0: boolean, onChange: (v: boolean) => void) => {
     let on = on0;
     const el = createEl(
@@ -2252,7 +2330,13 @@ export const createSettingsPanel = (
       paint();
       onChange(on);
     });
-    return el;
+    return {
+      el,
+      set: (v: boolean) => {
+        on = v;
+        paint();
+      },
+    };
   };
 
   /**
@@ -2267,6 +2351,9 @@ export const createSettingsPanel = (
   };
   /** 键里可能有 `:` ⇒ DOM id 只留安全字符（验证脚本按同样规则拼） */
   const domKey = (k: string) => k.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+  /** 每行"把勾选刷成 v"的回调（键 = 事件键）—— 供「恢复本页默认」用 */
+  const evPaint: { [key: string]: (on: boolean) => void } = {};
 
   evRows.forEach((e) => {
     const id = eventKeyOf(e);
@@ -2289,8 +2376,9 @@ export const createSettingsPanel = (
       evState.enabled[id] = v;
       paintCount();
     });
-    tgl.id = 'wb-ev-tgl-' + domKey(id);
-    row.appendChild(tgl);
+    tgl.el.id = 'wb-ev-tgl-' + domKey(id);
+    row.appendChild(tgl.el);
+    evPaint[id] = tgl.set;
 
     /**
      * 一行式：`名称 · 分组 · 条件 · 动画 · #id`（省略号截断）。
@@ -2356,6 +2444,32 @@ export const createSettingsPanel = (
       ? '事件文件不可用 ⇒ 本壁纸不会触发任何事件。'
       : '事件文件里没有事件条目。';
   }
+
+  /**
+   * 「恢复本页默认」—— 清空本页草稿里的开关，全部回落到 `events.jsonc` 的缺省。
+   *
+   * ⚠️ **不落盘、不重载**：与别的控件同一口径（草稿 → 底部「保存并应用」→ 重载）。
+   *   正因为如此，调用方（`index.ts`）在保存时看到"空 map"会直接删掉 localStorage
+   *   里的 `wb.events.state.v1` —— 这样"恢复默认"留下的是一份**干净的缺省状态**，
+   *   而不是一个"全是 true 的空壳 map"。
+   */
+  btnEvReset.addEventListener('click', () => {
+    evState = { schema: 1, enabled: {} };
+    evRows.forEach((e) => {
+      const key = eventKeyOf(e);
+      const on = evDefaults[key] !== false;
+      eff[key] = on;
+      if (evPaint[key]) {
+        evPaint[key](on);
+      }
+    });
+    paintCount();
+    evResetHint.style.display = 'block';
+    evResetHint.textContent =
+      '已恢复为事件文件的默认开关（' +
+      evRows.length +
+      ' 条）—— 点底部「保存并应用」生效。';
+  });
 
   createEl(
     'div',
@@ -2822,6 +2936,13 @@ export const createSettingsPanel = (
   const btnReset = createEl('button', BTN_GHOST, foot);
   btnReset.id = 'wb-set-reset';
   btnReset.textContent = '恢复默认';
+  /**
+   * ★ 2026-10-21：底部这一颗连**本机的事件开关**一起清（以前只清设置覆盖层，
+   *   "点了恢复默认、事件开关却还是关着的"）。作用范围写在 title 里，
+   *   因为按钮旁边没有地方再放一行说明。
+   */
+  btnReset.title =
+    '清空本机全部设置与事件开关，回到 assets/config.json 与 assets/events.jsonc 的默认值（会立即重载）。';
 
   /**
    * 渲染"候选动画名" chips。

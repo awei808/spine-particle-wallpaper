@@ -150,3 +150,44 @@ export const pruneEventState = (
   });
   return out;
 };
+
+/* ══════════════════════════════════════════════════════════════════════
+ * 「恢复默认」用的两份纯数据（2026-10-21）
+ *
+ * 背景：2026-10-19 这一页**删掉过**「恢复默认」按钮 —— 面板只拿到"已压过开关的
+ * 生效值"，拿不到文件的缺省，算不出"该恢复成什么"。现在由 `index.ts` 多传一份
+ * `eventDefaults`（从**文件原始条目**算），这一页就能做两件事：
+ *   ① 显示「已改 N 项」（用户点过的键里，与文件缺省不同的那些）；
+ *   ② 「恢复本页默认」= 清空 `EventState`（草稿层面），随「保存并应用」一起落盘。
+ *
+ * ⚠️ 缺省**必须**从 `eventsFile.events`（未压开关）算，不能从 `eventTable` 算 ——
+ *   后者已经是"生效值"，拿它当缺省会让"已改 N 项"永远是 0。
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/** 文件缺省：键 → 是否默认开启（`enabled !== false`） */
+export const eventDefaultsOf = (
+  events: readonly DialogueEntry[]
+): { [key: string]: boolean } => {
+  const out: { [key: string]: boolean } = {};
+  events.forEach((e) => {
+    const key = eventKeyOf(e);
+    if (key) {
+      out[key] = e.enabled !== false;
+    }
+  });
+  return out;
+};
+
+/**
+ * 用户**实际改过**的键（生效值与文件缺省不同）。
+ *
+ * ★ 为什么不是 `Object.keys(state.enabled)`：面板每点一下都写一个显式布尔
+ *   （见文件头 §6.3），"点开关两下又点回去"也会留下键；按键数计数会谎报"已改 2 项"。
+ */
+export const changedEventKeys = (
+  defaults: { [key: string]: boolean },
+  state: EventState
+): EventKey[] =>
+  Object.keys(state.enabled).filter(
+    (k) => state.enabled[k] !== (defaults[k] !== false)
+  );

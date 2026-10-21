@@ -81,6 +81,8 @@ import {
 } from './eventScheduler';
 import {
   applyEventState,
+  clearEventState,
+  eventDefaultsOf,
   EventState,
   pruneEventState,
   readEventState,
@@ -971,6 +973,13 @@ const main = async () => {
    *   （见 `eventOverrides.ts` 文件头）。
    */
   const eventState = readEventState();
+  /**
+   * 事件**文件里的缺省开关**（未压过用户开关的那一份）。
+   *
+   * ★ 只喂面板：它要算「已改 N 项」并实现「恢复本页默认」。引擎自己不消费 ——
+   *   引擎的口径始终是"文件缺省 + 用户显式覆盖"（`applyEventState`）。
+   */
+  const eventDefaults = eventDefaultsOf(dialogues);
   const eventSource: DialogueEntry[] = applyEventState(dialogues, eventState);
   const normalizedTable = normalizeEventTable(eventSource, {
     legacy: {
@@ -2442,9 +2451,18 @@ const main = async () => {
            *   `probe.enabled` / `probe.hud` 都是 `true` ⇒ 只清覆盖层的话，点「恢复默认」
            *   之后**调试反而是勾上的**，与预期相反（用户 2026-09-30 拍板：不默认勾选调试）。
            *   详见 `settingsStore.RESET_OVERRIDES` 的注释。
+           *
+           * ★★ 2026-10-21：**连本机的事件开关一起清**。事件开关是另一份存储
+           *   （`wb.events.state.v1`，见 `eventOverrides.ts`），不清的话"恢复默认"之后
+           *   事件仍是用户上次关掉的那几条 —— 用户说的"默认"显然包括它们。
+           *
+           * ⚠️ **不**碰 `wb.swe.eventlog.v1`（冷却 / 配额 / 互斥组的播放记录）：
+           *   那是"已经发生过什么"的历史，不是设置。清掉它会让 `quota.ever` 的事件
+           *   突然又能再播一次 —— 那不是恢复默认，是抹掉记录。
            */
           clearOverrides();
           writeOverrides({ ...RESET_OVERRIDES });
+          clearEventState();
           window.location.reload();
         },
         /** 展开状态也持久化，重载后面板保持原样（否则每保存一次就"啪"地合上） */
@@ -2528,12 +2546,22 @@ const main = async () => {
         },
         /** 事件开关初值（本机点过的键） */
         eventState,
+        /** 文件缺省开关（面板「已改 N 项 / 恢复本页默认」的依据） */
+        eventDefaults,
         /**
          * 与设置项**同一次**保存：`onSave` 的重载之前落盘。
          * ★ 顺手把文件里已删掉的键剪掉（悬空键不会越攒越多）。
+         * ★ 空表 ⇒ **直接删键**（「恢复本页默认」的落点）：留一个 `{enabled:{}}`
+         *   在语义上等价，但会让"有没有改过"这件事永远看起来像是改过。
          */
-        onSaveEventState: (s: EventState) =>
-          writeEventState(pruneEventState(s, eventTable.map(eventKeyOf))),
+        onSaveEventState: (s: EventState) => {
+          const pruned = pruneEventState(s, eventTable.map(eventKeyOf));
+          if (Object.keys(pruned.enabled).length) {
+            writeEventState(pruned);
+          } else {
+            clearEventState();
+          }
+        },
       });
 
       if (PROBE_OPTS.enabled) {
