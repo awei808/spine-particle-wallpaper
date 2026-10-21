@@ -2924,6 +2924,33 @@ export class ParticleAnimator {
   /* ── 几何体刷新 ─────────────────────────────────────────────────────── */
 
   private buildGeometry(): void {
+    /**
+     * ★ 空系统早退（2026-10-20 性能）。
+     *
+     * `update()` 每帧无条件调用它。本工程 8 组粒子的 `autoplay` **全部缺省**（= 全部开跑），
+     * 空帧来自 `star` / `saoguang` 这两个 `maxNumParticles = 1` 的**单粒子爆发**组：
+     * 爆发间隙里 `particles` 为空。实测（200 帧 × 8 组 = 1600 系统帧）空帧占比
+     * **随步长变化**：60 fps 下 12.0%，`_regress/94` 的 0.05 步长下 16.5%。
+     * 这些帧此前仍会把 5 个属性标 dirty、把几何重建一遍、再触发一次全量上传。
+     *
+     * ★ 收益量级别记错（2026-10-21 实测，本工程 config.json，以 git 改动前的实现做 A/B，按 60 fps）：
+     *   - 本条早退**单独**只省 **2.1%**（12.94 → 12.67 KB/帧）；
+     *   - 同一次提交里的「区间上传」单独省 **20.7%**；
+     *   - 两者合计 22.8%。空帧只出现在 `max = 1` 的小组上，`max` 最大的 `niao`（15）
+     *     反而**从不空** ⇒ 本条是边角收益，大头在下面那段 `updateRange`。
+     *
+     * 判据**同时**要求「本帧无粒子」且「上一帧也没画东西」：
+     * `restart()` 会先清空粒子再主动调一次本函数（要求顶点数**立刻**刷成 0），
+     * 那一拍 `drawRange.count` 还是上一帧的值 > 0，不会被这里短路；
+     * 而空系统被 `restart()` 拉起来时 `particles.length > 0`，两个条件不同时成立
+     * ⇒ 不会把"重新起画"吃掉。
+     *
+     * 跳过是安全的：`rViewportH` 是唯一被跳过的写状态，而它只在**本函数内**读写
+     * （先算后用，同一拍一起跳过）⇒ 口径一致，不会读到陈旧值。
+     */
+    if (this.particles.length === 0 && this.geometry.drawRange.count === 0) {
+      return;
+    }
     const c = this.cfg;
     /**
      * `min/maxParticleSize` 换算所需的**视口高的世界尺寸** = `2·|z|·tan(fov/2)`。
@@ -3477,11 +3504,54 @@ export class ParticleAnimator {
       }
     }
 
-    this.posAttr.needsUpdate = true;
-    this.uvTexAttr.needsUpdate = true;
-    this.uvMaskAttr.needsUpdate = true;
-    this.alphaAttr.needsUpdate = true;
-    this.startColAttr.needsUpdate = true;
+    /**
+     * ★ 只上传「本帧真正写到的那一段」（2026-10-20 性能）。
+     *
+     * 此前只置 `needsUpdate`、不设 `updateRange`（其默认 `count = -1`）⇒ three 每次都按
+     * **整块缓冲**上传，尺寸等于 `maxNumParticles × vpp`，与实际活跃顶点数无关。
+     *
+     * ★ 本工程的真实体量（2026-10-21 按 config.json 实测，勿再凭印象写大数）：
+     *   8 组粒子的 `maxNumParticles` 依次是 7 / 1 / 15 / 1 / 10 / 10 / 1 / 1，全部 6 顶点/粒子、
+     *   5 个属性共 12 float/顶点 ⇒ **整块全量合计 12.94 KB/帧**；改成区间上传后降到
+     *   **9.99 KB/帧**，省 **20.7%**（按 60 fps；再叠加空帧早退共 22.8%，
+     *   0.05 步长下是 12.94 → 9.93、共 23.3%）。
+     *   单组最大的是 `niao`（max = 15，4.22 → 1.55 KB/帧），其余组整块也才 0.28 ~ 2.81 KB。
+     *
+     * 语义依据（three r149 `WebGLAttributes.updateBuffer`）：
+     * - `updateRange` 的单位是**数组元素**，不是字节 ⇒ 按各属性的 `itemSize` 换算；
+     * - `count === -1` 才走整块 `bufferSubData`，否则走区间上传；
+     * - 上传后 three 会把 `count` 复位成 `-1` ⇒ 必须**每帧**重新设置。
+     *
+     * 尾部残留的旧顶点不会被画到：`setDrawRange(0, n)` 已把绘制范围钳死。
+     * `n === 0` 时整块跳过，避免发一次零长度的 `bufferSubData`。
+     *
+     * ⚠️ 隐含契约（`n === 0` 时不标脏 ⇒ `count` 保留上一帧的值）：
+     *   今天读不到这个陈旧值，因为全文件**只有这 5 处**给这 5 个属性标脏（`needsUpdate`），
+     *   而每一处都在同一行之前把 `updateRange` 设好了。若将来要在别处给它们标脏，
+     *   必须连 `updateRange` 一起设 —— 否则 three 会按一个偏小的陈旧区间静默少传。
+     *
+     * ⚠️ 版本耦合：`updateRange` 在 three **r159** 起被 `addUpdateRange()` / `updateRanges`
+     *   取代。r159 ~ r168 仍保留一个会打弃用警告的 getter，`updateBuffer` 照旧读
+     *   `_updateRange` ⇒ 功能不变、只是每帧多一条 warn；**r169 起彻底移除**，那时这里
+     *   会变成对 `undefined` 赋值而抛错。升级 three 时先改这一段。
+     */
+    if (n > 0) {
+      this.posAttr.updateRange.offset = 0;
+      this.posAttr.updateRange.count = n * 3;
+      this.posAttr.needsUpdate = true;
+      this.uvTexAttr.updateRange.offset = 0;
+      this.uvTexAttr.updateRange.count = n * 2;
+      this.uvTexAttr.needsUpdate = true;
+      this.uvMaskAttr.updateRange.offset = 0;
+      this.uvMaskAttr.updateRange.count = n * 2;
+      this.uvMaskAttr.needsUpdate = true;
+      this.alphaAttr.updateRange.offset = 0;
+      this.alphaAttr.updateRange.count = n;
+      this.alphaAttr.needsUpdate = true;
+      this.startColAttr.updateRange.offset = 0;
+      this.startColAttr.updateRange.count = n * 4;
+      this.startColAttr.needsUpdate = true;
+    }
     this.geometry.setDrawRange(0, n);
   }
 
