@@ -263,6 +263,85 @@ eq(
   true
 );
 
+/* ══ F. dates（日期表 —— 农历节日的落点，2026-10-21） ═══════════ */
+
+console.log('\nF. dates：每年型 / 指定年 / 混合 / 写坏');
+
+const annual: Condition = { dates: ['02-14'] };
+ok(
+  'F1 "MM-DD" 每年命中（2026 与 2031 的 2 月 14 日）',
+  test(annual, at(9, 0, 2026, 1, 14)) && test(annual, at(9, 0, 2031, 1, 14))
+);
+ok('F2 不是那天 ⇒ 不命中', !test(annual, at(9, 0, 2026, 1, 15)));
+
+const exact: Condition = { dates: ['2027-02-06'] };
+ok(
+  'F3 "YYYY-MM-DD" 只在那一年的那天命中',
+  test(exact, at(9, 0, 2027, 1, 6)) && !test(exact, at(9, 0, 2028, 1, 6))
+);
+
+const mixed: Condition = { dates: ['01-01', '2028-01-26'] };
+ok(
+  'F4 混合：每年型与指定年互不干扰',
+  [
+    test(mixed, at(9, 0, 2028, 0, 1)),
+    test(mixed, at(9, 0, 2028, 0, 26)),
+    test(mixed, at(9, 0, 2029, 0, 26)),
+  ].join(',') === 'true,true,false'
+);
+
+const leap: Condition = { dates: ['02-29'] };
+ok(
+  'F5 "02-29" 合法，但只在闰年命中',
+  test(leap, at(9, 0, 2028, 1, 29)) && !test(leap, at(9, 0, 2026, 1, 28))
+);
+
+ok(
+  'F6 写坏 ⇒ **恒假**（不是恒真：否则"天天过节"）',
+  [
+    test({ dates: [] } as Condition, at(9)),
+    test({ dates: ['02-30'] } as Condition, at(9)),
+    test({ dates: null } as Condition, at(9)),
+    test({ dates: '02-14' } as Condition, at(9, 0, 2026, 1, 14)),
+  ].join(',') === 'false,false,false,false'
+);
+
+eq(
+  'F7 inspectCondition：空数组 / 假日期 / 非数组都算 invalid',
+  [
+    inspectCondition({ dates: [] }).invalid.length,
+    inspectCondition({ dates: ['2027-02-30'] }).invalid.length,
+    inspectCondition({ dates: '02-14' }).invalid.length,
+    inspectCondition({ dates: ['02-14', '2027-02-06'] }).invalid.length,
+  ],
+  [1, 1, 1, 0]
+);
+
+eq(
+  'F8 describeCondition：每年型 / 指定年 / 超过 3 个只列前 3',
+  [
+    describeCondition({ dates: ['02-14'] }),
+    describeCondition({ dates: ['2027-02-06'] }),
+    describeCondition({
+      dates: ['2026-02-17', '2027-02-06', '2028-01-26', '2029-02-13'],
+    }),
+    describeCondition({ dates: ['02-30'] }),
+  ],
+  ['2月14日', '2027年2月6日', '2026年2月17日、2027年2月6日、2028年1月26日 等 4 个日期', '日期（非法）']
+);
+
+ok(
+  'F9 与 time 组合（节日只在晚上问好）',
+  test(
+    { all: [{ dates: ['02-14'] }, { time: { start: 18, end: 23 } }] } as Condition,
+    at(20, 0, 2026, 1, 14)
+  ) &&
+    !test(
+      { all: [{ dates: ['02-14'] }, { time: { start: 18, end: 23 } }] } as Condition,
+      at(9, 0, 2026, 1, 14)
+    )
+);
+
 console.log(
   '\n' + (fail === 0 ? '✅' : '❌') + ' ' + pass + ' PASS / ' + fail + ' FAIL'
 );

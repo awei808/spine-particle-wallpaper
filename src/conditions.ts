@@ -47,8 +47,56 @@ const parseMonthDay = (v: unknown): { m: number; d: number } | null => {
 const isPlainObject = (v: unknown): v is { [k: string]: unknown } =>
   !!v && typeof v === 'object' && !Array.isArray(v);
 
+/** 某年某月某日是否真实存在（`2027-02-30` / 非闰年 `02-29` 都要被拒） */
+const realDay = (y: number, m: number, d: number): boolean => {
+  const t = new Date(y, m - 1, d);
+  return t.getFullYear() === y && t.getMonth() === m - 1 && t.getDate() === d;
+};
+
+/**
+ * 日期表元素 → `{ y, m, d }`；`y === 0` 表示"每年"。
+ *
+ * 接受 `"MM-DD"`（每年）与 `"YYYY-MM-DD"`（那一年），其余一律 `null`。
+ * ⚠️ 每年型用**闰年 2000** 判存在性 ⇒ `"02-29"` 合法（只在闰年命中），
+ *   而 `"02-30"` 永远非法。
+ */
+const parseDateToken = (
+  v: unknown
+): { y: number; m: number; d: number } | null => {
+  if (typeof v !== 'string') {
+    return null;
+  }
+  const s = v.trim();
+  const ym = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (ym) {
+    const y = Number(ym[1]);
+    const mo = Number(ym[2]);
+    const d = Number(ym[3]);
+    return mo >= 1 && mo <= 12 && realDay(y, mo, d) ? { y, m: mo, d } : null;
+  }
+  const md = parseMonthDay(s);
+  if (md) {
+    return realDay(2000, md.m, md.d) ? { y: 0, m: md.m, d: md.d } : null;
+  }
+  return null;
+};
+
+/** 日期表是否命中（`"MM-DD"` 每年、`"YYYY-MM-DD"` 只那一年；混合合法） */
+const datesHit = (list: readonly unknown[], now: Date): boolean => {
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1;
+  const d = now.getDate();
+  for (let i = 0; i < list.length; i += 1) {
+    const t = parseDateToken(list[i]);
+    if (t && t.m === m && t.d === d && (t.y === 0 || t.y === y)) {
+      return true;
+    }
+  }
+  return false;
+};
+
 /** 已知的 AST 键（别的键 ⇒ `E_COND_UNKNOWN`，该叶子恒真） */
-const KNOWN_KEYS = ['all', 'any', 'not', 'time', 'calendar', 'ctx'];
+const KNOWN_KEYS = ['all', 'any', 'not', 'time', 'calendar', 'dates', 'ctx'];
 
 /**
  * 条件体检结果。
@@ -189,6 +237,26 @@ export const inspectCondition = (
     }
     return out;
   }
+  if (key === 'dates') {
+    if (!Array.isArray(val)) {
+      out.invalid.push(path + '.dates: 必须是 "MM-DD" / "YYYY-MM-DD" 字符串数组');
+      return out;
+    }
+    if (!val.length) {
+      out.invalid.push(
+        path + '.dates: 空数组（永不命中）—— 要停用这条事件请写 "enabled": false'
+      );
+      return out;
+    }
+    val.forEach((d, i) => {
+      if (!parseDateToken(d)) {
+        out.invalid.push(
+          path + '.dates[' + i + ']: 不是合法日期（"MM-DD" 或 "YYYY-MM-DD"）'
+        );
+      }
+    });
+    return out;
+  }
   // ctx
   if (!isPlainObject(val)) {
     out.invalid.push(path + '.ctx: 必须是对象');
@@ -264,6 +332,7 @@ const calendarHit = (
  * | `undefined` / `{}`（空对象） | 恒真（老 config 无 `when` 走这里） |
  * | 未知键 / 结构错误 | **恒真**（错误由 `inspectCondition` 报，求值不许抛） |
  * | `time` / `calendar` / `ctx` | 按注入的 `now` / `ctx` 判定 |
+ * | `dates` | 按注入的 `now` 判日；**写坏了恒假**（见下面的分支注释） |
  *
  * ★ **求值绝不 throw**：壁纸里一条坏条件炸掉整个 tick，比"这条不播"严重得多。
  */
@@ -335,6 +404,23 @@ export const compileCondition = (
       weekday?: unknown;
     };
     return (now) => calendarHit(c, now ?? new Date());
+  }
+  if (key === 'dates') {
+    /**
+     * ⚠️ 与 `time` 的"非法 ⇒ 恒真"**刻意不同**：日期表不可用时返回**恒假**。
+     *
+     * 一份写坏的节日表若 fail-open，症状是"天天过节"——比"这条不播"难发现得多，
+     * 而且它会在同一天里把所有高优先级节日事件一起放出来。宁可不播。
+     * （结构错误仍由 `inspectCondition` 报 `E_COND_INVALID`，不是静默。）
+     */
+    if (!Array.isArray(val) || !val.length) {
+      return () => false;
+    }
+    const list = val.filter((d) => parseDateToken(d) !== null);
+    if (!list.length) {
+      return () => false;
+    }
+    return (now) => datesHit(list, now ?? new Date());
   }
   // ctx
   if (!isPlainObject(val)) {
@@ -463,6 +549,27 @@ export const describeCondition = (
       );
     }
     return parts.length ? parts.join(' ∧ ') : '日历（无判据）';
+  }
+  if (key === 'dates') {
+    const list = Array.isArray(val) ? val : [];
+    const texts: string[] = [];
+    list.forEach((d) => {
+      const t = parseDateToken(d);
+      if (!t) {
+        return;
+      }
+      texts.push(
+        t.y === 0 ? t.m + '月' + t.d + '日' : t.y + '年' + t.m + '月' + t.d + '日'
+      );
+    });
+    if (!texts.length) {
+      return '日期（非法）';
+    }
+    /** 名单太长时只列前 3 个 + 总数（档案那一列放不下 7 个春节） */
+    return (
+      texts.slice(0, 3).join('、') +
+      (texts.length > 3 ? ' 等 ' + texts.length + ' 个日期' : '')
+    );
   }
   // ctx
   if (!isPlainObject(val)) {

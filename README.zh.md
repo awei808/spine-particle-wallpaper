@@ -82,7 +82,7 @@ Unity 手游里的 Spine 角色 + 粒子特效 + 触摸动作，搬上桌面并�
 | --- | --- |
 | `on` | **分组标记**：`touch`（点击热区）/ `standby`（静置）/ `resume`（载入、回到桌面、回到前台）。可写数组。★ **不限制入口**（2026-10-21）—— 能不能被某个入口播到由面板勾的「类别」决定；想锁时机请用 `when.ctx.signal` / `when.ctx.zone`。`on: []` = 永不播放 |
 | `kind` | 类别：`touch` / `chat` / `greet`。省略则按 `on[0]` 推 |
-| `when` | 条件：`time{start,end}`、`calendar{month,day}`、`ctx{idleMs,zone}`，可用 `and` / `or` / `not` 组合 |
+| `when` | 条件：`time{start,end}`、`calendar{month,day}`、**`dates["MM-DD" / "YYYY-MM-DD", …]`**（农历节日用它）、`ctx{idleMs,zone,signal}`，可用 `all` / `any` / `not` 组合 |
 | `animation` | spine 动画名；不写 = 纯台词事件 |
 | `particles` | 本条专用粒子组（`config.meshes[].name`）；不写 = 按动画名回落 |
 | `variants` | 整包随机：动作 + 台词 + 语音来自同一包 |
