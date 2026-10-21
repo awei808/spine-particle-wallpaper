@@ -90,6 +90,17 @@ type FitResult = {
   fov: number;
   /** 相机 y（垂直锚点补偿） */
   camY: number;
+  /**
+   * 本帧**可见半高**（世界单位）= `|底层 z| × tan(fov/2)`。
+   *
+   * ★ 给"设计画幅坐标 → 视口归一化"用（`touch.zones[].design` 与任何需要
+   *   跨分辨率稳定的屏幕矩形）：`fitAspect: 'width'` 下可见**宽**恒定、可见**高**
+   *   随视口比例变，所以设计态量出来的 v 必须按 `halfHD / halfH` 重投影，
+   *   否则 16:9 下整块热区会向下漂（1700×750 的 v=0.14 → 1920×1080 的 v≈0.33）。
+   */
+  halfH: number;
+  /** **设计态**（`config.width × config.height` 那个比例）的可见半高，与 `halfH` 同单位 */
+  halfHD: number;
   /** 视口真实比例（未夹） */
   a: number;
   /** 视口真实尺寸 */
@@ -352,6 +363,8 @@ export const initScene = (configs: Configs) => {
         aspect: a,
         fov,
         camY,
+        halfH,
+        halfHD: Math.abs(base.z) * tanHalfDesign,
         a,
         rw: vw,
         rh: vh,
@@ -525,4 +538,13 @@ export const initScene = (configs: Configs) => {
     updateCursorFromClient(event.clientX, event.clientY);
   }
   //#endregion
+
+  /**
+   * 把取景计算器交出去（2026-10-21）。
+   *
+   * 只给 `index.ts` 用来把 `touch.zones[].design`（设计画幅像素）投影成当前视口的
+   * 归一化矩形 —— **不复制取景数学**，`calc()` 仍是唯一真相。
+   * 纯读：`calc()` 不写 DOM、不改相机（应用由 `onWindowResize` 负责），重复调用无副作用。
+   */
+  return fit;
 };

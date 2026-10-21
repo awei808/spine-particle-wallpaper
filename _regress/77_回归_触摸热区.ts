@@ -42,6 +42,7 @@ import {
   describeZoneHit,
   hitTestZonesDetailed,
   isZoneEnabled,
+  designRectToViewport,
   normalizeZones,
   resolveZoneHit,
   TouchZone,
@@ -418,24 +419,95 @@ const diffCount = (zones: TouchZone[]): { diff: number; first: string } => {
   );
 }
 {
-  // 真实工程：本仓库 public/assets/config.json
-  let raw: unknown = null;
+  /**
+   * 真实工程：本仓库 `public/assets/config.json`
+   *
+   * ★ 2026-10-21 改口径：真实 `zones` 里出现了 `design`（设计画幅坐标）⇒ 归一**必须带取景信息**。
+   *   这里拿**设计态自身**当取景（`halfH === halfHD`、`aspect === aspectD`）⇒ 投影是恒等变换，
+   *   等价于"作者按设计比例写 u/v"，于是仍能继续和旧口径逐点对照。
+   *   （旧版这里不传 fit：`design` 区会被 `E_ZONE_GEOM` 丢掉，`n=1` 却报 PASS —— 假通过。）
+   *
+   *   同时判据也要改：加分区**就是要**在它自己的矩形内改变归属，所以
+   *   "121 点全同"不再成立 —— 改成"变化只发生在分区矩形内 + 确实有变化"。
+   */
+  let cfg: { width?: number; height?: number; touch?: { zones?: unknown } } | null =
+    null;
   try {
-    raw = JSON.parse(fs.readFileSync(CONFIG, 'utf-8'))?.touch?.zones;
+    cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf-8'));
   } catch (e) {
-    raw = null;
+    cfg = null;
   }
-  if (!raw) {
+  const rawZones = cfg?.touch?.zones;
+  if (!rawZones) {
     console.log(
       '  [SKIP] C4 未读到 config（' + CONFIG + '）⇒ 跳过真实工程比对'
     );
   } else {
-    const { zones, issues } = normalizeZones(raw);
-    const r = diffCount(zones);
+    const dw = Number(cfg?.width) || 1;
+    const dh = Number(cfg?.height) || 1;
+    /** 设计态自身：半高相等 ⇒ 两轴缩放系数都是 1（投影恒等） */
+    const designFit = {
+      halfH: 1,
+      halfHD: 1,
+      aspect: dw / dh,
+      aspectD: dw / dh,
+      designW: dw,
+      designH: dh,
+    };
+    const { zones, issues } = normalizeZones(rawZones, designFit);
+    const errs = issues.filter((it) => it.level === 'error');
     check(
-      r.diff === 0,
-      'C4 真实 config 的 touch.zones：121 点全部与旧口径相同（线上零回归）',
-      'n=' + zones.length + ' diff=' + r.diff + ' issues=' + issues.length
+      errs.length === 0,
+      'C4a 真实 config 归一零 error（design 已按设计态投影）',
+      'issues=' + issues.length + (errs.length ? ' 首个=' + errs[0].code : '')
+    );
+    check(
+      zones.length === (rawZones as unknown[]).length,
+      'C4b 真实 config 的区一个不少（design 没被丢弃）',
+      'n=' + zones.length + '/' + (rawZones as unknown[]).length
+    );
+
+    /** 除整屏兜底以外的"具体分区" */
+    const spec = zones.filter((zz) => zz.id !== 'hit1');
+    const inSpec = (u: number, v: number): boolean =>
+      spec.some(
+        (zz) => u >= zz.u0 && u <= zz.u1 && v >= zz.v0 && v <= zz.v1
+      );
+    let changed = 0;
+    let bad = 0;
+    let first = '';
+    GRID.forEach((p) => {
+      const u = p.x / VW;
+      const v = p.y / VH;
+      const a = legacyHit(zones, p.x, p.y, VW, VH)?.id ?? '';
+      const b = resolveZoneHit(zones, p.x, p.y, VW, VH)?.id ?? '';
+      const s = inSpec(u, v);
+      if (a !== b) {
+        changed++;
+        if (!s) {
+          bad++;
+          if (!first) {
+            first =
+              '区外却变了 (' + u.toFixed(1) + ',' + v.toFixed(1) + ') 旧=' + a + ' 新=' + b;
+          }
+        }
+      } else if (s) {
+        bad++;
+        if (!first) {
+          first =
+            '区内却没变 (' + u.toFixed(1) + ',' + v.toFixed(1) + ') 仍是 ' + a;
+        }
+      }
+    });
+    check(
+      bad === 0,
+      'C4c 归属变化只发生在分区矩形内（区外逐点与旧口径相同）',
+      'n=' + zones.length + ' 变化=' + changed + ' 异常=' + bad + (first ? ' 例：' + first : '')
+    );
+    check(
+      changed > 0,
+      'C4d 分区确实改变了命中归属（否则等于没加分区）',
+      '变化=' + changed
     );
   }
 }
@@ -476,6 +548,132 @@ console.log('\n── D. touch.ts 委派与文案 ──');
     describeZoneHit(many) === 'small ← [small, big]',
     'D2c 重叠 ⇒ "赢家 ← [候选]"（照抄归档/日志可直接用）',
     describeZoneHit(many)
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * E. design 坐标的投影（2026-10-21：跨分辨率不漂）
+ * ══════════════════════════════════════════════════════════════ */
+console.log('\n── E. design 投影（设计画幅 → 视口） ──');
+{
+  /** 设计画幅 1700×750（= 本工程），`aspectD = 2.2667` */
+  const DW = 1700;
+  const DH = 750;
+  const aspectD = DW / DH;
+
+  /** 设计态：半高相等 ⇒ 两轴缩放 1 */
+  const atDesign = {
+    halfH: 1,
+    halfHD: 1,
+    aspect: aspectD,
+    aspectD,
+    designW: DW,
+    designH: DH,
+  };
+  const whole = designRectToViewport({ x: 0, y: 0, w: DW, h: DH }, atDesign);
+  check(
+    Math.abs(whole.u0) < 1e-12 &&
+      Math.abs(whole.v0) < 1e-12 &&
+      Math.abs(whole.u1 - 1) < 1e-12 &&
+      Math.abs(whole.v1 - 1) < 1e-12,
+    'E1 设计态投影是恒等变换（整幅 → [0,0,1,1]）',
+    JSON.stringify(whole)
+  );
+
+  /**
+   * 1920×1080（aspect 1.7778），`fitAspect: 'width'`
+   * ⇒ `fov` 变小、可见高 = 1700/1.7778；以底边为锚 ⇒ 同一世界点整体**上移**
+   * 即 v 变小…不对：可见高变大 ⇒ 顶部多露出 ⇒ 距顶距离变大 ⇒ v 变大。
+   * 用真实公式核对：`ky = halfHD/halfH = aspect/aspectD = 0.78431`
+   * `v_now = 1 − (1 − v_d)·0.78431`
+   */
+  const ky = 1.7777777777777777 / aspectD;
+  const at169 = {
+    halfH: 1 / ky, // halfH = halfHD/ky  ⇒ halfHD/halfH = ky
+    halfHD: 1,
+    aspect: 1.7777777777777777,
+    aspectD,
+    designW: DW,
+    designH: DH,
+  };
+  const handDesign = { x: 1012, y: 96, w: 88, h: 126 };
+  const p169 = designRectToViewport(handDesign, at169);
+  const wantV0 = 1 - (1 - 96 / DH) * ky;
+  const wantV1 = 1 - (1 - 222 / DH) * ky;
+  check(
+    Math.abs(p169.u0 - 1012 / DW) < 1e-9 &&
+      Math.abs(p169.u1 - 1100 / DW) < 1e-9,
+    'E2a 水平不漂（`width` 基准下可见宽恒定 ⇒ u 原样）',
+    'u=' + p169.u0.toFixed(4) + '~' + p169.u1.toFixed(4)
+  );
+  check(
+    Math.abs(p169.v0 - wantV0) < 1e-9 && Math.abs(p169.v1 - wantV1) < 1e-9,
+    'E2b 垂直按半高比修正（16:9 下 v 下移，不是原样照搬）',
+    'v=' +
+      p169.v0.toFixed(4) +
+      '~' +
+      p169.v1.toFixed(4) +
+      ' 期望=' +
+      wantV0.toFixed(4) +
+      '~' +
+      wantV1.toFixed(4)
+  );
+  check(
+    p169.v0 > 96 / DH + 0.15,
+    'E2c ★漂移量确实很大（1700×750 的 v0.128 → 16:9 的 v≈0.316）—— 写死 u/v 必错',
+    'v_design=' + (96 / DH).toFixed(4) + ' → v_16:9=' + p169.v0.toFixed(4)
+  );
+
+  /** 端点自动排序 + 负宽高 */
+  const neg = designRectToViewport({ x: 1100, y: 222, w: -88, h: -126 }, atDesign);
+  check(
+    Math.abs(neg.u0 - 1012 / DW) < 1e-12 && Math.abs(neg.v1 - 222 / DH) < 1e-12,
+    'E3 负宽高也能得到正向矩形（端点自动排序）',
+    JSON.stringify(neg)
+  );
+
+  /** 没传 fit ⇒ design 区必须报错丢弃，而不是静默用 0 坐标 */
+  const noFit = normalizeZones([
+    { id: 'x', design: { x: 0, y: 0, w: 10, h: 10 } },
+  ]);
+  check(
+    noFit.zones.length === 0 &&
+      noFit.issues.some((it) => it.code === 'E_ZONE_GEOM' && it.level === 'error'),
+    'E4 有 design 但没取景信息 ⇒ E_ZONE_GEOM 丢弃（不静默）',
+    JSON.stringify(noFit.issues.map((it) => it.code))
+  );
+
+  /** design 优先于 u/v */
+  const both = normalizeZones(
+    [
+      {
+        id: 'both',
+        u0: 0.9,
+        v0: 0.9,
+        u1: 0.99,
+        v1: 0.99,
+        design: { x: 0, y: 0, w: 170, h: 75 },
+      },
+    ],
+    atDesign
+  );
+  check(
+    both.zones.length === 1 &&
+      Math.abs(both.zones[0].u0) < 1e-12 &&
+      Math.abs(both.zones[0].u1 - 0.1) < 1e-12,
+    'E5 design 与 u/v 同时写 ⇒ 以 design 为准',
+    JSON.stringify(both.zones[0] && {
+      u0: both.zones[0].u0,
+      u1: both.zones[0].u1,
+    })
+  );
+
+  /** 两个都不写 ⇒ 丢弃 */
+  const none = normalizeZones([{ id: 'empty' }], atDesign);
+  check(
+    none.zones.length === 0 && none.issues.some((it) => it.code === 'E_ZONE_GEOM'),
+    'E6 既无 design 也无 u/v ⇒ E_ZONE_GEOM 丢弃',
+    JSON.stringify(none.issues.map((it) => it.code))
   );
 }
 

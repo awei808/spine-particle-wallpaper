@@ -446,10 +446,40 @@ export type TouchZoneConfig = {
   id: string;
   /** 显示名（中文），只用于覆盖层标注 */
   label?: string;
-  u0: number;
-  v0: number;
-  u1: number;
-  v1: number;
+  /**
+   * ## 几何：二选一，`design` 优先
+   *
+   * **① `design`（推荐）—— 设计画幅像素坐标，跨分辨率稳定**
+   *
+   * 原点左上，分母 = `config.width × config.height`（与 `subtitle.charAnchor` 同一套分母）。
+   * 引擎在装配期按**本帧真实取景**投影成视口归一化矩形（`touchZones.designRectToViewport`）。
+   *
+   * 为什么要有它：`fitAspect: 'width'`（本工程）下可见**宽**恒定、可见**高**随视口比例变
+   * ⇒ 写死的 `u/v` 只对量它时那个宽高比成立：1700×750 上量到的手（v≈0.14），
+   * 到 1920×1080 会落到 v≈0.33（**整块热区下移**），点手就点不中了。
+   * 用 `design` 则由引擎按半高比换算，21:9 / 16:10 / 4:3 都落在同一个身体部位上。
+   *
+   * ```jsonc
+   * { "id": "hand", "label": "手", "design": { "x": 1013, "y": 98, "w": 82, "h": 120 } }
+   * ```
+   *
+   * **② `u0/v0/u1/v1` —— 视口归一化（旧口径）**
+   *
+   * 0~1、原点左上、与 `clientX/clientY` 同向。**只对量它时的宽高比成立**；
+   * 单分辨率调试、或用 `fullscreen` 的工程继续用它没问题。
+   *
+   * ⚠️ 两个都写 ⇒ 以 `design` 为准（`u/v` 被忽略）。两个都不写 ⇒ `E_ZONE_GEOM` 丢弃该区。
+   * ⚠️ 改了分辨率/窗口比例由 `index.ts` 的 resize 钩子重投影，**不需要重载**。
+   */
+  design?: { x: number; y: number; w: number; h: number };
+  /** 视口归一化左边界（`design` 缺省时必填，见上） */
+  u0?: number;
+  /** 视口归一化上边界 */
+  v0?: number;
+  /** 视口归一化右边界 */
+  u1?: number;
+  /** 视口归一化下边界 */
+  v1?: number;
   /**
    * 单区开关（缺省 **true**）。
    *

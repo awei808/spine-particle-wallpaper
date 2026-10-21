@@ -44,6 +44,8 @@ Unity 手游里的 Spine 角色 + 粒子特效 + 触摸动作，搬上桌面并�
 
 - **多层场景**：`texture` / `spine` / `particle` / `video` 四种层，按 `position.z` 排布，全屏适配（`fitAspect`：锁高或锁宽），DPI 自适应（`dpr: "auto"`）。露黑检测是**真实覆盖检测**（逐层投影到屏幕、逐边算缺口），不再是长宽比阈值。
 - **触摸交互**：矩形热区 + 动作序列；`touch` / `greet` / `standby` 三类来源有明确的互斥与打断规则。热区在 `config.json` 的 `touch.zones` 里**自定义**（增删改、单区 `enabled`、`priority`），多个区重叠时按 `enabled → priority 降序 → 面积升序 → 数组下标` 裁决出唯一一条（详见 `docx/PLAN_触摸热区自定义与重叠_2026-10-17.md`）。
+  - **分区用 `design` 写坐标**（推荐）：`{"id":"hand","design":{"x":1012,"y":96,"w":88,"h":126}}`，原点左上、分母 = `config.width × config.height`。引擎按当前取景投影成视口矩形 ⇒ **换分辨率/宽高比不漂**（`fitAspect: 'width'` 下写死 `u/v` 会整块下移：1700×750 的 v0.128 到 1920×1080 变 0.316）。
+  - 分区要真正生效：`touch.fullscreen` 必须关（打开就只剩 `fullscreen` 一个区），事件侧用 `when.ctx.zone` 引用区 id（写错会在启动校验里报 `E_ZONE_UNKNOWN`）。
 - **语音与字幕**：字幕气泡跟随角色锚点，语音走独立播放器；两者都接入音频总闸。
 - **音频总闸**（`src/audioMaster.ts`）：BGM 与语音不再各自订阅暂停信号，而是登记到同一个总闸统一处理暂停/恢复。语音从暂停处续播。
 - **粒子与拖尾**：`ParticleAnimator` 负责场景粒子，`PointerTrail` 负责鼠标拖尾，两者刻意分家。

@@ -39,7 +39,7 @@ import {
 } from './probe';
 import { createTouchController, TouchController } from './touch';
 import { createTouchZoneOverlay, TouchZoneOverlay } from './touchZoneOverlay';
-import { normalizeZones } from './touchZones';
+import { normalizeZones, DesignFit, TouchZone } from './touchZones';
 import { PointerTrail } from './pointerTrail';
 import {
   TouchZoneConfig,
@@ -365,7 +365,7 @@ const main = async () => {
       configs.meshes = kept;
     }
   }
-  Scene.initScene(configs);
+  const fitApi = Scene.initScene(configs);
 
   /**
    * config 到位 ⇒ 补判"比我们更早到达"的那批 WE 属性。
@@ -477,7 +477,7 @@ const main = async () => {
    * `hitTestZones` 的判据是 `u0 <= u <= u1`（含端点）⇒ 全屏区在边缘处也命中。
    */
   const touchFullscreen = touchCfg?.fullscreen === true;
-  const FULLSCREEN_ZONE: TouchZoneConfig = {
+  const FULLSCREEN_ZONE: TouchZone = {
     id: 'fullscreen',
     label: '全屏',
     u0: 0,
@@ -499,8 +499,33 @@ const main = async () => {
    * ⚠️ `fullscreen` 打开 ⇒ **整张表被忽略**，只剩一块全屏区（与改动前一致），
    *    所以那条分支不过归一（只有一个常量区，没有可错的地方）。
    */
-  const normalizedZones = normalizeZones(touchCfg?.zones);
-  const touchZones: TouchZoneConfig[] = touchFullscreen
+  /**
+   * ★ **设计画幅 → 视口** 的投影参数（2026-10-21，`zones[].design` 专用）。
+   *
+   * 只在装配期算一次（resize 时重算），不每帧算 —— 热区不跟动画走。
+   * 分母用 `config.width × config.height`（与 `subtitle.charAnchor` 同一套），
+   * `halfH/halfHD/aspect` 取自 `initScene` 的 `calc()`（**单一真相**，这里不重算取景）。
+   * 取景量拿不到（`halfH/halfHD` 非正）⇒ 返回 undefined ⇒ 写了 `design` 的区会报
+   * `E_ZONE_GEOM` 并丢弃（而不是静默用错的坐标）。
+   */
+  const designFitOf = (): DesignFit | undefined => {
+    const v = fitApi && fitApi.calc();
+    const dw = configs.width;
+    const dh = configs.height;
+    if (!v || !(v.halfH > 0) || !(v.halfHD > 0) || !(dw > 0) || !(dh > 0)) {
+      return undefined;
+    }
+    return {
+      halfH: v.halfH,
+      halfHD: v.halfHD,
+      aspect: v.aspect,
+      aspectD: dw / dh,
+      designW: dw,
+      designH: dh,
+    };
+  };
+  const normalizedZones = normalizeZones(touchCfg?.zones, designFitOf());
+  const touchZones: TouchZone[] = touchFullscreen
     ? [FULLSCREEN_ZONE]
     : normalizedZones.zones;
   normalizedZones.issues.forEach((issue) => {
@@ -518,6 +543,34 @@ const main = async () => {
     );
   }
   const touchActive = touchEnabled && touchZones.length > 0;
+
+  /**
+   * ★ 换分辨率 / 窗口比例 ⇒ **重投影** `design` 热区（2026-10-21）。
+   *
+   * 原地改 `touchZones`（`touch` 控制器与覆盖层持有的是**同一个数组引用**），
+   * 覆盖层若已建则 dispose ⇒ 下一帧按新矩形重建（它的框用百分比定位，不重建就是旧值）。
+   *
+   * 只有 `zones[].design` 的工程会真的变；纯 `u0..v1` 的工程重算结果与原来一致（幂等）。
+   * 为什么要监听尺寸而不只在启动算一次：`fitAspect: 'width'` 下可见高随比例变，
+   * 拖窗口 / 换显示器 / 多屏跨 DPI 都会让设计画幅的落点变，热区不跟着改就点不中。
+   */
+  if (touchEnabled && !touchFullscreen && touchZones.length) {
+    let lastAspect = window.innerWidth / window.innerHeight;
+    window.addEventListener('resize', () => {
+      const a = window.innerWidth / window.innerHeight;
+      if (Math.abs(a - lastAspect) < 1e-9) {
+        return;
+      }
+      lastAspect = a;
+      const next = normalizeZones(touchCfg?.zones, designFitOf());
+      touchZones.length = 0;
+      touchZones.push(...next.zones);
+      if (zoneOverlay) {
+        zoneOverlay.dispose();
+        zoneOverlay = null;
+      }
+    });
+  }
 
   /**
    * 念白字幕（`config.json` 的 `subtitle` 块）。

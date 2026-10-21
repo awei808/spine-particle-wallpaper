@@ -79,10 +79,88 @@ import { TouchZoneConfig } from './config.type';
  *
  * ⚠️ 旧代码从 `./touch` import 这个别名，`touch.ts` 有 re-export ⇒ 两条路径都可用。
  */
-export type TouchZone = TouchZoneConfig;
+export type TouchZone = TouchZoneConfig & {
+  /**
+   * 归一后的**视口归一化**矩形 —— 恒存在。
+   *
+   * `config.type.ts` 里这四个字段是可选的（因为可以用 `design` 代替），
+   * 但**出了 `normalizeZones` 之后一定有值**（`design` 已投影完毕）⇒ 归一表用这个类型，
+   * 消费者不必到处判 undefined。
+   */
+  u0: number;
+  v0: number;
+  u1: number;
+  v1: number;
+};
 
 /** 面积比较的容差：两区面积差小于它就当作"一样大"，落到数组顺序判据 */
 const AREA_EPS = 1e-9;
+
+/**
+ * ## 设计画幅坐标 → 视口归一化（2026-10-21）
+ *
+ * 为什么需要：热区默认写的是**视口归一化坐标**（`u0/v0/u1/v1`），它只对"量的时候那个
+ * 宽高比"成立。而 `fitAspect: 'width'` 下可见**宽**恒定、可见**高**随视口比例变
+ * （`visibleH = 设计可见宽 / aspect`）⇒ 同一块矩形在 16:9 与 21:9 上会整体上下漂，
+ * 比例差得越多漂得越狠（1700×750 上 v=0.14 的手，到 1920×1080 变 v≈0.33）。
+ *
+ * ⇒ 作者按**设计画幅像素**写 `zones[].design`（原点左上，分母 = `config.width × config.height`，
+ *   与 `subtitle.charAnchor` 同一套分母），引擎在装配时按**本帧真实取景**投影一次。
+ *
+ * 换算（`camY = halfH + base.bottom` ⇒ 底边锚点是同一条世界线，可直接按半高比缩放）：
+ *
+ * ```
+ * u_now = 0.5 + (u_d − 0.5) · (halfHD · aspectD) / (halfH · aspect)
+ * v_now = 1 − (1 − v_d) · halfHD / halfH          ← 以底边为锚，向下为正
+ * ```
+ *
+ * 设计比例下 `halfH === halfHD && aspect === aspectD` ⇒ 投影是**恒等变换**（自检点）。
+ * `fitAspect: 'height'` 下 `halfHD === halfH` ⇒ v 不动、只有 u 按比例缩，同样适用。
+ */
+export type DesignRect = { x: number; y: number; w: number; h: number };
+
+/** 投影所需的取景量（来自 `initScene` 的 `FitResult`，不在热区模块里重算） */
+export type DesignFit = {
+  /** 本帧可见半高（世界单位） */
+  halfH: number;
+  /** 设计态可见半高（世界单位） */
+  halfHD: number;
+  /** 本帧视口比例 */
+  aspect: number;
+  /** 设计态比例 = `config.width / config.height` */
+  aspectD: number;
+  /** 设计画幅宽（`config.width`）—— `design.x/w` 的分母 */
+  designW: number;
+  /** 设计画幅高（`config.height`）—— `design.y/h` 的分母 */
+  designH: number;
+};
+
+/** 把一块设计画幅矩形投影成当前视口的归一化矩形（结果端点已保证 `u0<=u1`、`v0<=v1`） */
+export const designRectToViewport = (
+  r: DesignRect,
+  f: DesignFit
+): { u0: number; v0: number; u1: number; v1: number } => {
+  /** 设计画幅 → 设计态归一化 */
+  const uA = r.x / f.designW;
+  const uB = (r.x + r.w) / f.designW;
+  const vA = r.y / f.designH;
+  const vB = (r.y + r.h) / f.designH;
+  /** 两轴各自的可见范围比 */
+  const kx = (f.halfHD * f.aspectD) / (f.halfH * f.aspect);
+  const ky = f.halfHD / f.halfH;
+  const u0 = 0.5 + (uA - 0.5) * kx;
+  const u1 = 0.5 + (uB - 0.5) * kx;
+  /** v 以**底边**为锚：距底份额按半高比缩放 */
+  const v0 = 1 - (1 - vA) * ky;
+  const v1 = 1 - (1 - vB) * ky;
+  return {
+    u0: Math.min(u0, u1),
+    u1: Math.max(u0, u1),
+    v0: Math.min(v0, v1),
+    v1: Math.max(v0, v1),
+  };
+};
+
 
 /** 一次点击的命中结果 */
 export type ZoneHit = {
@@ -138,7 +216,11 @@ const isFiniteNum = (v: unknown): v is number =>
  * 一条坏数据不该让整张表失效（`touch.zones` 为空 ⇒ 触摸被整体禁用，代价太大）。
  * ⇒ 只有"身份（id）"和"几何是不是数"是硬错误，其余一律降级 + 记档。
  */
-export const normalizeZones = (raw: unknown): NormalizeResult => {
+export const normalizeZones = (
+  raw: unknown,
+  /** 给了才能解析 `zones[].design`（设计画幅像素）；不给则只认 `u0..v1` */
+  fit?: DesignFit
+): NormalizeResult => {
   const issues: ZoneIssue[] = [];
   if (!Array.isArray(raw)) {
     if (raw !== undefined && raw !== null) {
@@ -186,26 +268,63 @@ export const normalizeZones = (raw: unknown): NormalizeResult => {
       });
       return;
     }
-    if (
-      !isFiniteNum(z.u0) ||
-      !isFiniteNum(z.v0) ||
-      !isFiniteNum(z.u1) ||
-      !isFiniteNum(z.v1)
-    ) {
+    /**
+     * 几何来源二选一（2026-10-21）：
+     *   - `design`（**推荐**）：设计画幅像素，装配时按本帧取景投影 ⇒ 换分辨率不漂；
+     *   - `u0/v0/u1/v1`：视口归一化（旧口径），只对量它时的那个宽高比成立。
+     * `design` 优先（两个都写时以 design 为准）。
+     */
+    const design = (z as { design?: DesignRect }).design;
+    const hasDesign =
+      !!design &&
+      isFiniteNum(design.x) &&
+      isFiniteNum(design.y) &&
+      isFiniteNum(design.w) &&
+      isFiniteNum(design.h);
+    const hasUV =
+      isFiniteNum(z.u0) &&
+      isFiniteNum(z.v0) &&
+      isFiniteNum(z.u1) &&
+      isFiniteNum(z.v1);
+
+    let u0: number;
+    let u1: number;
+    let v0: number;
+    let v1: number;
+    let projected = false;
+    if (hasDesign) {
+      if (!fit) {
+        issues.push({
+          code: 'E_ZONE_GEOM',
+          level: 'error',
+          id,
+          message:
+            '写了 design 但没有取景信息（未传 DesignFit）⇒ 该区丢弃：design 必须由 index.ts 在装配期投影',
+        });
+        return;
+      }
+      const p = designRectToViewport(design, fit);
+      u0 = p.u0;
+      u1 = p.u1;
+      v0 = p.v0;
+      v1 = p.v1;
+      projected = true;
+    } else if (hasUV) {
+      u0 = z.u0;
+      u1 = z.u1;
+      v0 = z.v0;
+      v1 = z.v1;
+    } else {
       issues.push({
         code: 'E_ZONE_GEOM',
         level: 'error',
         id,
-        message: 'u0/v0/u1/v1 必须是有限数 ⇒ 该区丢弃',
+        message:
+          '既没有 design{x,y,w,h} 也没有 u0/v0/u1/v1 四个有限数 ⇒ 该区丢弃',
       });
       return;
     }
-
-    let u0 = z.u0;
-    let u1 = z.u1;
-    let v0 = z.v0;
-    let v1 = z.v1;
-    if (u0 > u1 || v0 > v1) {
+    if (!projected && (u0 > u1 || v0 > v1)) {
       // ★ 解包坐标系（Unity 的 y 轴**向上**）与视口（y 轴**向下**）方向相反，
       //   换算时漏掉翻转就会整片反向 ⇒ 直接交换比"静默失效"友好得多，但要留痕。
       if (u0 > u1) {

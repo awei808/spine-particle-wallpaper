@@ -49,6 +49,18 @@ src/
                     wiring point is the funnel in index.ts, NOT the consumers
   touch.ts          Hit zones + action gating (mutual exclusion / interrupt rules);
                     takes a `pick(zoneId)` callback — it does NOT select entries itself
+  touchZones.ts     * THE hit-zone data layer: normalize / validate / hit-test / overlap
+                    arbitration. A zone may be authored either as viewport-normalized
+                    `u0..v1` (fractions — valid ONLY at the aspect you measured on) or as
+                    `design:{x,y,w,h}` (design-canvas pixels, denominator =
+                    `config.width × config.height`, top-left origin). `design` is projected
+                    at assembly and re-projected on resize via `normalizeZones(raw, fit)`;
+                    **calling it without a `fit` drops every `design` zone** with
+                    `E_ZONE_GEOM` — that is exactly how `_regress/77`'s C4 kept passing
+                    while silently testing a single zone. Why it matters: with
+                    `fitAspect:'width'` the visible WIDTH is constant but the visible HEIGHT
+                    follows the aspect, so a hand measured at v=0.128 (1700×750) sits at
+                    v≈0.316 on 1920×1080. **Never convert measured pixels to `u/v`.**
   touchZoneOverlay.ts  Visual overlay for hit zones
   pointerTrail.ts   Cursor trail (deliberately separate from scene particles)
   settingsPanel.ts  Built-in settings panel (6 tabs — the last one, "壁纸独立设置", is
