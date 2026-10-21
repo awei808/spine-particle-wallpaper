@@ -1512,12 +1512,14 @@ export type TriggerChannel = 'standby' | 'touch' | 'resume';
  * | `default` | | 面板**缺省勾选**（同时是 `subtitle.phases` 的缺省）。可标多个；都没标 ⇒ 只勾缺省族 |
  * | `fallback` | | **缺省族**（有且仅有一个）：条目未写 `phase` / 写了非法值时归入本族；也是**不换动画名的那一族**。都没标 ⇒ 取注册表第一项 |
  * | `matchSuffix` | | **动作变体后缀**：① 条目未写 `phase` 时用它判族；② `actionPhase` 指向本族时，作为"原动画名 + 本后缀"的换名规则。⚠️ 写了它 ⇒ 本族出现在「spine 动作族显示」的选项里 |
+ * | `keyPrefix` | | **按事件键前缀归族**（2026-10-21）：如 `"custom:"` ⇒ `custom:*` 的事件缺省落本族。判定顺序 显式 `phase` → 本字段 → `matchSuffix` → 缺省族 |
  *
  * ## 条目 → 事件族的三段判据（`dialogue.resolveDialoguePhase`）
  *
  * ① 条目**显式 `phase`** 且是注册表里的 id ⇒ 就是它；
- * ② 否则按注册表各族的 `matchSuffix` 匹配动画名（先声明先赢）；
- * ③ 都不中 ⇒ 归入**缺省族**。
+ * ② 否则看各族的 `keyPrefix`：事件键以该前缀开头 ⇒ 归入本族（先声明先赢）；
+ * ③ 否则按注册表各族的 `matchSuffix` 匹配动画名（先声明先赢）；
+ * ④ 都不中 ⇒ 归入**缺省族**。
  *
  * ## 誓约工程（S8/S6）怎么声明（示例口径，不是内置）
  *
@@ -1576,6 +1578,26 @@ export type EventFamily = {
    * ★ **写了本字段 ⇒ 本族出现在「spine 动作族显示」的选项里**（引擎据此判定"这是动作族"）。
    */
   matchSuffix?: string;
+  /**
+   * **按事件键前缀归族**（2026-10-21）：事件键以该前缀开头的条目，未写 `phase` 时归入本族。
+   *
+   * 典型用法 = "给某一类来源一个缺省族"，免得每条都手写 `phase`：
+   *
+   * ```jsonc
+   * { "id": "custom", "label": "自定义事件", "default": true, "keyPrefix": "custom:" }
+   * ```
+   *
+   * ⇒ 所有 `custom:*` 事件默认落「自定义事件」族；节日类用显式
+   * `"phase": "festival"` 覆盖（**显式 phase 永远优先于前缀**）。
+   *
+   * 判定顺序：显式 `phase` → `keyPrefix` → `matchSuffix` → 缺省族。
+   * 前缀是**来源声明**（作者写的事件键就带着它），比"动画名后缀"这种启发式更硬，
+   * 所以排在 `matchSuffix` 之前。**不带 `keyPrefix` 的族不参与这一步**。
+   *
+   * ⚠️ 前缀不做合法性校验（`"custom"` 漏冒号也会匹配 `custom:xxx`）；
+   *   多个族声明同一前缀时**先声明先赢**（与 `matchSuffix` 同一条口径）。
+   */
+  keyPrefix?: string;
 };
 
 /**

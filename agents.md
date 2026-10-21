@@ -146,10 +146,13 @@ half-capable editor is exactly what produced the "state the engine cannot see" b
     { "id": "game:64005", "actionId": 64005, "animation": "touch1",
       "on": ["touch"], "kind": "touch", "text": "…" },
     { "id": "custom:valentine", "displayName": "情人节问候", "animation": "greet",
-      "on": ["resume"], "kind": "greet",
+      "on": ["resume"], "kind": "greet", "phase": "festival",
       "when": { "calendar": { "month": 2, "day": 14 } },
       "pick": { "priority": 50, "quota": { "max": 1, "per": "day" } },
-      "variants": [ { "text": "…", "voice": "…" } ] }   // whole-package random
+      "variants": [ { "text": "…", "voice": "…" } ] },  // whole-package random
+    { "id": "custom:spring-festival", "displayName": "春节问候", "animation": "greet",
+      "on": ["resume"], "kind": "greet", "phase": "festival",
+      "when": { "dates": ["2026-02-17", "2027-02-06"] } }  // lunar: list the dates
   ] }
 ```
 
@@ -161,7 +164,11 @@ half-capable editor is exactly what produced the "state the engine cannot see" b
   "standbyKinds": ["chat"],         // what may fire after a long idle: chat | greet | touch
   "touchKinds": ["touch"],          // what a hit-zone click may fire: chat | greet | touch
   "resumeKinds": ["greet"],         // what the four auto signals may fire (startup/visible/focus/resume)
-  "eventFamilies": [ { "id": "normal", "label": "普通事件", "default": true } ]
+  "eventFamilies": [                 // which families exist; add only what the project really uses
+    { "id": "normal", "label": "普通事件", "fallback": true, "default": true },
+    { "id": "festival", "label": "节日事件", "default": true },
+    { "id": "custom", "label": "自定义事件", "default": true, "keyPrefix": "custom:" }
+  ]
 }
 ```
 
@@ -229,11 +236,23 @@ channels (`KIND_POOLS`) — do **not** reintroduce a touch-only pool set, and no
 `pickGreetingEntry` (the single-`greet` path) must be fed `phasedDialogues`, otherwise it
 bypasses the gate.
 
-An entry's family = explicit `DialogueEntry.phase` → per-family `matchSuffix` on the animation
-name → the `fallback` family. A family **with** `matchSuffix` is an _action family_: it is the
-only source of the single-select's options (`FamilyRegistry.actionIds`), and that suffix is the
-rename rule (`greet` → `greet_marry`). Entries that need a non-suffix name (S8's `chat` →
-`chat2_marry`) declare `DialogueEntry.phaseAnimations[<familyId>] = "<name>"`.
+An entry's family = explicit `DialogueEntry.phase` → per-family **`keyPrefix`** on the event key
+(`"custom:"` ⇒ every `custom:*` entry lands in that family without writing `phase`; added
+2026-10-21) → per-family `matchSuffix` on the animation name → the `fallback` family. The prefix
+sits **before** the suffix on purpose: the event key is a provenance statement, the animation
+suffix is only a heuristic. A family **with** `matchSuffix` is an _action family_: it is the only
+source of the single-select's options (`FamilyRegistry.actionIds`), and that suffix is the rename
+rule (`greet` → `greet_marry`). Entries that need a non-suffix name (S8's `chat` →
+`chat2_marry`) declare `DialogueEntry.phaseAnimations[<familyId>] = "<name>"`. Because a family
+can be resolved without any `phase` field, `validateEvents` takes an optional
+`familyOf` callback — judging `W_FAMILY_NOT_ENABLED` by `e.phase` alone silently misses
+prefix-resolved entries.
+
+Lunar festivals cannot be expressed as `calendar.month/day` (Spring Festival drifts across
+Jan 21 – Feb 20). Use the `when.dates` leaf: `{"dates": ["2026-02-17", "2027-02-06"]}` —
+`"MM-DD"` = every year, `"YYYY-MM-DD"` = that year only. The engine ships **no** lunar
+conversion table; authors append the next year's date. A malformed `dates` leaf evaluates
+**false** (unlike `time`, which fails open) so a typo cannot mean "festival every day".
 
 `actionPhase` defaults to **the first action family** (`""` = explicit "no rename"), and entries
 belonging to _another_ action family are excluded from every pool (`isEntryVisibleInPhase`)

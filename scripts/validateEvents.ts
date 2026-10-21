@@ -37,6 +37,7 @@ import {
   buildFamilyRegistry,
   resolveActionPhase,
   resolveAnimationName,
+  resolveDialoguePhase,
   resolvePhases,
 } from '../src/dialogue';
 import { buildVoiceCandidates } from '../src/voicePlayer';
@@ -164,6 +165,8 @@ const report = validateEvents(normalized.events, {
   enabledFamilyIds: families.families.length
     ? resolvePhases(sub?.phases, sub?.touchPhases, families)
     : null,
+  /** 与运行时同一口径：族可以由 keyPrefix / matchSuffix / 缺省族推导，不只认显式 `phase` */
+  familyOf: (e) => resolveDialoguePhase(e, families),
   actionPhase,
   projectAnimation: (n) => resolveAnimationName(n, families, actionPhase),
   voiceExists,

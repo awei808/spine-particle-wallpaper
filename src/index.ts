@@ -1771,6 +1771,8 @@ const main = async () => {
                 familyIds: fams.families.length ? fams.ids : null,
                 fallbackFamilyId: fams.fallbackId,
                 enabledFamilyIds: fams.families.length ? phases : null,
+                /** ★ 用**推导后**的族：`keyPrefix` / `matchSuffix` 归族的条目不写 `phase` */
+                familyOf: (e) => resolveDialoguePhase(e, fams),
                 actionPhase,
                 projectAnimation: (n) =>
                   resolveAnimationName(n, fams, actionPhase),

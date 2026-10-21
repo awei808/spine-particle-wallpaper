@@ -213,9 +213,36 @@ npx ts-node --transpile-only scripts/voiceManifest.ts <语音目录> <config 路
 | `default`     |      | 面板**缺省勾选**（可标多个；都没标 ⇒ 只勾缺省族）                                                                                                    |
 | `fallback`    |      | **缺省族**（唯一）：条目未标族时归入本族；也是"**不换名**"的那一族                                                                                   |
 | `matchSuffix` |      | **动作变体后缀**：① 条目没写 `phase` 时用它判族；② `actionPhase` 指向本族时按"原名 + 后缀"换名。★**写了它 ⇒ 本族出现在「spine 动作族显示」的选项里** |
+| `keyPrefix`   |      | **按事件键前缀归族**（2026-10-21）：如 `"custom:"` ⇒ 所有 `custom:*` 条目缺省落本族，不必逐条写 `phase`                                            |
 
-**条目 → 事件族**的三段判据（引擎 `dialogue.resolveDialoguePhase`）：
-① 条目显式 `phase` 且在注册表里 ⇒ 就是它；② 否则按各族的 `matchSuffix` 匹配动画名；③ 都不中 ⇒ 缺省族。
+**条目 → 事件族**的四段判据（引擎 `dialogue.resolveDialoguePhase`）：
+① 条目显式 `phase` 且在注册表里 ⇒ 就是它；② 否则看各族的 `keyPrefix`（事件键前缀，先声明先赢）；
+③ 否则按各族的 `matchSuffix` 匹配动画名；④ 都不中 ⇒ 缺省族。
+
+> ★ **前缀排在动画后缀之前**：事件键是**来源声明**（`custom:` = 自建、`game:` = 游戏表出身），
+> 比"动画名以 `_marry` 结尾"这种启发式更硬。自定义事件真要归动作族，写显式 `phase` 即可。
+
+#### 2026-10-21 新增：节日族与自定义族
+
+```jsonc
+"eventFamilies": [
+  { "id": "normal",   "label": "普通事件",   "fallback": true, "default": true },
+  { "id": "festival", "label": "节日事件",   "default": true },
+  { "id": "custom",   "label": "自定义事件", "default": true, "keyPrefix": "custom:" }
+]
+```
+
+- **节日类**：情人节 / 元旦 / 春节……条目写 `"phase": "festival"`。★ 农历节日（春节 / 中秋 /
+  端午）的公历日期逐年漂移，用 `when.dates` 直接列出来：
+  `{"dates": ["2026-02-17", "2027-02-06", "2028-01-26"]}`，每年追加一行。
+  引擎**不做农历换算** —— 那是一份要每年校对的数据，错一天就等于过节过错了。
+- **自定义类**：所有 `custom:*` 由 `keyPrefix` **自动认领**，不必逐条写 `phase`；于是面板里
+  可以一键关掉"用户自建事件"整族，而不影响内置事件。
+- 三族都标 `default` ⇒ 面板缺省全勾，行为与"没有族"时逐条一致。
+- ⚠️ **存档兼容**：`phases` 会被面板写进 `localStorage`。如果你的存档是在加族之前保存的
+  （里面只有 `["normal"]`），新增的两族**不会自动勾上** ⇒ 到「事件池 → 事件族」把三族都点上
+  （或点面板底部「恢复默认」，它会连这个存档一起清掉）。此时档案面板会把相关条目标成
+  「所属事件族「custom」未勾选 ⇒ 当前不可触发」，不是静默消失。
 
 **换名**（引擎 `dialogue.resolveEntryAnimation`，三分支、显式优先）：
 ① `DialogueEntry.phaseAnimations[actionPhase]` ⇒ 用它（解决 `chat` → `chat2_marry` 这种

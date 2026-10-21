@@ -48,6 +48,16 @@ export type ValidateContext = {
   fallbackFamilyId?: string | null;
   /** 用户勾选的事件族（`subtitle.phases`）。给了才会报 `W_FAMILY_NOT_ENABLED` */
   enabledFamilyIds?: readonly string[] | null;
+  /**
+   * 条目的**归属族**（`dialogue.resolveDialoguePhase` 的结果）。
+   *
+   * ★ 2026-10-21 补：族可以由 `keyPrefix` / `matchSuffix` / 缺省族**推导**出来，
+   *   这时条目上**没有** `e.phase` 字段。只看 `e.phase` 的话，一条 `custom:*`
+   *   明明被前缀归到了「自定义事件」族、又因为该族未勾选而永不触发，却**不会**
+   *   出现在 `W_FAMILY_NOT_ENABLED` 里 —— 正是"静默失效"。
+   * 不给 ⇒ 退回只看显式 `e.phase`（老调用方行为不变）。
+   */
+  familyOf?: (e: DialogueEntry) => string | null;
   /** 当前动作族（换名后的名字由 `projectAnimation` 给） */
   actionPhase?: string;
   /**
@@ -349,19 +359,22 @@ export const validateEvents = (
     }
 
     /** ── 当前是否可触发（`report`：最常见的售后问题，但不影响合法性）── */
-    if (
-      familyTable &&
-      Array.isArray(ctx.enabledFamilyIds) &&
-      typeof e.phase === 'string' &&
-      e.phase &&
-      ctx.enabledFamilyIds.indexOf(e.phase) < 0
-    ) {
-      add(
-        'W_FAMILY_NOT_ENABLED',
-        'report',
-        '所属事件族未勾选 ⇒ 当前不可触发',
-        key
-      );
+    if (familyTable && Array.isArray(ctx.enabledFamilyIds)) {
+      /**
+       * ⚠️ 用 `familyOf`（推导后的族）而不是 `e.phase`：前缀族 / 后缀族 / 缺省族
+       *   的条目身上根本没写 `phase`（见 `ValidateContext.familyOf` 注释）。
+       */
+      const ph =
+        (ctx.familyOf ? ctx.familyOf(e) : null) ??
+        (typeof e.phase === 'string' ? e.phase : '');
+      if (ph && ctx.enabledFamilyIds.indexOf(ph) < 0) {
+        add(
+          'W_FAMILY_NOT_ENABLED',
+          'report',
+          '所属事件族「' + ph + '」未勾选 ⇒ 当前不可触发',
+          key
+        );
+      }
     }
 
     /** ── 离线：语音存在性 ── */

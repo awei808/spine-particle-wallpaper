@@ -589,13 +589,23 @@ export const DEFAULT_FAMILY_REGISTRY: FamilyRegistry =
   buildFamilyRegistry(undefined);
 
 /**
- * 判某条念白属于哪一族（**注册表驱动的三段判据**）。
+ * 判某条念白属于哪一族（**注册表驱动的四段判据**）。
  *
  * ① 条目**显式 `phase`** 且是注册表里的 id ⇒ 就是它；
- * ② 否则按注册表各族的 `matchSuffix` 匹配动画名（**先声明先赢**）；
- * ③ 都不中 ⇒ **缺省族**。
+ * ② 否则看各族的 **`keyPrefix`**：事件键以该前缀开头 ⇒ 归入本族（2026-10-21，先声明先赢）；
+ * ③ 否则按注册表各族的 `matchSuffix` 匹配动画名（**先声明先赢**）；
+ * ④ 都不中 ⇒ **缺省族**。
  *
- * ⚠️ 注册表为空（本项目无事件族机制）⇒ **不判族**：原样返回条目自己的 `phase`
+ * ## ★ 为什么 `keyPrefix` 排在 `matchSuffix` 之前
+ *
+ * 事件键是**来源声明**（`custom:` = 作者/用户自建、`game:` = 游戏表出身），
+ * 而动画名后缀只是"这条属于哪套动作"的启发式。前者更硬、也更符合"用户自定义类"
+ * 这种分类意图 —— 一条 `custom:xxx` 即使动画叫 `greet_marry`，也该先落回自定义族
+ * （真要归动作族，作者写显式 `phase` 即可，显式永远第一）。
+ *
+ * ## ⚠️ 空注册表
+ *
+ * 注册表为空（本项目无事件族机制）⇒ **不判族**：原样返回条目自己的 `phase`
  *   （没有则 `''`），只为 `mergeKindPools` 的去重键保留区分度（此时不按族筛，见 `buildPool`）。
  */
 export const resolveDialoguePhase = (
@@ -608,6 +618,17 @@ export const resolveDialoguePhase = (
   if (typeof e?.phase === 'string' && reg.has(e.phase)) {
     return e.phase;
   }
+  /** ② 事件键前缀（`custom:` / `game:` …，先声明先赢） */
+  const key = eventKeyOf(e);
+  if (key) {
+    for (let i = 0; i < reg.families.length; i++) {
+      const pre = reg.families[i].keyPrefix;
+      if (typeof pre === 'string' && pre && key.indexOf(pre) === 0) {
+        return reg.families[i].id;
+      }
+    }
+  }
+  /** ③ 动画名后缀 */
   const anim = typeof e?.animation === 'string' ? e.animation : '';
   if (anim) {
     for (let i = 0; i < reg.families.length; i++) {
