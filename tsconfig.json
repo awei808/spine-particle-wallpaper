@@ -4,7 +4,12 @@
     "baseUrl": "./",
     "paths": {
       "@src/*": ["src/*"],
-      "@public/*": ["public/*"]
+      "@public/*": ["public/*"],
+      // 子模块 threejs-spine-3.8-runtime-es6 的 MeshBatcher.d.ts 里写的是裸导入
+      // `from 'core/src'`（它自己的 tsconfig 用 baseUrl: "." 能解析，根工程不能）。
+      // 其 .js 产物已是相对路径 `../../core/src`，所以这只影响类型解析、不影响打包；
+      // 映射到 build 里的 .d.ts 即可，不用改 vendor 产物（改了下次重新构建就丢）。
+      "core/*": ["packages/threejs-spine-3.8-runtime-es6/build/core/*"]
     },
     "noImplicitAny": true,
     "module": "CommonJS",
