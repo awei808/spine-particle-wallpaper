@@ -1,122 +1,122 @@
 {
-  "url": "http://127.0.0.1:8931/index.html",
-  "seconds": 12,
+  "url": "http://127.0.0.1:8932/v4_bg_only/index.html",
+  "seconds": 10,
   "dom": {
     "canvasW": 1700,
     "canvasH": 750,
     "cssW": 1700,
     "cssH": 750,
     "dpr": 1,
-    "domCount": 523,
+    "domCount": 522,
     "probeEl": true
   },
   "frames": {
-    "count": 1266,
-    "meanMs": 9.48,
-    "p50": 9.3,
-    "p90": 14.9,
-    "p99": 18,
-    "fpsFromMean": 105.5,
+    "count": 1349,
+    "meanMs": 7.41,
+    "p50": 6.2,
+    "p90": 13,
+    "p99": 18.1,
+    "fpsFromMean": 135,
     "longTasks": 0,
     "longTaskMs": 0,
     "jsBusyPctOfWall": 0
   },
   "cpuProfile": {
-    "totalSamples": 14056,
-    "durationMs": 12218,
+    "totalSamples": 16237,
+    "durationMs": 10137,
     "top": [
       {
         "fn": "(idle) @ :-1",
-        "pct": 41.4
+        "pct": 78.4
       },
       {
         "fn": "(program) @ :-1",
-        "pct": 9.6
-      },
-      {
-        "fn": "(anon) @ bundle.js:1",
-        "pct": 4.2
+        "pct": 4.7
       },
       {
         "fn": "computeWorldVertices @ bundle.js:1",
-        "pct": 3.1
-      },
-      {
-        "fn": "bufferSubData @ :-1",
-        "pct": 3.1
-      },
-      {
-        "fn": "batch @ bundle.js:1",
-        "pct": 3
-      },
-      {
-        "fn": "ke @ bundle.js:1",
-        "pct": 3
-      },
-      {
-        "fn": "getProgramCacheKey @ bundle.js:1",
-        "pct": 3
-      },
-      {
-        "fn": "updateGeometry @ bundle.js:1",
-        "pct": 2.5
+        "pct": 1.8
       },
       {
         "fn": "apply @ bundle.js:1",
-        "pct": 2.2
-      },
-      {
-        "fn": "setup @ bundle.js:1",
         "pct": 1.5
       },
       {
-        "fn": "updateWorldTransformWith @ bundle.js:1",
-        "pct": 1.5
-      },
-      {
-        "fn": "renderBufferDirect @ bundle.js:1",
+        "fn": "updateGeometry @ bundle.js:1",
         "pct": 1.4
       },
       {
-        "fn": "getParameters @ bundle.js:1",
-        "pct": 1.4
+        "fn": "(anon) @ bundle.js:1",
+        "pct": 1.3
       },
       {
-        "fn": "bindVertexArray @ :-1",
-        "pct": 1.1
+        "fn": "batch @ bundle.js:1",
+        "pct": 1
       },
       {
-        "fn": "v @ bundle.js:1",
+        "fn": "bufferSubData @ :-1",
         "pct": 0.9
       },
       {
-        "fn": "update @ bundle.js:1",
+        "fn": "updateWorldTransformWith @ bundle.js:1",
         "pct": 0.8
       },
       {
-        "fn": "buildGeometry @ bundle.js:1",
-        "pct": 0.8
-      },
-      {
-        "fn": "uniformMatrix4fv @ :-1",
-        "pct": 0.8
-      },
-      {
-        "fn": "bindBuffer @ :-1",
+        "fn": "ke @ bundle.js:1",
         "pct": 0.7
       },
       {
-        "fn": "step @ bundle.js:1",
+        "fn": "getProgramCacheKey @ bundle.js:1",
         "pct": 0.5
       },
       {
-        "fn": "useProgram @ :-1",
-        "pct": 0.5
+        "fn": "Dt @ bundle.js:1",
+        "pct": 0.4
+      },
+      {
+        "fn": "setup @ bundle.js:1",
+        "pct": 0.4
+      },
+      {
+        "fn": "getCurvePercent @ bundle.js:1",
+        "pct": 0.4
+      },
+      {
+        "fn": "update @ bundle.js:1",
+        "pct": 0.4
+      },
+      {
+        "fn": "requestAnimationFrame @ :-1",
+        "pct": 0.3
+      },
+      {
+        "fn": "getParameters @ bundle.js:1",
+        "pct": 0.3
+      },
+      {
+        "fn": "worldPerPx @ bundle.js:1",
+        "pct": 0.3
+      },
+      {
+        "fn": "bindVertexArray @ :-1",
+        "pct": 0.3
+      },
+      {
+        "fn": "updateWorldTransform @ bundle.js:1",
+        "pct": 0.2
+      },
+      {
+        "fn": "renderBufferDirect @ bundle.js:1",
+        "pct": 0.2
+      },
+      {
+        "fn": "clear @ :-1",
+        "pct": 0.2
       }
     ]
   },
   "consoleErrors": [
-    "Failed to load resource: the server responded with a status of 404 (File not found)",
-    "Failed to load resource: the server responded with a status of 404 (File not found)"
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
   ]
 }
