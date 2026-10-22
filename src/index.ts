@@ -111,6 +111,7 @@ import { createArchive, ArchivePanel } from './archive';
 import {
   applyOverrides,
   installWallpaperPropertyListener,
+  mergeNewFamilyDefaults,
   overridesFromWeProperties,
   readOverrides,
   readView,
@@ -323,7 +324,19 @@ const main = async () => {
   const rawConfigs: Configs = await (
     await fetch('./assets/config.json')
   ).json();
-  const configs: Configs = applyOverrides(rawConfigs, readOverrides());
+  /**
+   * ★★ **新事件族的补勾迁移**（2026-10-21）—— 必须在 `applyOverrides` **之前**。
+   *
+   * `phases` 一旦被面板写进覆盖层就固化成"用户勾选的全集"，此后作者新增一族
+   * （如 `festival`）老存档不会带上它 ⇒ 新族事件一条都不播。
+   * `mergeNewFamilyDefaults` 只补"标了 `default` 且没见过"的族，补一次即记账
+   * ⇒ 用户之后取消勾选不会被回补。注册表由**原始 config** 建（覆盖层改不了家族声明）。
+   */
+  const storedOverrides = mergeNewFamilyDefaults(
+    readOverrides(),
+    buildFamilyRegistry(rawConfigs.subtitle?.eventFamilies)
+  );
+  const configs: Configs = applyOverrides(rawConfigs, storedOverrides);
   /**
    * ★★ **事件表文件**（`assets/events.jsonc`，2026-10-19）—— 事件的**唯一来源**。
    *
@@ -2411,6 +2424,16 @@ const main = async () => {
         actionEffects: actionEffectNames,
         /** ★ 校验报告（getter）：档案「细则」首行显示 `0 reject / N coerce / …` */
         validation: () => validationReport,
+        /**
+         * ★ 事件**文件**的路径与错误（档案页脚的「指南」指路用）。
+         *
+         * ★ 与设置面板「事件开关」页那份**同一个来源**（`eventsFile`），
+         *   两处指路不可能指向不同的文件。
+         */
+        eventsFile: {
+          path: 'assets/events.jsonc',
+          error: eventsFile.ok ? null : eventsFile.error ?? '事件文件不可用',
+        },
       });
 
       settingsUI = createSettingsPanel({

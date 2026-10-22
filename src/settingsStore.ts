@@ -60,6 +60,7 @@ import { PROBE_OPTS } from './probe';
 // 摊平"新多选 / 待机通道的旧两个布尔"的口径（纯函数，可单测）；dialogue 不反向依赖本模块，无循环
 import {
   buildFamilyRegistry,
+  FamilyRegistry,
   resolveActionPhase,
   resolvePhases,
   resolveTriggerIntent,
@@ -111,10 +112,10 @@ export type SettingsOverrides = {
   /**
    * 全屏适配的**对齐基准**（对应 `config.fitAspect`，「画面调整」页）。
    *
-   * - `'height'` = **按画幅高对齐**（缺省，2026-10-08 用户拍板）：
-   *   可见高恒 = 设计态可见高 ⇒ 与游戏内取景一致；屏幕比设计画幅窄时裁两侧、宽时多露背景。
-   * - `'width'` = **按画幅宽对齐**：可见宽恒 = 底层铺满层 world 宽 ⇒ 左右内容永不被裁，
-   *   代价是相对游戏画面偏小（16:9 下约为按高对齐的 78%）。
+   * - `'width'` = **按画幅宽对齐**（**缺省**，2026-10-21 用户拍板）：可见宽恒 = 设计画幅宽
+   *   ⇒ 左右内容永不被裁，代价是相对游戏画面偏小（16:9 下约为按高对齐的 78%）。
+   * - `'height'` = **按画幅高对齐**：可见高恒 = 设计态可见高 ⇒ 与游戏内取景一致；
+   *   屏幕比设计画幅窄时裁两侧、宽时多露背景。
    *
    * 取证与两种基准的定量关系见 `config.type.ts` 的 `fitAspect` 注释。
    * 切换**需重载**：fov 与垂直锚点 `camY` 在 `initScene` 构造期算一次。
@@ -197,6 +198,33 @@ export type SettingsOverrides = {
    * 判据集中在 `dialogue.resolvePhases`。
    */
   touchPhases?: TriggerPhase[];
+  /**
+   * **"已经向用户介绍过"的事件族**（2026-10-21）—— 只为**新事件的族能自动补勾**而记。
+   *
+   * ## 它解决什么
+   *
+   * `phases` 一旦被面板写进覆盖层，就变成"用户勾选的**全集**"。此后作者再在
+   * `config.subtitle.eventFamilies` 里新增一族（如 2026-10-20 新增的 `festival`），
+   * 老存档里那份 `["normal"]` **不会**把它带进来 ⇒ 新族的事件一条都不播，
+   * 而用户完全不知道要去哪里勾（档案里只会显示"所属事件族未勾选"）。
+   *
+   * ## 为什么不直接"每次启动都把所有 default 族补上"
+   *
+   * 那样用户**永远关不掉**某一族：他取消勾选 ⇒ 存成 `["normal"]` ⇒ 下次启动又补回来。
+   * ⇒ 必须区分"没见过的新族"与"用户主动取消的旧族"，靠的就是这份**见过清单**。
+   *
+   * ## 口径
+   *
+   * | 情况 | 处理 |
+   * |---|---|
+   * | 族 id 不在本清单且在注册表里标了 `default` | **补勾一次**，并记进本清单 |
+   * | 族 id 已在本清单 | 不动（用户取消勾选后不会被回补） |
+   * | 族没标 `default` | 不补（作者没把它当默认，不该强加） |
+   *
+   * ★ 迁移逻辑集中在 `mergeNewFamilyDefaults`，**由 `index.ts` 在合并覆盖层之前调用一次**
+   *   （不是面板的职责；面板只在保存时把当前所有族记成"已见过"）。
+   */
+  phasesSeen?: TriggerPhase[];
   /**
    * **当前显示的动作族（单选）** —— 对应 `config.subtitle.actionPhase`（2026-10-17 新增）。
    *
@@ -428,6 +456,68 @@ export const writeOverrides = (patch: SettingsOverrides): SettingsOverrides => {
     // 已在 readOverrides 里 warn 过，这里不再刷屏
   }
   return next;
+};
+
+/**
+ * **新事件族的"补勾"迁移**（2026-10-21）。
+ *
+ * ## 为什么需要
+ *
+ * `phases`（允许触发的事件族）一旦被写进覆盖层，就固化成"用户勾选的全集"。此后作者
+ * 在 `config.subtitle.eventFamilies` 里新增一族并标 `default: true`（如 `festival`），
+ * 老存档那份 `["normal"]` 不会带上它 ⇒ **新族的事件一条都不触发**，而用户在档案里
+ * 只能看到"所属事件族未勾选"—— 不知道要去哪里开。
+ *
+ * ## 为什么是"补一次"而不是"每次都补"
+ *
+ * 每次都补 ⇒ 用户**永远关不掉**某一族（取消勾选 → 存成 `["normal"]` → 下次又补回来）。
+ * ⇒ 用 `phasesSeen`（见过清单）区分两种情况：**没见过的新族**才补。
+ *
+ * @param o  当前覆盖层（通常是 `readOverrides()` 的结果）
+ * @param reg 本壁纸的事件族注册表（`dialogue.buildFamilyRegistry`）
+ * @returns 补过之后的覆盖层（没变化就**原样返回**，不写盘）
+ */
+export const mergeNewFamilyDefaults = (
+  o: SettingsOverrides,
+  reg: FamilyRegistry
+): SettingsOverrides => {
+  /**
+   * ① 注册表为空（本壁纸没有事件族机制）⇒ 无从谈起。
+   * ② 用户**从没写过** `phases` ⇒ 生效值本来就是 `reg.defaultIds`（含新族），
+   *    不必写盘（写了反而把"没配"固化成"显式写死"）。
+   */
+  if (!reg.families.length || !Array.isArray(o.phases)) {
+    return o;
+  }
+  /** 存档里那份显式勾选（已确认是数组） */
+  const cur: readonly TriggerPhase[] = o.phases;
+  const seen = Array.isArray(o.phasesSeen) ? o.phasesSeen : [];
+  /** 只补"标了 default 且没见过"的族 —— 作者没标 default 的族不该强加给用户 */
+  const missing = reg.defaultIds.filter(
+    (id) => seen.indexOf(id) < 0 && cur.indexOf(id) < 0
+  );
+  if (!missing.length) {
+    return o;
+  }
+  /**
+   * 顺序按**注册表声明顺序**（与 `dialogue.normalizeTriggerPhases` 同一口径：
+   * 同一种勾选永远只有一种形状，否则 `sameView` 会因为顺序不同而误判"有变化"）。
+   */
+  const phases = reg.ids.filter(
+    (id) => cur.indexOf(id) >= 0 || missing.indexOf(id) >= 0
+  );
+  /** 见过的族 = 旧清单 ∪ 本次补的 ∪ 注册表里所有 default 族（它们已向用户展示过） */
+  const phasesSeen: TriggerPhase[] = [];
+  seen.concat(reg.defaultIds, missing).forEach((id) => {
+    if (phasesSeen.indexOf(id) < 0) {
+      phasesSeen.push(id);
+    }
+  });
+  console.info(
+    '[settings] 事件族新增：已自动补勾 %s（在「事件池 → 事件族」里可取消）',
+    missing.join('、')
+  );
+  return writeOverrides({ phases, phasesSeen });
 };
 
 export const clearOverrides = (): void => {
@@ -780,12 +870,15 @@ export const readView = (cfg: Configs): SettingsView => ({
       ? cfg.subtitle.audio.volume
       : 1,
   /**
-   * ★ 缺省 **`'height'`**（用户 2026-10-08 拍板：与游戏内取景一致）。
-   *   判据写成"只认 `'width'`"而不是"只认 `'height'`" ⇒ 缺字段/写了别的无效值时
-   *   都回落到缺省的高对齐，与 `initScene` 的解析口径**完全一致**（两处必须同向，
-   *   否则会出现"面板显示按高、实际按宽渲染"的假象）。
+   * ★ 缺省 **`'width'`**（2026-10-21 用户拍板：任何屏幕上都完整看到设计画幅，
+   *   左右内容永不被裁）。此前是 `'height'`，翻转理由见 `config.type.ts` 的
+   *   `fitAspect` 注释（桌面比例普遍比设计画幅窄 ⇒ 按高对齐会裁两侧）。
+   *
+   * 判据写成"只认 `'height'`"而不是"只认 `'width'`" ⇒ 缺字段/写了别的无效值时
+   * 都回落到缺省的宽对齐，与 `initScene` 的解析口径**完全一致**（两处必须同向，
+   * 否则会出现"面板显示按宽、实际按高渲染"的假象）。
    */
-  fitAspect: cfg.fitAspect === 'width' ? 'width' : 'height',
+  fitAspect: cfg.fitAspect === 'height' ? 'height' : 'width',
   /**
    * ★ 缺省 `gravity`（= 沿用解包 `startRotation` 的 −15°），**不是** `game`。
    *   理由：本壁纸此前的观感就是解包值，改默认等于"升级后画面悄悄变了"；
@@ -931,9 +1024,13 @@ export const installWallpaperPropertyListener = (
    *   三处都需要同一套"宿主晚到就重试"，各抄一遍会出现三份相同的定时器。
    * ★ 依旧**只补字段、绝不整体替换**（会丢 WE 早先挂上的其它回调）。
    */
-  withWallpaperPropertyListener((wpl: WallpaperPropertyListener) => {
-    wpl.applyUserProperties = handler;
-  }, retryMs, maxRetries);
+  withWallpaperPropertyListener(
+    (wpl: WallpaperPropertyListener) => {
+      wpl.applyUserProperties = handler;
+    },
+    retryMs,
+    maxRetries
+  );
 };
 
 /* ── WE 属性值的类型宽容解析 ─────────────────────────────── */

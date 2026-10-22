@@ -1002,6 +1002,7 @@ export const createSettingsPanel = (
   /** 切换 tab（**每个 tab 内容高度不同 ⇒ 必须重算自适应缩放**） */
   const setTab = (id: string) => {
     activeTab = id;
+
     TABS.forEach((t) => {
       pages[t.id].style.display = t.id === id ? 'block' : 'none';
     });
@@ -2188,11 +2189,21 @@ export const createSettingsPanel = (
     evInner
   );
   evHint.id = 'wb-ev-hint';
+  /**
+   * ★★ 2026-10-21 补成**两条**：① 详细信息在哪看 ② 自定义事件在哪写。
+   *
+   * 原先只说"内容在文件里改"，没说"想看某条的完整字段也去那儿看" ——
+   *   本页一行只显示 `名称 · 分组 · 条件 · 动画 · #id`，用户想看念白/语音/粒子
+   *   在本页看不到，不给出口就成了"看得见、查不到"。
+   */
   evHint.textContent =
-    '事件内容在 ' +
+    '① 每条事件的**详细信息**（触发条件 / 动作 / 粒子 / 念白 / 语音 / 选取策略）都在 ' +
     evFile.path +
-    '：支持 // 与 /* */ 注释，增删事件、改触发条件 / 动作 / 粒子 / 念白 / 语音' +
-    '都在这个文件里改，保存后在 WE 里重新加载壁纸生效。本页只负责开关。';
+    ' 里看 —— 那里面有全部字段说明与注释。' +
+    '② **自定义事件也在同一个文件里实现**：在 events 数组里加一条，' +
+    '照抄文件头「三条示例」（内置型 / 仅手动 / 节日型）中的一条改参数即可。' +
+    '改完保存文件，在 WE 里重新加载壁纸生效（事件表在启动时一次性构建）。' +
+    '本页只负责每一条的开 / 关，不提供增删改。';
 
   /** ② 来源 / 错误（解析失败时把行:列原样显示出来） */
   const evSource = createEl(
@@ -2255,7 +2266,10 @@ export const createSettingsPanel = (
   /** 恢复后的即时反馈（只在点过之后出现，避免常驻多占一行） */
   const evResetHint = createEl(
     'div',
-    'font-size:' + fpx(10.5) + ';opacity:.55;line-height:1.5;margin-bottom:' + uiPx(3),
+    'font-size:' +
+      fpx(10.5) +
+      ';opacity:.55;line-height:1.5;margin-bottom:' +
+      uiPx(3),
     evInner
   );
   evResetHint.id = 'wb-ev-reset-hint';
@@ -2491,12 +2505,12 @@ export const createSettingsPanel = (
    * 两种基准各有可取之处，且**只影响整体放大/缩小**（不改任何层的相对摆位），
    * 所以最合适的做法是让用户自己挑，而不是替他定死。
    *
-   *   · **按画幅高**（缺省）⇒ 可见高度恒等于设计画幅的高度，
-   *     与**游戏内的实际取景一致**（实测与游戏实录 z=1.01、NCC 0.866）；
-   *     屏幕比设计画幅窄时会裁掉左右两侧，比设计画幅宽时会多露出一些背景。
-   *   · **按画幅宽** ⇒ 可见宽度恒等于底层背景的宽度，
+   *   · **按画幅宽**（**缺省**，2026-10-21 用户拍板）⇒ 可见宽度恒等于底层背景的宽度，
    *     **任何屏幕比例都不会裁掉左右内容**；代价是相对游戏画面偏小
    *     （16:9 下约是按高对齐的 78%）。
+   *   · **按画幅高** ⇒ 可见高度恒等于设计画幅的高度，
+   *     与**游戏内的实际取景一致**（实测与游戏实录 z=1.01、NCC 0.866）；
+   *     屏幕比设计画幅窄时会裁掉左右两侧，比设计画幅宽时会多露出一些背景。
    *
    * 两者在屏幕比例恰好等于设计画幅比例时**完全重合**。
    * 取证与定量关系见 `config.type.ts` 的 `fitAspect` 注释。
@@ -2504,8 +2518,8 @@ export const createSettingsPanel = (
   const selFitAspect = createSegmented(
     'wb-set-fitaspect',
     [
-      ['height', '按画幅高对齐（默认）'],
-      ['width', '按画幅宽对齐（左右不裁）'],
+      ['width', '按画幅宽对齐（默认 · 左右不裁）'],
+      ['height', '按画幅高对齐（同游戏取景）'],
     ] as const,
     true
   );
@@ -3406,6 +3420,14 @@ export const createSettingsPanel = (
       standbyKinds: draft.standbyKinds.slice(),
       touchKinds: draft.touchKinds.slice(),
       phases: draft.phases.slice(),
+      /**
+       * ★★ "这些族已经向用户展示过了"（2026-10-21）—— 新族补勾迁移的记账。
+       *
+       * 保存即代表用户**见过**当前注册表里的全部族 ⇒ 之后他取消某一族的勾选
+       * **不会**被 `mergeNewFamilyDefaults` 回补（那条迁移只补"没见过的新族"）。
+       * 不写这一项 ⇒ 老存档会每次启动都被补回默认值，用户永远关不掉。
+       */
+      phasesSeen: fams.ids.slice(),
       /** ★ 动作族是标量（单选）；`''` = 誓约前/不换名，是合法值 */
       actionPhase: draft.actionPhase,
       resumeKinds: draft.resumeKinds.slice(),

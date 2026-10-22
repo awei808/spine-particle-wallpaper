@@ -57,6 +57,21 @@
  * 打开 ⇒ 常驻显示；关掉 ⇒ 消失。**热切换，不重载页面**（同 `disclaimer.ts` /
  * `showCornerButtons` 的口径，见 `index.ts` 的 `applyWePatch`）。
  *
+  * ## ★★ 三种视图 / 分页（2026-10-21）—— 缓解"字太多太小"
+ *
+ * 13 条事件挤在一屏里 ⇒ `fitContent` 只能把整块**缩小**到 0.55 才装得下，字就小了。
+ * 与其继续缩，不如**少显示几行**：顶部三个按钮切视图 ——
+ *
+ * | 视图 | 第二行页签 | 作用 |
+ * |---|---|---|
+ * | **全部** | — | 老观感，一屏列完（条目多时字会小） |
+ * | **按事件族** | 每个族一个（普通 / 节日 / 自定义 …） | 只看某一族的事件 |
+ * | **按通道分组** | 回到壁纸 / 待机 / 点击触摸 / 常驻序列 / 自定义 / 背景音乐 | 只看某一入口会播的 |
+ *
+ * ★ 分页**只筛行数**，不改任何文案与判据 —— 每张表的行仍是 `buildRows` 那一份，
+ *   切页签不会让"这一页显示的内容"与"引擎真的会播的"分叉。
+ * ★ 行数变少后 `fitContent` 会把缩放**放大回去** ⇒ 字自然变大（它是幂等的，见下）。
+ *
  * ## ★★ 遮罩**不吃事件**（与免责弹窗刻意的差异）
  *
  * `disclaimer.ts` 的遮罩要拦"透过弹窗点到角色"那一下（它是法务性质的告示，
@@ -159,6 +174,14 @@ export type ArchiveOptions = {
    */
   actionEffects?: ActionEffectNames;
   /**
+   * **事件文件**的状态（2026-10-21，供档案页的「指南」指路）。
+   *
+   * ★ 档案只用它的**路径**与错误文案，**不读文件、不解析** —— 事件表由 `events`
+   *   传入（见上），这里再读一次文件就会出现"表里按 A 显示、指南却指向 B"的分叉。
+   * 缺省 ⇒ 退到 `assets/events.jsonc`（`eventsFile.ts` 的 `EVENTS_FILE_PATH`）。
+   */
+  eventsFile?: { path: string; error: string | null };
+  /**
    * **事件表校验报告**（`index.ts` 的 `validationReport`）。
    *
    * ★ 传 getter 而不是快照：档案可能在骨架就绪前就建好（`createArchive` 在
@@ -173,6 +196,14 @@ export type ArchivePanel = {
   isVisible: () => boolean;
   /** 表格**数据行**数（不含表头）—— 给验证脚本断言"内容真的渲染出来了" */
   rowCount: () => number;
+
+  /**
+   * 切换**视图**（2026-10-21）。`key` = 子页签（族 id / 分组 id）；
+   * `mode: 'all'` 时忽略它。给验证脚本与未来的入口复用，面板里由按钮自己调。
+   */
+  setView: (mode: ArchiveViewMode, key?: string) => void;
+  /** 当前视图（供探针快照） */
+  view: () => { mode: ArchiveViewMode; key: string };
   dispose: () => void;
 };
 
@@ -230,7 +261,58 @@ type Row = {
   text: string;
   /** 语音文件名（只取 basename） */
   voice: string;
+  /**
+   * **分组 id**（2026-10-21，档案分页用）—— 这一行属于哪一组。
+   *
+   * ★ 只用于**分页筛选**，不参与渲染文案；取值见 `GROUP_LABEL`。
+   */
+  grp: ArchiveGroup;
+  /**
+   * **事件族 id**（2026-10-21，档案分页用）—— 由 `resolveDialoguePhase` 现算，
+   * 与念白列角标 `· <族名>` 同源 ⇒ 不会出现"角标写 A 族、分页落到 B 族"。
+   * 注册表为空 ⇒ `''`（此时「按事件族」视图只有一个"全部"页签）。
+   */
+  fam: string;
 };
+
+/**
+ * **档案的分页组**（2026-10-21）。
+ *
+ * 前三项是**触发通道**（`TriggerChannel`），后三项是表格里同样会列出的非通道段：
+ * 常驻序列 / 自定义事件 / 背景音乐 —— 它们也占行，分页必须能翻到，否则会出现
+ * "切到某个页签后这一行再也找不到了"。
+ *
+ */
+export type ArchiveGroup =
+  | 'resume'
+  | 'standby'
+  | 'touch'
+  | 'sequence'
+  | 'custom'
+  | 'bgm';
+
+/** 分组的**人话名**（「按通道分组」视图的页签文案） */
+const GROUP_LABEL: Record<ArchiveGroup, string> = {
+  resume: '回到壁纸',
+  standby: '待机',
+  touch: '点击触摸',
+  sequence: '常驻序列',
+  custom: '自定义',
+  bgm: '背景音乐',
+};
+
+/** 页签顺序 = 表格里各段的出现顺序（与 `buildRows` 一致，读者按图索骥不迷路） */
+const GROUP_ORDER: readonly ArchiveGroup[] = [
+  'resume',
+  'standby',
+  'touch',
+  'sequence',
+  'custom',
+  'bgm',
+];
+
+/** 档案的三种**视图**（2026-10-21：缓解"字太多太小"） */
+export type ArchiveViewMode = 'all' | 'family' | 'group';
 
 const createEl = (
   tag: string,
@@ -301,7 +383,9 @@ const makeRow = (
   cond: string,
   e: DialogueEntry,
   st: ArchiveState,
-  ae: ActionEffectNames
+  ae: ActionEffectNames,
+  /** 分页组（2026-10-21） */
+  grp: ArchiveGroup
 ): Row => {
   const reg = st.families;
   /**
@@ -354,6 +438,12 @@ const makeRow = (
     tag: warn + '#' + badge + (short ? ' ' + short : '') + phTail + manualOnly,
     text: e.text ?? '',
     voice: voiceBase(e.voice),
+    grp,
+    /**
+     * ★ 族 id 与念白列角标**同一个函数**（`resolveDialoguePhase`）算出来的 ——
+     *   分页与角标不可能各说一套。
+     */
+    fam: resolveDialoguePhase(e, reg),
   };
 };
 
@@ -652,6 +742,8 @@ const buildRows = (
     /** 事件名列的前缀，如「回到壁纸」 */
     prefix: string
   ) => {
+    /** ★ 分页组：通道 → 分组（`TriggerChannel` 与 `ArchiveGroup` 前三项同名同义） */
+    const grp: ArchiveGroup = kind;
     const kinds = st.channels[kind];
     if (!kinds.length) {
       return;
@@ -693,7 +785,8 @@ const buildRows = (
               GATE[kind] + tail + '（chat 池 ' + st.pools.chat.length + ' 条）',
               e,
               st,
-              ae
+              ae,
+              grp
             )
           );
         });
@@ -731,7 +824,7 @@ const buildRows = (
             ? '时段 ' + hourRangeText(range.start, range.end)
             : '不限时段';
           const cond = GATE[kind] + (only ? ' · ' + timeText : tail);
-          rows.push(makeRow(prefix + ' · ' + name, cond, e, st, ae));
+          rows.push(makeRow(prefix + ' · ' + name, cond, e, st, ae, grp));
         });
         return;
       }
@@ -748,7 +841,8 @@ const buildRows = (
             /** 代表行 = 池首条（2026-10-21 起不再有"本通道可达"的优先序） */
             st.pools.touch[0],
             st,
-            ae
+            ae,
+            grp
           )
         );
       }
@@ -793,7 +887,8 @@ const buildRows = (
           '）',
         e,
         st,
-        ae
+        ae,
+        'touch'
       )
     );
   });
@@ -816,7 +911,7 @@ const buildRows = (
         gapMs +
         ' ms';
       if (e) {
-        rows.push(makeRow('常驻序列 #' + (i + 1), cond, e, st, ae));
+        rows.push(makeRow('常驻序列 #' + (i + 1), cond, e, st, ae, 'sequence'));
       } else {
         rows.push({
           event: '常驻序列 #' + (i + 1),
@@ -827,6 +922,12 @@ const buildRows = (
           tag: '—',
           text: '（只播动作，不出台词、不出语音）',
           voice: '—',
+          grp: 'sequence',
+          /**
+           * ★ 没有念白条目 ⇒ 无从判族（`''`）。「按事件族」视图给它一个「未分类」页签，
+           *   不假装它属于某个族。
+           */
+          fam: '',
         });
       }
     });
@@ -886,7 +987,8 @@ const buildRows = (
           describeCondition(e.when),
         e,
         st,
-        ae
+        ae,
+        'custom'
       )
     );
   });
@@ -905,6 +1007,9 @@ const buildRows = (
         '%' +
         (cfg.bgm.loop === false ? '，不循环' : ''),
       voice: cfg.bgm.file,
+      grp: 'bgm',
+      /** BGM 不是事件 ⇒ 不属于任何族（同"只播动作"的常驻序列行） */
+      fam: '',
     });
   }
 
@@ -984,6 +1089,7 @@ const buildNotes = (cfg: Configs, st: ArchiveState): string[] => {
         ' 条被关闭（不在上面的池里，也不会被抽到）—— 在设置面板第 5 页「事件开关」重新打开。'
     );
   }
+
 
   /**
    * ★★ **事件族闸门**（2026-10-17 起对所有入口生效）—— 必须写在第一条：
@@ -1180,6 +1286,11 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
   ).textContent =
     '下表按当前生效的配置实时生成（改过设置后，这里的数字与池子会跟着变）。' +
     /**
+     * ★ 分页的**发现性**（2026-10-21）：字太小是因为一屏塞了全部行。
+     *   不明说一句，用户不会知道上方那三个按钮能让它变大。
+     */
+    ' 嫌字小：点上方「按事件族 / 按通道分组」切成单页，行数少了字就大了。' +
+    /**
      * ★ 当前**动作族**（2026-10-17）—— 档案里"动作"列显示的是换名后的动画名，
      *   不交代一句读者会以为 `*_marry` 是笔误。只在声明了动作族的工程里出现。
      */
@@ -1193,6 +1304,126 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
           : cfg.subtitle?.actionPhaseBaseLabel ?? '默认') +
         '。'
       : '');
+
+  /* ── 视图切换（2026-10-21：分页，缓解"字太多太小"）─────────────────────
+   *
+   * ★ 为什么是"切视图"而不是"翻页按钮"：WE 不转发鼠标滚轮（见文件头），
+   *   滚动与拖动都不好用 ⇒ 用户要的是"少显示几行、字大一点"，而不是"多翻几屏"。
+   *   切成某一族 / 某一通道后行数通常降到 3~6 行 ⇒ `fitContent` 会把缩放放大回 1。
+   */
+  const CHIP =
+    [
+      'flex:0 0 auto',
+      'padding:' + uiPx(3) + ' ' + uiPx(10),
+      'border:' + uiPx(1) + ' solid rgba(255,255,255,0.22)',
+      'border-radius:' + uiPx(11),
+      'background:rgba(255,255,255,0.06)',
+      'color:rgba(238,241,246,0.72)',
+      'font-family:' + FONT,
+      'font-size:' + fpx(11.5),
+      'line-height:1.5',
+      'cursor:pointer',
+      'user-select:none',
+      '-webkit-user-select:none',
+      'white-space:nowrap',
+      'outline:none',
+    ].join(';') + ';';
+  /** 选中态：与设置面板的 tab 按钮同一组配色，避免两个面板各有一种"选中" */
+  const paintChip = (el: HTMLElement, on: boolean): void => {
+    el.style.background = on ? '#4a90e2' : 'rgba(255,255,255,0.06)';
+    el.style.color = on ? '#ffffff' : 'rgba(238,241,246,0.72)';
+    el.style.borderColor = on ? '#4a90e2' : 'rgba(255,255,255,0.22)';
+  };
+
+  const viewBar = createEl(
+    'div',
+    'flex:0 0 auto;display:flex;align-items:center;gap:' +
+      uiPx(6) +
+      ';margin-top:' +
+      uiPx(7),
+    card
+  );
+  viewBar.id = 'wb-archive-viewbar';
+  /** 第二行子页签：只在「按事件族 / 按通道分组」时出现 */
+  const subBar = createEl(
+    'div',
+    'flex:0 0 auto;display:none;align-items:center;gap:' +
+      uiPx(5) +
+      ';margin-top:' +
+      uiPx(5) +
+      ';flex-wrap:wrap',
+    card
+  );
+  subBar.id = 'wb-archive-subbar';
+  /** 「当前显示 N / 共 M 行」—— 切页签后不至于怀疑"事件丢了" */
+  const viewCount = createEl(
+    'div',
+    'flex:0 0 auto;margin-left:auto;font-size:' + fpx(11) + ';opacity:.6',
+    viewBar
+  );
+  viewCount.id = 'wb-archive-view-count';
+
+  const VIEWS: ReadonlyArray<{ id: ArchiveViewMode; label: string }> = [
+    { id: 'all', label: '全部' },
+    { id: 'family', label: '按事件族' },
+    { id: 'group', label: '按通道分组' },
+  ];
+  /** DOM id 里只留安全字符（族 id 可能有 `:` / `.` 之类） */
+  const safeId = (s: string): string => s.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+  let mode: ArchiveViewMode = 'all';
+  /** 当前子页签（族 id 或分组 id）；`mode === 'all'` 时无意义 */
+  let subKey = '';
+  /** 当前视图**实际渲染出来**的行（`rowCount()` 返回它的长度） */
+  let shown: Row[] = rows;
+
+  /** 某个族有多少行 */
+  const countFam = (id: string): number =>
+    rows.filter((r) => r.fam === id).length;
+  /** 某个分组有多少行 */
+  const countGrp = (g: ArchiveGroup): number =>
+    rows.filter((r) => r.grp === g).length;
+
+  /**
+   * 「按事件族」的页签：**按注册表声明顺序**列出**有行**的族。
+   *
+   * ★ 只列有行的族 ⇒ 不会出现"点进一个空页签、以为事件没了"。
+   * ★ 表里出现了注册表里没有的族（`fam: ''` 的"只播动作"行 / BGM）⇒ 补一个
+   *   「未分类」页签，而不是硬塞进缺省族（那是在替配置撒谎）。
+   */
+  const famTabs = (): { id: string; label: string }[] => {
+    const out: { id: string; label: string }[] = [];
+    st.families.ids.forEach((id) => {
+      if (countFam(id) > 0) {
+        out.push({ id, label: st.families.label(id) });
+      }
+    });
+    rows.forEach((r) => {
+      if (
+        st.families.ids.indexOf(r.fam) < 0 &&
+        !out.filter((t) => t.id === r.fam).length
+      ) {
+        out.push({ id: r.fam, label: r.fam ? r.fam : '未分类' });
+      }
+    });
+    return out;
+  };
+  /** 「按通道分组」的页签：按 `GROUP_ORDER`（= 表格里各段的出现顺序）列有行的组 */
+  const groupTabs = (): { id: string; label: string }[] =>
+    GROUP_ORDER.filter((g) => countGrp(g) > 0).map((g) => ({
+      id: g,
+      label: GROUP_LABEL[g],
+    }));
+
+  const currentRows = (): Row[] => {
+    if (mode === 'family') {
+      return rows.filter((r) => r.fam === subKey);
+    }
+    if (mode === 'group') {
+      return rows.filter((r) => r.grp === subKey);
+    }
+    return rows;
+  };
 
   /* ── 正文（唯一滚动容器）───────────────────── */
   const body = createEl(
@@ -1261,112 +1492,209 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
     table
   ).id = 'wb-archive-hr';
 
-  rows.forEach((r, i) => {
-    const row = createEl(
-      'div',
-      'display:flex;flex:0 0 auto;align-items:flex-start;padding:' +
-        uiPx(6) +
-        ' 0' +
-        (i === rows.length - 1
-          ? ''
-          : ';border-bottom:' + uiPx(1) + ' solid rgba(255,255,255,0.07)'),
-      table
-    );
-    row.id = 'wb-archive-row-' + (i + 1);
-    row.setAttribute('data-wb-archive-row', String(i + 1));
+  /**
+   * 数据行容器 —— 「表头 → 分隔线 → **本容器** → 细则」。
+   *
+   * ★ 单独一个容器是为了**可重绘**：切视图/切页签只清空这里，表头与细则不动
+   *   （细则跨页共享，本来就不该跟着重画）。
+   */
+  const rowsBox = createEl('div', 'display:flex;flex-direction:column', table);
+  rowsBox.id = 'wb-archive-rows';
 
-    /* 事件：名字 + 序号色块 */
-    const cEvent = createEl(
-      'div',
-      'width:' +
-        COLS[0] +
-        ';flex:0 0 auto;box-sizing:border-box;padding:0 ' +
-        uiPx(7) +
-        ';font-size:' +
-        fpx(14) +
-        ';font-weight:600',
-      row
-    );
-    cEvent.textContent = r.event;
+  /**
+   * 渲染**当前视图**的行。
+   *
+   * ★ 幂等：可反复调用（切视图 / 切页签 / 窗口 resize 之后）。
+   * ★ 末尾调 `fitContent()`：行数变了 ⇒ 缩放要重算（行少了会放大回 1，字就大了）。
+   */
+  const renderRows = () => {
+    shown = currentRows();
+    while (rowsBox.firstChild) {
+      rowsBox.removeChild(rowsBox.firstChild);
+    }
+    viewCount.textContent =
+      '显示 ' + shown.length + ' / 共 ' + rows.length + ' 行';
+    /** 空态：这一组/这一族当前没有行（不是"事件丢了"，是筛选后为空） */
+    if (!shown.length) {
+      createEl(
+        'div',
+        'font-size:' + fpx(12) + ';opacity:.6;padding:' + uiPx(10) + ' 0',
+        rowsBox
+      ).textContent =
+        '这一页当前没有事件（换一个页签，或回「全部」看完整表）。';
+      fitContent();
+      return;
+    }
 
-    /* 触发条件 */
-    const cCond = createEl(
-      'div',
-      'width:' +
-        COLS[1] +
-        ';flex:0 0 auto;box-sizing:border-box;padding:0 ' +
-        uiPx(7) +
-        ';font-size:' +
-        fpx(12) +
-        ';line-height:1.6;opacity:.86',
-      row
-    );
-    cCond.textContent = r.cond;
+    shown.forEach((r, i) => {
+      const row = createEl(
+        'div',
+        'display:flex;flex:0 0 auto;align-items:flex-start;padding:' +
+          uiPx(6) +
+          ' 0' +
+          (i === shown.length - 1
+            ? ''
+            : ';border-bottom:' + uiPx(1) + ' solid rgba(255,255,255,0.07)'),
+        rowsBox
+      );
+      row.id = 'wb-archive-row-' + (i + 1);
+      row.setAttribute('data-wb-archive-row', String(i + 1));
 
-    /* 动作：等宽字体，方便与骨架动画名对照 */
-    const cAction = createEl(
-      'div',
-      'width:' +
-        COLS[2] +
-        ';flex:0 0 auto;box-sizing:border-box;padding:0 ' +
-        uiPx(7) +
-        ';font-size:' +
-        fpx(12) +
-        ';font-family:Consolas,Menlo,monospace;color:#ffd98a',
-      row
-    );
-    cAction.textContent = r.action;
+      /* 事件：名字 + 序号色块 */
+      const cEvent = createEl(
+        'div',
+        'width:' +
+          COLS[0] +
+          ';flex:0 0 auto;box-sizing:border-box;padding:0 ' +
+          uiPx(7) +
+          ';font-size:' +
+          fpx(14) +
+          ';font-weight:600',
+        row
+      );
+      cEvent.textContent = r.event;
 
-    /* 特效：该动画绑定的粒子组名（每行一个，`pre-line` 才会换行），青色与琥珀色动作名区分 */
-    const cFx = createEl(
-      'div',
-      'width:' +
-        COLS[3] +
-        ';flex:0 0 auto;box-sizing:border-box;padding:0 ' +
-        uiPx(7) +
-        ';font-size:' +
-        fpx(11) +
-        ';font-family:Consolas,Menlo,monospace;color:#9fe8d6;white-space:pre-line;word-break:break-all;line-height:1.5',
-      row
-    );
-    cFx.textContent = r.fx;
+      /* 触发条件 */
+      const cCond = createEl(
+        'div',
+        'width:' +
+          COLS[1] +
+          ';flex:0 0 auto;box-sizing:border-box;padding:0 ' +
+          uiPx(7) +
+          ';font-size:' +
+          fpx(12) +
+          ';line-height:1.6;opacity:.86',
+        row
+      );
+      cCond.textContent = r.cond;
 
-    /* 念白：上标 id/动作名（淡），下面正文 */
-    const cLine = createEl(
-      'div',
-      'width:' +
-        COLS[4] +
-        ';flex:0 0 auto;box-sizing:border-box;padding:0 ' +
-        uiPx(7),
-      row
-    );
-    createEl(
-      'div',
-      'font-size:' +
-        fpx(11) +
-        ';opacity:.5;font-family:Consolas,Menlo,monospace;line-height:1.4',
-      cLine
-    ).textContent = r.tag;
-    createEl(
-      'div',
-      'font-size:' + fpx(12) + ';line-height:1.6;opacity:.92',
-      cLine
-    ).textContent = r.text;
+      /* 动作：等宽字体，方便与骨架动画名对照 */
+      const cAction = createEl(
+        'div',
+        'width:' +
+          COLS[2] +
+          ';flex:0 0 auto;box-sizing:border-box;padding:0 ' +
+          uiPx(7) +
+          ';font-size:' +
+          fpx(12) +
+          ';font-family:Consolas,Menlo,monospace;color:#ffd98a',
+        row
+      );
+      cAction.textContent = r.action;
 
-    /* 语音 */
-    const cVoice = createEl(
-      'div',
-      'width:' +
-        COLS[5] +
-        ';flex:0 0 auto;box-sizing:border-box;padding:0 ' +
-        uiPx(7) +
-        ';font-size:' +
-        fpx(11) +
-        ';font-family:Consolas,Menlo,monospace;opacity:.7;word-break:break-all;line-height:1.5',
-      row
-    );
-    cVoice.textContent = r.voice;
+      /* 特效：该动画绑定的粒子组名（每行一个，`pre-line` 才会换行），青色与琥珀色动作名区分 */
+      const cFx = createEl(
+        'div',
+        'width:' +
+          COLS[3] +
+          ';flex:0 0 auto;box-sizing:border-box;padding:0 ' +
+          uiPx(7) +
+          ';font-size:' +
+          fpx(11) +
+          ';font-family:Consolas,Menlo,monospace;color:#9fe8d6;white-space:pre-line;word-break:break-all;line-height:1.5',
+        row
+      );
+      cFx.textContent = r.fx;
+
+      /* 念白：上标 id/动作名（淡），下面正文 */
+      const cLine = createEl(
+        'div',
+        'width:' +
+          COLS[4] +
+          ';flex:0 0 auto;box-sizing:border-box;padding:0 ' +
+          uiPx(7),
+        row
+      );
+      createEl(
+        'div',
+        'font-size:' +
+          fpx(11) +
+          ';opacity:.5;font-family:Consolas,Menlo,monospace;line-height:1.4',
+        cLine
+      ).textContent = r.tag;
+      createEl(
+        'div',
+        'font-size:' + fpx(12) + ';line-height:1.6;opacity:.92',
+        cLine
+      ).textContent = r.text;
+
+      /* 语音 */
+      const cVoice = createEl(
+        'div',
+        'width:' +
+          COLS[5] +
+          ';flex:0 0 auto;box-sizing:border-box;padding:0 ' +
+          uiPx(7) +
+          ';font-size:' +
+          fpx(11) +
+          ';font-family:Consolas,Menlo,monospace;opacity:.7;word-break:break-all;line-height:1.5',
+        row
+      );
+      cVoice.textContent = r.voice;
+    });
+    fitContent();
+  };
+
+  /**
+   * 三个视图按钮 + 子页签的**构建与切换**（2026-10-21）。
+   *
+   * ★ 子页签集合只跟**视图**有关（`all` 没有子页签）⇒ 换视图时才重建；
+   *   换选中项只改配色（`paintSubBtns`）—— 少一次 DOM 重建，也避免闪。
+   */
+  const viewBtns: { id: ArchiveViewMode; el: HTMLElement }[] = [];
+  const subBtns: { id: string; el: HTMLElement }[] = [];
+
+  const paintSubBtns = (): void => {
+    subBtns.forEach((b) => paintChip(b.el, b.id === subKey));
+  };
+
+  const buildSubBar = (): void => {
+    while (subBar.firstChild) {
+      subBar.removeChild(subBar.firstChild);
+    }
+    subBtns.length = 0;
+    const tabs =
+      mode === 'family' ? famTabs() : mode === 'group' ? groupTabs() : [];
+    subBar.style.display = tabs.length ? 'flex' : 'none';
+    tabs.forEach((t) => {
+      const b = createEl('button', CHIP, subBar);
+      b.id = 'wb-archive-sub-' + safeId(t.id);
+      b.setAttribute('data-wb-archive-sub', t.id);
+      b.textContent = t.label;
+      b.addEventListener('click', () => {
+        subKey = t.id;
+        paintSubBtns();
+        renderRows();
+      });
+      subBtns.push({ id: t.id, el: b });
+    });
+    /** 换了视图 ⇒ 旧的 subKey 多半已不在新页签里 ⇒ 落到第一个，绝不留在空页上 */
+    if (tabs.length && !tabs.filter((t) => t.id === subKey).length) {
+      subKey = tabs[0].id;
+    }
+    paintSubBtns();
+  };
+
+  VIEWS.forEach((v) => {
+    const b = createEl('button', CHIP, viewBar);
+    // ★ 插在计数文字**之前**（它是 `margin-left:auto` 的那个右对齐元素）
+    viewBar.insertBefore(b, viewCount);
+    b.id = 'wb-archive-view-' + v.id;
+    b.setAttribute('data-wb-archive-view', v.id);
+    b.textContent = v.label;
+    b.addEventListener('click', () => {
+      mode = v.id;
+      applyView();
+    });
+    viewBtns.push({ id: v.id, el: b });
   });
+
+  /** 切换视图：重画按钮配色 → 重建子页签 → 重画行（顺序不能颠倒） */
+  const applyView = (): void => {
+    viewBtns.forEach((b) => paintChip(b.el, b.id === mode));
+    buildSubBar();
+    renderRows();
+  };
 
   /* ── 细则（跨行共享的闸门）──────────────────── */
   const noteBox = createEl(
@@ -1417,6 +1745,38 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
   foot.id = 'wb-archive-foot';
   foot.textContent =
     '关闭方式：在 Wallpaper Engine 的壁纸属性面板中取消勾选「显示档案」即可隐藏本窗口（无需重启）。';
+
+  /**
+   * ★★ **指南**（2026-10-21）：告诉用户"详细信息在哪看、自定义事件在哪写"。
+   *
+   * 为什么必须有这一段：档案只显示**当前会播的那几行**与由配置推导的文案，
+   * 用户想看某条的完整字段（条件 / 动作 / 粒子 / 念白 / 语音）或想加自己的事件，
+   * 在这里怎么点都做不到 —— 不给出口就会变成"档案看得见、改不了"。
+   *
+   * ★ 指路**只指向一个文件**：事件的唯一来源是 `assets/events.jsonc`
+   *   （见 `eventsFile.ts` 文件头），本面板与设置面板不提供增删改。
+   */
+  const evFile = options.eventsFile ?? {
+    path: 'assets/events.jsonc',
+    error: null as string | null,
+  };
+  const guide = createEl(
+    'div',
+    'font-size:' +
+      fpx(11) +
+      ';flex:0 0 auto;line-height:1.55;color:#9fc5f0;opacity:.9;margin-top:' +
+      uiPx(3),
+    card
+  );
+  guide.id = 'wb-archive-guide';
+  guide.textContent =
+    '指南：每条事件的详细信息（触发条件 / 动作 / 粒子 / 念白 / 语音）都在 ' +
+    evFile.path +
+    ' 里 —— 打开它就能看到全部字段与注释。' +
+    '想加自己的事件（自定义事件）也在同一个文件的 events 数组里写：' +
+    '照抄文件头「三条示例」里的一条，改 id / animation / text / voice / when 即可，' +
+    '保存后在 WE 里重新加载壁纸生效。' +
+    (evFile.error ? '（⚠ 该文件当前解析失败：' + evFile.error + '）' : '');
 
   /**
    * 溢出提示 —— 只在**真的需要滚**时出现。
@@ -1515,6 +1875,11 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
 
   // ★ 必须先上屏再量：未 append 时 clientHeight 恒为 0，fitContent 量不出东西
   document.body.appendChild(root);
+  /**
+   * ★ 建好视图按钮 / 子页签 / 首屏行（在 append **之后**：`renderRows` 末尾的
+   *   `fitContent` 要量真实高度）。缺省视图 = 「全部」（与改动前的观感一致）。
+   */
+  applyView();
   applyVisibility();
 
   return {
@@ -1523,7 +1888,21 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
       applyVisibility();
     },
     isVisible: () => visible,
-    rowCount: () => rows.length,
+    /**
+     * **当前视图**渲染出来的行数（切了页签就变小）。
+     *
+     * ★ 给探针 / 验证脚本断言"内容真的渲染出来了"用 —— 用当前视图的行数而不是
+     *   全表行数，才对得上屏幕上看得见的东西。
+     */
+    rowCount: () => shown.length,
+    setView: (m: ArchiveViewMode, key?: string) => {
+      mode = m;
+      if (typeof key === 'string') {
+        subKey = key;
+      }
+      applyView();
+    },
+    view: () => ({ mode, key: subKey }),
     dispose: () => {
       ro.disconnect();
       window.removeEventListener('resize', onWindowResize, false);

@@ -299,6 +299,11 @@ event / trigger condition / animation / **particle FX** / line / voice. Two hard
   badge suffix in the _line_ column instead. The note list under the table is kept to
   ~5 short lines: WE does not forward the wheel, so anything longer just pushes the card
   into overflow.
+- **Three paging views** (2026-10-21): 全部 / 按事件族 / 按通道分组, each of the latter two
+  with a second row of sub-tabs. Paging **filters rows only** — it never re-derives or
+  rewrites a cell; the sole inputs are `Row.grp` (resume / standby / touch / sequence /
+  custom / bgm) and `Row.fam` (from `dialogue.resolveDialoguePhase`, the same call that
+  builds the badge suffix). `rowCount()` reports the **current view's** row count.
 
 Other config knobs (meshes, layers, `minAspect` / `maxAspect`, `dpr: "auto"`, panel
 `fitAspect`) are described in `public/assets/README.md`.

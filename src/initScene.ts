@@ -219,9 +219,13 @@ export const initScene = (configs: Configs) => {
     /**
      * 对齐基准（见 `config.type.ts` 的 `fitAspect`）。
      *
-     * ★ 缺省 **`'height'`**（2026-10-08 用户拍板；与游戏内取景一致）。
-     *   老工程（S9/盛夏游乐场）在 `config.json` 里显式写了 `"fitAspect": "width"`，
-     *   所以缺省值翻转不会让它们悄悄变样。
+     * ★ 缺省 **`'width'`**（2026-10-21 用户拍板；与"任何屏幕上都完整看到设计画幅"
+     *   一致）。此前（2026-10-08 拍板）缺省是 `'height'`，翻转的理由是：
+     *   绝大多桌面的比例（16:9 / 16:10 / 21:9）都比设计画幅 1700×750（2.2667）**窄**，
+     *   按高对齐在这些比例上会**裁掉左右两侧** —— 而"左右内容被裁"是本工程最常
+     *   被追问的一类观感问题；按宽对齐只损失一点尺寸（16:9 下约为按高的 78%）。
+     *   ⚠️ 老工程若在 `config.json` 里显式写了 `"fitAspect": "height"`，原样生效，
+     *      缺省翻转不会让它们悄悄变样。
      *
      *   · `'height'` ⇒ 可见高恒 = 设计态可见高；**fov 恒定 = `fovDesign`**
      *                  （等价于把「设计比例下的取景」原样搬到任何比例上，横向多露/少露）
@@ -232,9 +236,13 @@ export const initScene = (configs: Configs) => {
      *   设计态下 `aspect_w = aspect_d`，`tan(fov_r/2) = tan(fov_d/2)`，
      *   而“可见高”只由 `tan(fov/2)` 与该平面的 |z| 决定 ⇒ 想让它恒定，
      *   只需让 `tan(fov/2)` 恒定；把分母那个 `aspect_d/aspect_w` 去掉即是。
+     *
+     * ⚠️ 判据写成"只认 `'height'`"而不是"只认 `'width'`" ⇒ 缺字段 / 写了别的无效值
+     *   时都回落到缺省的宽对齐，与 `settingsStore.readView` 的解析口径**完全一致**
+     *   （两处必须同向，否则会出现"面板显示按宽、实际按高渲染"的假象）。
      */
     const fitAspect: 'width' | 'height' =
-      configs.fitAspect === 'width' ? 'width' : 'height';
+      configs.fitAspect === 'height' ? 'height' : 'width';
     /** 设计态的半高正切（= tan(fovDesign/2)），`'height'` 基准下就是实际值 */
     const tanHalfDesign = Math.tan((fovDesign * Math.PI) / 360);
 

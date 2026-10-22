@@ -17,6 +17,13 @@
 | 3 | 面板开放 `pick.group` / `pick.cooldownMs` | 未开工，已复核 `settingsPanel.ts` 里确实没有这两个控件。引擎已支持，v1 只暴露优先级与「每天一次」 |
 | 4 | `greetingRanges` 彻底退场 | 只剩"时段数值的出处"身份，**引擎不读** —— 改它不会改变行为 |
 
+> ✅ 2026-10-21 已完成：**默认项 + 档案分页 + 事件文件指南**。
+> ① 对齐基准缺省翻成**按画幅宽**（`initScene` / `settingsStore.readView` 两处同向、只认 `'height'` 例外值；`config.example.json` 显式写死）；
+> ② **节日族默认打开** —— `config.example.json` 声明 normal/festival/custom 三族且都标 `default:true`，并给老存档做**一次性补勾**（`settingsStore.mergeNewFamilyDefaults` + 覆盖层新字段 `phasesSeen`：只补"没见过的新族"，用户之后取消勾选**不会**被回补）；
+> ③ **档案分页** —— 顶部「全部 / 按事件族 / 按通道分组」三视图，后两种再按族 / 按组分页签（`archive.ts` 的 `Row.grp` / `Row.fam`，`rowCount()` 返回当前视图行数）；行数少了 ⇒ 缩放放大回 1 ⇒ 字变大；
+> ④ **指南** —— 档案页脚与设置面板「事件开关」页都写明：详细信息（条件 / 动作 / 粒子 / 念白 / 语音）在 `assets/events.jsonc` 看，**自定义事件也在同一个文件里实现**。
+> 回归：`_regress/100_回归_默认项与档案分页.ts`（25 条断言：默认项 4 + 补勾迁移 5 + 分页 13 + 指南 3），另附最小 DOM 替身 `_regress/100_dom_stub.ts`。
+
 > ✅ 2026-10-21 已完成：**热区分区**（`hand` / `head` + `zones[].design` 跨分辨率坐标）。
 > 落点：`config.json` 的 `touch.zones`、`events.jsonc` 的 `custom:hold-hand`（`when.ctx.zone="hand"`，已去掉 `weight:0`）。
 > 回归：`_regress/77`（E 组 8 条投影断言）+ `_regress/97`（三分辨率真实点击）。
@@ -65,7 +72,7 @@ BoxShell / BoxEdge / Mesh / Sprite —— 三个产物 0 用例。
 |---|---|
 | `step2_web_p3` 的 `events.jsonc` 不会自动同步 | `21_` / `22_` / `49_` 三个脚本只产出 `step2_web` 的；`_p3` 是手工渲染对照副本，重跑生成器不会同步过去 —— 要同步就重跑一次 `migrateEvents --to-file --write`，或整份复制 |
 | 素材侧不在 git 里 | `config.json` 的事件族声明、`events.jsonc` 的节日 `phase`、语音 / BGM 都只在**本机**生效（仓库不带素材）；README 有声明配方 |
-| 老存档的新事件族不会自动勾上 | `phases` 会被面板写进 localStorage，老存档里只有 `["normal"]` ⇒ 新加的两族不生效，档案会标「所属事件族未勾选 ⇒ 当前不可触发」。到「事件池 → 事件族」补勾，或用「恢复默认」 |
+| ~~老存档的新事件族不会自动勾上~~ | ✅ 2026-10-21 已修：`mergeNewFamilyDefaults` 在启动时补勾"标了 `default` 且没见过"的族，并用 `phasesSeen` 记账 ⇒ 补一次、之后用户取消勾选不会被回补。**作者新增族时记得标 `default: true`**，否则不会被强加给用户 |
 | 春节日期要每年手动追加 | `when.dates` **不做农历换算**（那是要每年校对的数据，错一天等于过节过错了），2026–2031 的初一已写进 `public/assets/events.jsonc`，**每年往数组追加一行** |
 
 ---
@@ -77,6 +84,3 @@ BoxShell / BoxEdge / Mesh / Sprite —— 三个产物 0 用例。
 - `docx/` 现在只留：本清单 + 两份 PLAN（字段真相 / 文件格式真相）+ `PLAN_触摸热区`（§1.1-5 的前置设计）
   + `RESEARCH_粒子系统复刻参考`（引用型资料）
 
-## 默认设置中将按画幅宽对齐和节日族事件默认打开设为默认项
-## 档案中新增按事件族分页显示和按通道类分页显示功能，以缓解档案页字太多太小的问题
-## 档案和设置-事件开关中新增指南：明确详细信息可在event.jsonc中查看，可在event.jsonc中实现自定义事件

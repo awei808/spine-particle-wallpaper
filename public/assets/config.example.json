@@ -3,6 +3,7 @@
   "height": 750,
   "fov": 59.255924,
   "dpr": "auto",
+  "fitAspect": "width",
   "antialias": false,
   "maxFps": 30,
   "idleFps": 20,
@@ -45,7 +46,19 @@
     "touchKinds": ["touch"],
     "resumeKinds": ["greet"],
     "eventFamilies": [
-      { "id": "normal", "label": "普通事件", "fallback": true, "default": true }
+      {
+        "id": "normal",
+        "label": "普通事件",
+        "fallback": true,
+        "default": true
+      },
+      { "id": "festival", "label": "节日事件", "default": true },
+      {
+        "id": "custom",
+        "label": "自定义事件",
+        "default": true,
+        "keyPrefix": "custom:"
+      }
     ]
   },
   "bgm": {
