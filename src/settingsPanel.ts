@@ -1002,7 +1002,11 @@ export const createSettingsPanel = (
   /** 切换 tab（**每个 tab 内容高度不同 ⇒ 必须重算自适应缩放**） */
   const setTab = (id: string) => {
     activeTab = id;
-
+    /**
+     * ★ 翻页条只属于「事件开关」页（2026-10-22）：别的页没有"一页几条"这回事，
+     *   常驻一根空的翻页条只会占高度、还会让人以为能翻。
+     */
+    syncEvPager();
     TABS.forEach((t) => {
       pages[t.id].style.display = t.id === id ? 'block' : 'none';
     });
@@ -2162,6 +2166,17 @@ export const createSettingsPanel = (
    * | 开 / 关某一条 | 本页（`EventState` → localStorage，与设置项同一次保存 → 重载） |
    * | 恢复本页默认（2026-10-21 补回） | 本页右上角按钮：清空草稿里的开关，回落到文件缺省 |
    *
+   * ## ★★ 分页：每页 6 条（2026-10-22）
+   *
+   * 16 条事件一行一条 ⇒ 内容高度把 `fitPanelScale` 逼到 `K_MIN=0.7`，
+   * **字与复选框一起变小**。分页之后每页行数恒定 ⇒ 缩放回到 1。
+   *
+   * ★ 翻页条挂在 `panel` 上（`tabBody` 之后 / 底部按钮之前）⇒ **不随内容滚动**；
+   *   WE 不转发滚轮，跟着内容走的翻页条在内容超高时根本点不到。
+   * ★ 行**按页重建**（`buildEvRow`）：勾选状态存在 `eff[key]` 里，
+   *   翻走再翻回来不会丢草稿；「恢复本页默认」只刷**当前可见**的那些（`evPaint`）。
+   * ★ 只有一页 ⇒ 翻页条整根隐藏（`syncEvPager`）：少一行高度，也少一个点不动的控件。
+   *
    * ★ 面板**不读文件、不归一**：`eventTable` 是 `index.ts` 归一后那份（`enabled` 已压过），
    *   所以"面板列出来的"与"真的会抽的"必然是同一份。
    * ★ `eventsFile.error` 非空（文件缺失/解析失败）⇒ 顶部红字，列表仍按 0 条渲染 ——
@@ -2369,7 +2384,8 @@ export const createSettingsPanel = (
   /** 每行"把勾选刷成 v"的回调（键 = 事件键）—— 供「恢复本页默认」用 */
   const evPaint: { [key: string]: (on: boolean) => void } = {};
 
-  evRows.forEach((e) => {
+  /** ★★ 造**一条**事件行（2026-10-22 从 `evRows.forEach` 里抽出来给翻页复用） */
+  const buildEvRow = (e: DialogueEntry) => {
     const id = eventKeyOf(e);
     const row = createEl(
       'div',
@@ -2447,17 +2463,151 @@ export const createSettingsPanel = (
       ' · ' +
       id;
     meta.title = meta.textContent;
-  });
+  };
 
-  if (!evRows.length) {
-    createEl(
-      'div',
-      'font-size:' + fpx(11) + ';opacity:.5;padding:' + uiPx(8) + ' 0',
-      evList
-    ).textContent = evFile.error
-      ? '事件文件不可用 ⇒ 本壁纸不会触发任何事件。'
-      : '事件文件里没有事件条目。';
-  }
+  /* ── 事件开关页的分页（2026-10-22）──────────────────────────────
+   *
+   * ★★ 为什么必须分页：16 条事件一行一条 ⇒ `fitPanelScale` 只能把整块**缩到 0.7**
+   *   才装得下，字与复选框一起变小（"多到了会触发界面缩小字体和 div 的地步"）。
+   *   每页 6 条之后内容高度恒定 ⇒ 缩放回到 1，字就大了。
+   *
+   * ★ 翻页条挂在 **panel 上、`tabBody` 之后 / 底部按钮之前**（常驻，不随内容滚）：
+   *   WE 不转发滚轮（见「面板自适应高度」那一段），跟着内容走的翻页条在内容超高
+   *   时就点不到了 —— 那就等于没有翻页。
+   * ★ 只在**本页**（`activeTab === 'events'`）显示：别的页没有"一页几条"这回事。
+   * ★ 行是**按页重建**的（`buildEvRow`）：开关状态由 `eff[key]` 承载 ⇒
+   *   翻走再翻回来勾选状态不变，不会丢草稿。
+   */
+  const EV_PAGE_SIZE = 6;
+  let evPage = 0;
+
+  const evPager = createEl(
+    'div',
+    [
+      'flex:0 0 auto',
+      'display:none',
+      'align-items:center',
+      'justify-content:center',
+      'gap:' + uiPx(8),
+      'margin-top:' + uiPx(8),
+      'padding-top:' + uiPx(8),
+      'border-top:' + uiPx(1) + ' solid rgba(255,255,255,0.08)',
+    ].join(';'),
+    panel
+  );
+  evPager.id = 'wb-ev-pager';
+
+  const EV_PAGER_BTN = [
+    'flex:0 0 auto',
+    'padding:' + uiPx(4) + ' ' + uiPx(12),
+    'border:' + uiPx(1) + ' solid rgba(255,255,255,0.22)',
+    'border-radius:' + uiPx(8),
+    'background:rgba(255,255,255,0.06)',
+    'color:rgba(238,241,246,0.72)',
+    'font-family:inherit',
+    'font-size:' + fpx(11.5),
+    'line-height:1.5',
+    'cursor:pointer',
+    'white-space:nowrap',
+  ].join(';');
+
+  const btnEvPrev = createEl('button', EV_PAGER_BTN, evPager);
+  btnEvPrev.id = 'wb-ev-prev';
+  btnEvPrev.setAttribute('data-wb-ev-page', 'prev');
+  btnEvPrev.textContent = '‹ 上一页';
+
+  const evPageLabel = createEl(
+    'div',
+    'flex:0 0 auto;font-size:' +
+      fpx(11.5) +
+      ';opacity:.7;font-variant-numeric:tabular-nums;min-width:' +
+      uiPx(92) +
+      ';text-align:center',
+    evPager
+  );
+  evPageLabel.id = 'wb-ev-page-label';
+
+  const btnEvNext = createEl('button', EV_PAGER_BTN, evPager);
+  btnEvNext.id = 'wb-ev-next';
+  btnEvNext.setAttribute('data-wb-ev-page', 'next');
+  btnEvNext.textContent = '下一页 ›';
+
+  /** 置灰而不是隐藏 ⇒ 翻到头时布局不跳 */
+  const paintEvPagerBtn = (el: HTMLElement, on: boolean): void => {
+    el.style.opacity = on ? '1' : '0.35';
+    el.style.cursor = on ? 'pointer' : 'default';
+  };
+
+  /** 总页数（至少 1 ⇒ 空表也显示"第 1 / 1 页"） */
+  const evPageCount = (): number =>
+    Math.max(1, Math.ceil(evRows.length / EV_PAGE_SIZE));
+
+  /**
+   * 翻页条的显隐：**只在本页、且真的不止一页时**才出现。
+   *
+   * ★ 只有一页时不显示：多了根点不动的控件，还白占一行高度
+   *   （这一页的初衷就是"别把内容顶到要缩字"）。
+   */
+  const syncEvPager = (): void => {
+    evPager.style.display =
+      activeTab === 'events' && evPageCount() > 1 ? 'flex' : 'none';
+  };
+
+  const paintEvPager = (): void => {
+    const n = evPageCount();
+    if (evPage >= n) {
+      evPage = n - 1;
+    }
+    if (evPage < 0) {
+      evPage = 0;
+    }
+    evPageLabel.textContent =
+      '第 ' + (evPage + 1) + ' / ' + n + ' 页（共 ' + evRows.length + ' 条）';
+    paintEvPagerBtn(btnEvPrev, evPage > 0);
+    paintEvPagerBtn(btnEvNext, evPage < n - 1);
+  };
+
+  /** 渲染当前页的 6 条（幂等，可反复调用） */
+  const renderEvPage = (): void => {
+    while (evList.firstChild) {
+      evList.removeChild(evList.firstChild);
+    }
+    Object.keys(evPaint).forEach((k) => delete evPaint[k]);
+    paintEvPager();
+    if (!evRows.length) {
+      createEl(
+        'div',
+        'font-size:' + fpx(11) + ';opacity:.5;padding:' + uiPx(8) + ' 0',
+        evList
+      ).textContent = evFile.error
+        ? '事件文件不可用 ⇒ 本壁纸不会触发任何事件。'
+        : '事件文件里没有事件条目。';
+      return;
+    }
+    evRows
+      .slice(evPage * EV_PAGE_SIZE, evPage * EV_PAGE_SIZE + EV_PAGE_SIZE)
+      .forEach(buildEvRow);
+    syncEvPager();
+  };
+
+  const goEvPage = (delta: number): void => {
+    const n = evPageCount();
+    const next = Math.min(n - 1, Math.max(0, evPage + delta));
+    if (next === evPage) {
+      return;
+    }
+    evPage = next;
+    /**
+     * ★ 必须重排：行数从 6 变 6（或末页变少）⇒ 内容高度变了，
+     *   `fitPanelScale` 要重算缩放、自绘滚动条要重新对齐。
+     */
+    renderEvPage();
+    relayoutPanel();
+  };
+  btnEvPrev.addEventListener('click', () => goEvPage(-1));
+  btnEvNext.addEventListener('click', () => goEvPage(1));
+
+  renderEvPage();
 
   /**
    * 「恢复本页默认」—— 清空本页草稿里的开关，全部回落到 `events.jsonc` 的缺省。

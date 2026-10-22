@@ -57,20 +57,42 @@
  * 打开 ⇒ 常驻显示；关掉 ⇒ 消失。**热切换，不重载页面**（同 `disclaimer.ts` /
  * `showCornerButtons` 的口径，见 `index.ts` 的 `applyWePatch`）。
  *
-  * ## ★★ 三种视图 / 分页（2026-10-21）—— 缓解"字太多太小"
+ * ## ★★ 四种视图 / 分页（2026-10-21 三视图；2026-10-22 加「已停用」）
  *
  * 13 条事件挤在一屏里 ⇒ `fitContent` 只能把整块**缩小**到 0.55 才装得下，字就小了。
- * 与其继续缩，不如**少显示几行**：顶部三个按钮切视图 ——
+ * 与其继续缩，不如**少显示几行**：顶部四个按钮切视图 ——
  *
  * | 视图 | 第二行页签 | 作用 |
  * |---|---|---|
  * | **全部** | — | 老观感，一屏列完（条目多时字会小） |
  * | **按事件族** | 每个族一个（普通 / 节日 / 自定义 …） | 只看某一族的事件 |
  * | **按通道分组** | 回到壁纸 / 待机 / 点击触摸 / 常驻序列 / 自定义 / 背景音乐 | 只看某一入口会播的 |
+ * | **已停用** | — | 只列**当前不会播**的（开关关掉 / 事件族没勾 / 不可达 / 入口没勾它的类别） |
  *
- * ★ 分页**只筛行数**，不改任何文案与判据 —— 每张表的行仍是 `buildRows` 那一份，
+ * ★ 视图**只筛行数**，不改任何文案与判据 —— 每张表的行仍是 `buildRows` 那一份，
  *   切页签不会让"这一页显示的内容"与"引擎真的会播的"分叉。
  * ★ 行数变少后 `fitContent` 会把缩放**放大回去** ⇒ 字自然变大（它是幂等的，见下）。
+ *
+ * ## ★★ 「已停用」是**独立视图**而不是"主表里带标注的一行"（2026-10-22）
+ *
+ * 2026-10-21 那一版把"关掉 / 被族挡住 / 不可达"的条目**继续列在主表**里，只在
+ * 条件列加一句标注。结果是：用户在「事件开关」页关掉一条、或在「事件池」页取消
+ * 勾选一个事件族之后，档案的行数**纹丝不动** —— 看起来像"开关没生效"。
+ *
+ * 现在主表 = **引擎口径**（池里真的会被抽到的那些）；不会播的整段挪到「已停用」：
+ *   · 主表行数终于跟着开关 / 事件族变（本次要修的用户可见行为）；
+ *   · "关掉之后就再也查不到"这条顾虑由「已停用」视图 + 细则里的条数承接。
+ *
+ * ★★ 判据**不新写**：`已停用 = 事件表里没被 `buildRows` 逐条列出过的条目`
+ *   （`st.enumerated` 那份账本，见 `makeRow`）。凡是引擎抽得到的，必然已经
+ *   出现在某一行里 ⇒ 差集就是"不会播的"，不可能与漏斗分叉。
+ *
+ * ## ★★ 翻页：每页 6 行（2026-10-22）
+ *
+ * 视图筛完仍可能剩十几行 ⇒ 还是会缩字。再叠一层**翻页**（`PAGE_SIZE = 6`），
+ * 翻页条常驻在**正文下方 / 页脚上方**（不随内容滚动 —— WE 不转发滚轮，见下）。
+ * ★ 翻页只裁"这一页渲染哪几行"：**页签集合、细则、计数**仍按视图全集算
+ *   ⇒ 不会因为翻到第 2 页就让某个族/某个通道的页签消失。
  *
  * ## ★★ 遮罩**不吃事件**（与免责弹窗刻意的差异）
  *
@@ -196,7 +218,15 @@ export type ArchivePanel = {
   isVisible: () => boolean;
   /** 表格**数据行**数（不含表头）—— 给验证脚本断言"内容真的渲染出来了" */
   rowCount: () => number;
-
+  /**
+   * 翻页状态（2026-10-22，给验证脚本断言"翻页真的换了行"用）。
+   *
+   * ★ `index` 是 0 起的当前页码；`count` 是**当前视图**的总页数；
+   *   `total` 是当前视图筛选后的**总行数**（不受分页影响）。
+   */
+  pager: () => { index: number; count: number; size: number; total: number };
+  /** 翻到第 `i` 页（0 起；越界自动夹取）—— 验证脚本与未来的入口复用 */
+  setPage: (i: number) => void;
   /**
    * 切换**视图**（2026-10-21）。`key` = 子页签（族 id / 分组 id）；
    * `mode: 'all'` 时忽略它。给验证脚本与未来的入口复用，面板里由按钮自己调。
@@ -282,6 +312,9 @@ type Row = {
  * 常驻序列 / 自定义事件 / 背景音乐 —— 它们也占行，分页必须能翻到，否则会出现
  * "切到某个页签后这一行再也找不到了"。
  *
+ * ★ `'off'`（2026-10-22）= **已停用**：只给「已停用」视图里的行用。
+ *   它**刻意不在** `GROUP_ORDER` 里 ⇒ 「按通道分组」不会多出一个页签
+ *   （那些行本来就不属于任何入口，给它们一个页签等于替配置撒谎）。
  */
 export type ArchiveGroup =
   | 'resume'
@@ -289,7 +322,8 @@ export type ArchiveGroup =
   | 'touch'
   | 'sequence'
   | 'custom'
-  | 'bgm';
+  | 'bgm'
+  | 'off';
 
 /** 分组的**人话名**（「按通道分组」视图的页签文案） */
 const GROUP_LABEL: Record<ArchiveGroup, string> = {
@@ -299,6 +333,7 @@ const GROUP_LABEL: Record<ArchiveGroup, string> = {
   sequence: '常驻序列',
   custom: '自定义',
   bgm: '背景音乐',
+  off: '已停用',
 };
 
 /** 页签顺序 = 表格里各段的出现顺序（与 `buildRows` 一致，读者按图索骥不迷路） */
@@ -311,8 +346,15 @@ const GROUP_ORDER: readonly ArchiveGroup[] = [
   'bgm',
 ];
 
-/** 档案的三种**视图**（2026-10-21：缓解"字太多太小"） */
-export type ArchiveViewMode = 'all' | 'family' | 'group';
+/**
+ * 档案的四种**视图**（2026-10-21 三视图缓解"字太多太小"；2026-10-22 加 `off`）。
+ *
+ * `off` = **已停用**（当前不会播的那些），见文件头那一段。
+ */
+export type ArchiveViewMode = 'all' | 'family' | 'group' | 'off';
+
+/** ★★ 每页行数（2026-10-22）：再多就又会触发 `fitContent` 缩字 */
+const PAGE_SIZE = 6;
 
 const createEl = (
   tag: string,
@@ -385,7 +427,15 @@ const makeRow = (
   st: ArchiveState,
   ae: ActionEffectNames,
   /** 分页组（2026-10-21） */
-  grp: ArchiveGroup
+  grp: ArchiveGroup,
+  /**
+   * 要不要记进 `st.enumerated`（"已逐条列出"账本）。
+   *
+   * ★ 2026-10-22：造「已停用」的行时传 `false` —— 那批行的定义就是
+   *   "**没有**被逐条列出过的条目"，再造一遍行就把自己记账成"已列出"了
+   *   （重绘一次就会把差集算错）。
+   */
+  book = true
 ): Row => {
   const reg = st.families;
   /**
@@ -411,7 +461,7 @@ const makeRow = (
    *   所有逐条行都经过 `makeRow` ⇒ 账本天然完整，末尾的「自定义事件」段据此
    *   只补"上面没列过的"，同一张表里不会再出现两行同一条。
    */
-  if (key) {
+  if (key && book) {
     st.enumerated.push(key);
   }
   /**
@@ -933,66 +983,6 @@ const buildRows = (
     });
   }
 
-  /**
-   * ⑥ **自定义事件**（2026-10-18）—— 不在任何旧池键里的条目单独列一段。
-   *
-   * 为什么需要：`greet` / `chat` / `touch` 的逐条枚举依赖旧数组，自定义事件不在里面；
-   * 若不列，用户新建的事件在档案里**完全不可见**（正是"档案念 A 表"的那类问题）。
-   * 条件列直接调 `describeCondition`（唯一文案起点，禁止另写一份）。
-   */
-  const CH_LABEL: Record<TriggerChannel, string> = {
-    standby: '组:待机',
-    touch: '组:点击',
-    resume: '组:回到壁纸',
-  };
-  /**
-   * 只列**上面没逐条列过**的自定义事件（`st.enumerated` 由 `makeRow` 记账）。
-   *
-   * ★ 2026-10-20 修重复：通道枚举改成"按池"之后，自定义事件本来就会出现在
-   *   通道行里（`点击触摸 · 仅手动` / `回到壁纸 · greet类 …`），本段再列一次
-   *   就成了"一张表两行同一条"。留着本段的意义只剩：**通道行看不到的那几种**
-   *   ——不可达（`on: []`）、被事件开关关掉、被事件族闸门挡住、所在通道没勾该类。
-   */
-  const restCustom = st.dialogues.filter((e) => {
-    const k = eventKeyOf(e);
-    return (
-      k.indexOf('custom:') === 0 &&
-      st.legacyKeys.indexOf(k) < 0 &&
-      st.enumerated.indexOf(k) < 0
-    );
-  });
-  restCustom.forEach((e, i) => {
-    const chans = channelsOf(e)
-      .map((c) => CH_LABEL[c] ?? c)
-      .join(' / ');
-    const name = e.displayName || e.label || eventKeyOf(e);
-    const key = eventKeyOf(e);
-    /** 为什么没进通道行 —— 逐条写清楚，别让人只往一个方向查 */
-    const why: string[] = [];
-    if (!chans) {
-      why.push('不可达（没写 on）');
-    }
-    if (e.enabled === false) {
-      why.push('已被「事件开关」关闭');
-    }
-    if (st.gatedOut[key]) {
-      why.push('所属事件族未勾选');
-    }
-    rows.push(
-      makeRow(
-        '自定义 #' + (i + 1) + ' · ' + name,
-        (why.length ? why.join(' · ') + ' · ' : '') +
-          (chans || '不可达') +
-          ' · ' +
-          describeCondition(e.when),
-        e,
-        st,
-        ae,
-        'custom'
-      )
-    );
-  });
-
   /* ⑤ 背景音乐（环境音，不是"触发"但也应当能查到） */
   if (cfg.bgm?.enabled !== false && cfg.bgm?.file) {
     rows.push({
@@ -1014,6 +1004,82 @@ const buildRows = (
   }
 
   return rows;
+};
+
+/** `on` 的人话名（「已停用」视图的"分组："前缀，与设置面板「事件开关」页同一份文案） */
+const CH_LABEL: Record<TriggerChannel, string> = {
+  standby: '组:待机',
+  touch: '组:点击',
+  resume: '组:回到壁纸',
+};
+
+/**
+ * ★★ **「已停用」视图**的行（2026-10-22）—— `buildRows` 之后调用。
+ *
+ * 定义：`事件表里没被 `buildRows` 逐条列出过的条目`（差集由 `st.enumerated` 得出，
+ * 见 `makeRow` 的记账）。凡是引擎抽得到的必然已占一行 ⇒ 差集就是"当前不会播的"，
+ * **不另写一套判据**（PLAN 头号纪律）。
+ *
+ * ## 为什么它必须存在（而不是"关掉就彻底不显示"）
+ *
+ * 主表不再列它们之后，用户会问"我关掉的那条去哪了"。只报个总数（细则里那句）
+ * 答不出"是哪几条"，排查"为什么这条不播"就断了线 ⇒ 单独开一个视图收着。
+ *
+ * ## 每条都写明"为什么不会播"
+ *
+ * 四种原因各自独立、可能叠加，逐条列出来比让用户猜快得多：
+ *   ① `enabled === false` —— 「事件开关」关掉（或文件里写了 `"enabled": false`）；
+ *   ② `st.gatedOut` —— 所属事件族没被勾选（`subtitle.phases`）；
+ *   ③ `on: []` —— 不可达，没写分组；
+ *   ④ 都不是 ⇒ 它所属的**类别**没有被任何一个入口勾上
+ *      （三个通道的「可触发的事件」都没勾它那一类）。
+ *
+ * ⚠️ ④ 是**兜底**而不是新判据：前三条都已经由引擎各自的闸门表达了，
+ *    剩下的唯一可能就是"没被任何入口勾中"（池是按 `kind` 建的）。
+ */
+const buildOffRows = (
+  st: ArchiveState,
+  ae: ActionEffectNames
+): Row[] => {
+  const rest = st.dialogues.filter((e) => {
+    const k = eventKeyOf(e);
+    return !!k && st.enumerated.indexOf(k) < 0;
+  });
+  return rest.map((e, i) => {
+    const key = eventKeyOf(e);
+    const chans = channelsOf(e)
+      .map((c) => CH_LABEL[c] ?? c)
+      .join(' / ');
+    const why: string[] = [];
+    if (e.enabled === false) {
+      why.push('已被「事件开关」关闭');
+    }
+    if (st.gatedOut[key]) {
+      why.push('所属事件族未勾选');
+    }
+    if (!chans) {
+      why.push('不可达（没写 on）');
+    }
+    if (!why.length) {
+      why.push('没有入口勾中它的类别');
+    }
+    const name = e.displayName || e.label || key;
+    return makeRow(
+      '已停用 #' + (i + 1) + ' · ' + name,
+      why.join(' · ') +
+        ' · ' +
+        (chans || '不可达') +
+        ' · ' +
+        describeCondition(e.when),
+      e,
+      st,
+      ae,
+      /** ★ 不属于任何入口 ⇒ 用 `'off'`（它不在 `GROUP_ORDER` 里，不会多出页签） */
+      'off',
+      /** ★ 不记进 `enumerated` —— 否则下次重绘会把差集算错（见 `makeRow` 的 `book`） */
+      false
+    );
+  });
 };
 
 /**
@@ -1052,7 +1118,12 @@ const describeChannel = (st: ArchiveState, kind: TriggerChannel): string => {
 /**
  * 表格下方的「细则」——那些**跨行共享**的闸门，逐行重复写在表格里会淹掉信息。
  */
-const buildNotes = (cfg: Configs, st: ArchiveState): string[] => {
+const buildNotes = (
+  cfg: Configs,
+  st: ArchiveState,
+  /** ★「已停用」视图的条数（2026-10-22）：主表不再列它们 ⇒ 必须在这里指路 */
+  offCount = 0
+): string[] => {
   const sub = cfg.subtitle;
   const notes: string[] = [];
   /**
@@ -1090,6 +1161,20 @@ const buildNotes = (cfg: Configs, st: ArchiveState): string[] => {
     );
   }
 
+  /**
+   * ★★ 「已停用」的**指路**（2026-10-22）。
+   *
+   * 主表不再列这些条目之后，"我关掉的那条怎么找不到了"必须有个答案 ——
+   * 报总数 + 指明去哪个视图看，否则用户只能去翻 `events.jsonc`。
+   */
+  if (offCount > 0) {
+    notes.push(
+      '另有 ' +
+        offCount +
+        ' 条**当前不会播**（被事件开关关闭 / 所属事件族没勾 / 不可达 / 没被任何入口勾中）' +
+        ' —— 它们不在上面的表里，点上方「已停用」逐条查看原因。'
+    );
+  }
 
   /**
    * ★★ **事件族闸门**（2026-10-17 起对所有入口生效）—— 必须写在第一条：
@@ -1191,7 +1276,12 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
     options.validation ? options.validation() : null
   );
   const rows = buildRows(cfg, st, ae);
-  const notes = buildNotes(cfg, st);
+  /**
+   * ★★ **「已停用」**的行（2026-10-22）—— 必须在 `buildRows` **之后**算：
+   *   它的定义就是"没被逐条列出过的条目"（差集，`st.enumerated` 由 `makeRow` 填）。
+   */
+  const offRows = buildOffRows(st, ae);
+  const notes = buildNotes(cfg, st, offRows.length);
 
   // ★ 先初始化 UI 缩放变量（幂等）：下面所有 px 都依赖它
   initUiScale();
@@ -1286,10 +1376,18 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
   ).textContent =
     '下表按当前生效的配置实时生成（改过设置后，这里的数字与池子会跟着变）。' +
     /**
-     * ★ 分页的**发现性**（2026-10-21）：字太小是因为一屏塞了全部行。
-     *   不明说一句，用户不会知道上方那三个按钮能让它变大。
+     * ★ 分页的**发现性**（2026-10-21，2026-10-22 补翻页）：字太小是因为一屏塞了
+     *   全部行。不明说一句，用户不会知道上方那几个按钮与下方翻页能让它变大。
      */
-    ' 嫌字小：点上方「按事件族 / 按通道分组」切成单页，行数少了字就大了。' +
+    ' 嫌字小：点上方「按事件族 / 按通道分组」只看一类，或用下方「上一页 / 下一页」' +
+      '按每页 6 行翻 —— 行数少了字就大了。' +
+    /**
+     * ★「已停用」的发现性（2026-10-22）：关掉的事件**不再**出现在上面的表里
+     *   （这是本次修掉的行为），不给出口用户会以为"事件丢了"。
+     */
+    (offRows.length
+      ? ' 另有 ' + offRows.length + ' 条当前不会播，点「已停用」看原因。'
+      : '') +
     /**
      * ★ 当前**动作族**（2026-10-17）—— 档案里"动作"列显示的是换名后的动画名，
      *   不交代一句读者会以为 `*_marry` 是笔误。只在声明了动作族的工程里出现。
@@ -1367,14 +1465,23 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
     { id: 'all', label: '全部' },
     { id: 'family', label: '按事件族' },
     { id: 'group', label: '按通道分组' },
+    // ★ 2026-10-22：主表不再列"不会播的" ⇒ 它们全在这里（见文件头那一段）
+    { id: 'off', label: '已停用' },
   ];
   /** DOM id 里只留安全字符（族 id 可能有 `:` / `.` 之类） */
   const safeId = (s: string): string => s.replace(/[^a-zA-Z0-9_-]/g, '_');
 
   let mode: ArchiveViewMode = 'all';
-  /** 当前子页签（族 id 或分组 id）；`mode === 'all'` 时无意义 */
+  /** 当前子页签（族 id 或分组 id）；`mode === 'all'` / `'off'` 时无意义 */
   let subKey = '';
-  /** 当前视图**实际渲染出来**的行（`rowCount()` 返回它的长度） */
+  /** ★ 当前页码（0 起；2026-10-22 翻页） */
+  let page = 0;
+  /**
+   * 当前视图**筛选后（未分页）**的行集合 —— 页签集合 / 计数 / "共 N 行"都按它算
+   * ⇒ 翻到第 2 页不会让某个族或某个通道的页签消失。
+   */
+  let viewRows: Row[] = rows;
+  /** 当前页**实际渲染出来**的行（`rowCount()` 返回它的长度） */
   let shown: Row[] = rows;
 
   /** 某个族有多少行 */
@@ -1416,6 +1523,10 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
     }));
 
   const currentRows = (): Row[] => {
+    /** ★「已停用」：主表之外的那一份（2026-10-22） */
+    if (mode === 'off') {
+      return offRows;
+    }
     if (mode === 'family') {
       return rows.filter((r) => r.fam === subKey);
     }
@@ -1423,6 +1534,27 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
       return rows.filter((r) => r.grp === subKey);
     }
     return rows;
+  };
+
+  /** 当前视图的总页数（至少 1 页 ⇒ 空表也显示"第 1 / 1 页"而不是 0） */
+  const pageCount = (): number =>
+    Math.max(1, Math.ceil(viewRows.length / PAGE_SIZE));
+
+  /** 把页码夹回合法范围（条目变少 / 切视图之后旧页码可能越界） */
+  const clampPage = (): void => {
+    const n = pageCount();
+    if (page >= n) {
+      page = n - 1;
+    }
+    if (page < 0) {
+      page = 0;
+    }
+  };
+
+  /** 当前页该渲染的几行 */
+  const pageRows = (): Row[] => {
+    clampPage();
+    return viewRows.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
   };
 
   /* ── 正文（唯一滚动容器）───────────────────── */
@@ -1502,18 +1634,28 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
   rowsBox.id = 'wb-archive-rows';
 
   /**
-   * 渲染**当前视图**的行。
+   * 渲染**当前视图当前页**的行。
    *
-   * ★ 幂等：可反复调用（切视图 / 切页签 / 窗口 resize 之后）。
+   * ★ 幂等：可反复调用（切视图 / 切页签 / 翻页 / 窗口 resize 之后）。
    * ★ 末尾调 `fitContent()`：行数变了 ⇒ 缩放要重算（行少了会放大回 1，字就大了）。
    */
   const renderRows = () => {
-    shown = currentRows();
+    viewRows = currentRows();
+    shown = pageRows();
     while (rowsBox.firstChild) {
       rowsBox.removeChild(rowsBox.firstChild);
     }
+    paintPager();
+    /**
+     * ★★ 计数按**视图全集**（`viewRows`）算，不按当前页 ——
+     *   否则翻到第 2 页会显示"共 4 行"，看起来像事件少了一半。
+     */
     viewCount.textContent =
-      '显示 ' + shown.length + ' / 共 ' + rows.length + ' 行';
+      (mode === 'off' ? '已停用 ' : '显示 ') +
+      viewRows.length +
+      ' / 共 ' +
+      rows.length +
+      ' 行';
     /** 空态：这一组/这一族当前没有行（不是"事件丢了"，是筛选后为空） */
     if (!shown.length) {
       createEl(
@@ -1521,7 +1663,9 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
         'font-size:' + fpx(12) + ';opacity:.6;padding:' + uiPx(10) + ' 0',
         rowsBox
       ).textContent =
-        '这一页当前没有事件（换一个页签，或回「全部」看完整表）。';
+        mode === 'off'
+          ? '没有已停用的事件（全部条目当前都会播）。'
+          : '这一页当前没有事件（换一个页签，或回「全部」看完整表）。';
       fitContent();
       return;
     }
@@ -1635,10 +1779,101 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
     fitContent();
   };
 
-  /**
-   * 三个视图按钮 + 子页签的**构建与切换**（2026-10-21）。
+  /* ── 翻页条（2026-10-22）────────────────────────────────────
    *
-   * ★ 子页签集合只跟**视图**有关（`all` 没有子页签）⇒ 换视图时才重建；
+   * ★★ 挂在 **card 上、`body` 之后 / `foot` 之前** ⇒ **不随内容滚动**。
+   *   为什么不能跟在表格末尾：WE 不转发鼠标滚轮、原生滚动条也拖不动（见文件头），
+   *   内容一超高，跟着内容走的翻页条就点不到了 —— 那就等于没有翻页。
+   * ★ 每页 `PAGE_SIZE` 行；只有一页时左右两个按钮置灰（仍占位，避免布局跳）。
+   */
+  const pager = createEl(
+    'div',
+    [
+      'flex:0 0 auto',
+      'display:flex',
+      'align-items:center',
+      'justify-content:center',
+      'gap:' + uiPx(8),
+      'margin-top:' + uiPx(6),
+      'padding-top:' + uiPx(6),
+      'border-top:' + uiPx(1) + ' solid rgba(255,255,255,0.10)',
+    ].join(';'),
+    card
+  );
+  pager.id = 'wb-archive-pager';
+
+  const PAGER_BTN =
+    [
+      'flex:0 0 auto',
+      'padding:' + uiPx(3) + ' ' + uiPx(12),
+      'border:' + uiPx(1) + ' solid rgba(255,255,255,0.22)',
+      'border-radius:' + uiPx(11),
+      'background:rgba(255,255,255,0.06)',
+      'color:rgba(238,241,246,0.72)',
+      'font-family:' + FONT,
+      'font-size:' + fpx(11.5),
+      'line-height:1.5',
+      'cursor:pointer',
+      'user-select:none',
+      '-webkit-user-select:none',
+      'white-space:nowrap',
+      'outline:none',
+    ].join(';') + ';';
+
+  const btnPrev = createEl('button', PAGER_BTN, pager);
+  btnPrev.id = 'wb-archive-prev';
+  btnPrev.setAttribute('data-wb-archive-page', 'prev');
+  btnPrev.textContent = '‹ 上一页';
+
+  const pageLabel = createEl(
+    'div',
+    'flex:0 0 auto;font-size:' +
+      fpx(11.5) +
+      ';opacity:.7;font-variant-numeric:tabular-nums;min-width:' +
+      uiPx(84) +
+      ';text-align:center',
+    pager
+  );
+  pageLabel.id = 'wb-archive-page-label';
+
+  const btnNext = createEl('button', PAGER_BTN, pager);
+  btnNext.id = 'wb-archive-next';
+  btnNext.setAttribute('data-wb-archive-page', 'next');
+  btnNext.textContent = '下一页 ›';
+
+  /** 翻页按钮的可用态（置灰而不是隐藏 ⇒ 布局不跳） */
+  const paintPagerBtn = (el: HTMLElement, on: boolean): void => {
+    el.style.opacity = on ? '1' : '0.35';
+    el.style.cursor = on ? 'pointer' : 'default';
+  };
+
+  const paintPager = (): void => {
+    const n = pageCount();
+    pageLabel.textContent = '第 ' + (page + 1) + ' / ' + n + ' 页';
+    paintPagerBtn(btnPrev, page > 0);
+    paintPagerBtn(btnNext, page < n - 1);
+  };
+
+  /**
+   * 翻页。**先改页码再重绘**，末尾的 `fitContent()` 会把缩放重算一遍
+   * （行少了 ⇒ 放大回 1，字就大了 —— 这正是加翻页的初衷）。
+   */
+  const goPage = (delta: number): void => {
+    const n = pageCount();
+    const next = Math.min(n - 1, Math.max(0, page + delta));
+    if (next === page) {
+      return;
+    }
+    page = next;
+    renderRows();
+  };
+  btnPrev.addEventListener('click', () => goPage(-1));
+  btnNext.addEventListener('click', () => goPage(1));
+
+  /**
+   * 四个视图按钮 + 子页签的**构建与切换**（2026-10-21 三视图；2026-10-22 加「已停用」）。
+   *
+   * ★ 子页签集合只跟**视图**有关（`all` / `off` 没有子页签）⇒ 换视图时才重建；
    *   换选中项只改配色（`paintSubBtns`）—— 少一次 DOM 重建，也避免闪。
    */
   const viewBtns: { id: ArchiveViewMode; el: HTMLElement }[] = [];
@@ -1663,6 +1898,8 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
       b.textContent = t.label;
       b.addEventListener('click', () => {
         subKey = t.id;
+        /** ★ 换了页签 ⇒ 回到第 1 页（旧页码在新集合里多半已越界） */
+        page = 0;
         paintSubBtns();
         renderRows();
       });
@@ -1684,6 +1921,8 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
     b.textContent = v.label;
     b.addEventListener('click', () => {
       mode = v.id;
+      /** ★ 换了视图 ⇒ 回到第 1 页 */
+      page = 0;
       applyView();
     });
     viewBtns.push({ id: v.id, el: b });
@@ -1894,12 +2133,34 @@ export const createArchive = (options: ArchiveOptions): ArchivePanel => {
      * ★ 给探针 / 验证脚本断言"内容真的渲染出来了"用 —— 用当前视图的行数而不是
      *   全表行数，才对得上屏幕上看得见的东西。
      */
+    /**
+     * **当前页**渲染出来的行数（切页签 / 翻页都会变）。
+     *
+     * ★ 给探针 / 验证脚本断言"内容真的渲染出来了"用 —— 用当前**页**的行数而不是
+     *   视图全集，才对得上屏幕上看得见的东西。要看全集用 `pager().total`。
+     */
     rowCount: () => shown.length,
+    pager: () => ({
+      index: page,
+      count: pageCount(),
+      size: PAGE_SIZE,
+      total: viewRows.length,
+    }),
+    setPage: (i: number) => {
+      const n = pageCount();
+      const next = Math.min(n - 1, Math.max(0, Math.round(i)));
+      if (next !== page) {
+        page = next;
+        renderRows();
+      }
+    },
     setView: (m: ArchiveViewMode, key?: string) => {
       mode = m;
       if (typeof key === 'string') {
         subKey = key;
       }
+      /** ★ 与面板里的按钮同一口径：切视图回到第 1 页 */
+      page = 0;
       applyView();
     },
     view: () => ({ mode, key: subKey }),
