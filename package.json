@@ -9,7 +9,8 @@
     "start": "webpack serve --open --progress --config webpack.dev.js",
     "build": "webpack --progress --color --config webpack.production.js",
     "voice-manifest": "ts-node --transpile-only scripts/voiceManifest.ts",
-    "validate-events": "ts-node --transpile-only scripts/validateEvents.ts public/assets"
+    "validate-events": "ts-node --transpile-only scripts/validateEvents.ts public/assets",
+    "convert-zones": "ts-node --transpile-only scripts/convertZones.ts"
   },
   "repository": {
     "type": "git",

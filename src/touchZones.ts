@@ -60,6 +60,45 @@
  * ⇒ 只有一条命中时结果与旧口径**逐字相同**；不重叠的多区也逐字相同。
  *   **仅"多区重叠"这一格的行为变了**（用户明确接受，见 `docx/PLAN_触摸热区*`）。
  *
+ * ## ★ 对齐基准：`fit` / `aspect`（2026-10-22 用户拍板）
+ *
+ * 背景：`fitAspect`（「画面调整」页）切换"按画布宽 / 按画布高"时，**取景会整体缩放**
+ * （见 `initScene.ts` 的 `calc`），角色、背景、粒子都跟着变 —— 但热区此前只有
+ * `u0..v1` 这一种写法，它是"视口分数"，与取景无关 ⇒ **热区钉在屏幕上不动，人却动了**。
+ * 表现为"换了对齐基准后，点手要点到空白处"。
+ *
+ * 现在 `u0..v1` 也有**基准**了：`zones[].fit`（缺省 **`'width'`**，即按画布宽对齐）
+ * + `zones[].aspect`（**量这些数时的视口比例**，缺省 = 设计画幅比例 `Wd/Hd`）。
+ * 引擎按"**声明基准的可见框**"把分数还原成**设计画布像素**，再按本帧真实取景投影
+ * ⇒ 同一组数字在任何视口比例 / 任何基准下都落在**同一块身体**上。
+ *
+ * 两种基准的可见框（单位 = 设计画布像素，锚点：**水平居中 + 底边**）：
+ *
+ * ```
+ * fit='width'  ⇒  w = Wd            h = Wd / A        （可见宽恒 = 设计宽）
+ * fit='height' ⇒  w = Hd · A        h = Hd            （可见高恒 = 设计高）
+ * ```
+ *
+ * 分数 ⇄ 设计画布像素（`A` = 该帧视口比例，`Wd/Hd` = `config.width/height`）：
+ *
+ * ```
+ * x = Wd/2 + (u − 0.5) · w        u = 0.5 + (x − Wd/2) / w
+ * y = Hd − (1 − v) · h            v = 1 − (Hd − y) / h
+ * ```
+ *
+ * ★ **两种基准之间是一步均匀缩放**（同一锚点）：
+ * `k = w_from / w_to = h_from / h_to`
+ * `u_to = 0.5 + (u_from − 0.5)·k`、`v_to = 1 − (1 − v_from)·k`
+ * 其中 `width → height` 时 `k = (Wd/Hd) / A`，反向取倒数。
+ * ⇒ 换算代码只有 `alignedFrameOf` / `fitRectToDesign` / `designRectToFit` /
+ *   `convertFitRect` 四个纯函数（末者就是"高 ⇄ 宽"的直接换算）。
+ *
+ * ⚠️ **在设计比例下两种基准完全重合**（`w = Wd`、`h = Hd` 同时成立）⇒ 那时
+ *   `fit` 取什么值都一样，`u/v` 就等价于"设计画布分数"（= `design` 除以画布尺寸）。
+ *   这也是旧 `u/v` 数据（在 1700×750 上量的）默认仍然对得上的原因：缺省
+ *   `aspect = Wd/Hd` ⇒ 旧数字被解释成设计画布分数 ⇒ **从此跟着取景缩放**，
+ *   而不是继续钉在视口上。
+ *
  * ## 不做的事
  *
  * - **不做圆形/多边形**：解包侧只有矩形（`SoulSpineHitArea` 是 RectTransform），
@@ -91,6 +130,14 @@ export type TouchZone = TouchZoneConfig & {
   v0: number;
   u1: number;
   v1: number;
+  /**
+   * 归一这条区时用的**几何来源**（2026-10-22 加的诊断字段）：
+   * `'design'` = 按设计画布像素投影；`'uv'` = 按 `fit`/`aspect` 声明的框还原后再投影。
+   *
+   * 为什么记下来：`u/v` 区在归一后与 `design` 区**长得一样**（都是视口分数），
+   * 事后无法从结果反推"作者当初怎么写的"，而排查"点不中"恰恰需要这个信息。
+   */
+  geom?: 'design' | 'uv';
 };
 
 /** 面积比较的容差：两区面积差小于它就当作"一样大"，落到数组顺序判据 */
@@ -161,6 +208,154 @@ export const designRectToViewport = (
   };
 };
 
+/* ── 对齐基准：宽 ⇄ 高 的换算（2026-10-22） ────────────────── */
+
+/**
+ * 对齐基准，**与 `config.fitAspect` 同字符串**（便于直接比较/透传）。
+ *
+ * - `'width'`（缺省）= 按画布宽对齐：可见**宽**恒 = 设计画布宽；
+ * - `'height'` = 按画布高对齐：可见**高**恒 = 设计画布高（同游戏内取景）。
+ */
+export type ZoneFit = 'width' | 'height';
+
+/** 某基准下"可见框"的尺寸（单位 = **设计画布像素**，锚点见文件头 §对齐基准） */
+export type AlignedFrame = { w: number; h: number };
+
+/**
+ * 算出某基准在比例 `aspect` 下的**可见框**尺寸（设计画布像素）。
+ *
+ * `aspect` 非正 / 非有限 ⇒ 该基准退化（`width` 时高为 `Infinity`、`height` 时宽为 0）
+ * ⇒ 调用方必须先保证它有效（`normalizeZones` 里由 `resolveSrcAspect` 兜住）。
+ */
+export const alignedFrameOf = (
+  fit: ZoneFit,
+  designW: number,
+  designH: number,
+  aspect: number
+): AlignedFrame =>
+  fit === 'height'
+    ? { w: designH * aspect, h: designH }
+    : { w: designW, h: designW / aspect };
+
+/**
+ * **归一化矩形（声明基准下）→ 设计画布像素矩形**。
+ *
+ * 这是 `designRectToViewport` 的**逆向第一步**：先把"分数"还原成"画布上的绝对位置"，
+ * 再交给按本帧取景的投影。结果端点已排序（`w/h >= 0`）。
+ */
+export const fitRectToDesign = (
+  r: { u0: number; v0: number; u1: number; v1: number },
+  fit: ZoneFit,
+  designW: number,
+  designH: number,
+  aspect: number
+): DesignRect => {
+  const fr = alignedFrameOf(fit, designW, designH, aspect);
+  const xa = designW / 2 + (r.u0 - 0.5) * fr.w;
+  const xb = designW / 2 + (r.u1 - 0.5) * fr.w;
+  const ya = designH - (1 - r.v0) * fr.h;
+  const yb = designH - (1 - r.v1) * fr.h;
+  return {
+    x: Math.min(xa, xb),
+    y: Math.min(ya, yb),
+    w: Math.abs(xb - xa),
+    h: Math.abs(yb - ya),
+  };
+};
+
+/**
+ * **设计画布像素矩形 → 归一化矩形（指定基准下）**。
+ *
+ * 给"按设计画布量好、想写成 `u/v`（某个对齐基准）"的场景 —— 也就是把 `design`
+ * 反向写成两种分数格式。结果端点已排序。
+ */
+export const designRectToFit = (
+  r: DesignRect,
+  fit: ZoneFit,
+  designW: number,
+  designH: number,
+  aspect: number
+): { u0: number; v0: number; u1: number; v1: number } => {
+  const fr = alignedFrameOf(fit, designW, designH, aspect);
+  const uA = 0.5 + (r.x - designW / 2) / fr.w;
+  const uB = 0.5 + (r.x + r.w - designW / 2) / fr.w;
+  const vA = 1 - (designH - r.y) / fr.h;
+  const vB = 1 - (designH - (r.y + r.h)) / fr.h;
+  return {
+    u0: Math.min(uA, uB),
+    u1: Math.max(uA, uB),
+    v0: Math.min(vA, vB),
+    v1: Math.max(vA, vB),
+  };
+};
+
+/**
+ * ★ **高对齐 ⇄ 宽对齐 的直接换算**（用户 2026-10-22 点名要的那段代码）。
+ *
+ * 两种可见框是**同一锚点的均匀缩放**（水平居中、底边对齐）⇒ 换算是**一个标量**
+ * `k = w_from / w_to`，绕锚点 `(0.5, 1)` 缩放：
+ *
+ * ```
+ * u_to = 0.5 + (u_from − 0.5)·k
+ * v_to = 1 − (1 − v_from)·k
+ * ```
+ *
+ * `width → height` 时 `k = (Wd/Hd)/A`（16:9、1700×750 下 ≈ 1.275 ⇒ 框**放大** 27.5%，
+ * 因为按高对齐把设计画布放大了），`height → width` 取倒数。
+ *
+ * `from === to` ⇒ 原样返回（只做端点排序，不引入浮点误差）。
+ */
+export const convertFitRect = (
+  r: { u0: number; v0: number; u1: number; v1: number },
+  from: ZoneFit,
+  to: ZoneFit,
+  designW: number,
+  designH: number,
+  aspect: number
+): { u0: number; v0: number; u1: number; v1: number } => {
+  const ua = Math.min(r.u0, r.u1);
+  const ub = Math.max(r.u0, r.u1);
+  const va = Math.min(r.v0, r.v1);
+  const vb = Math.max(r.v0, r.v1);
+  if (from === to) {
+    return { u0: ua, v0: va, u1: ub, v1: vb };
+  }
+  const a = alignedFrameOf(from, designW, designH, aspect);
+  const b = alignedFrameOf(to, designW, designH, aspect);
+  /**
+   * 两轴的比**相等**（`a.w/b.w === a.h/b.h`，因为两种框互为等比缩放）⇒ 一个标量就够。
+   * 这里取宽度比：`width` 基准的 `w ≡ designW` 是**与比例无关的常量**，数值上最稳。
+   */
+  const k = a.w / b.w;
+  const f = (u: number) => 0.5 + (u - 0.5) * k;
+  const g = (v: number) => 1 - (1 - v) * k;
+  const p = [f(ua), f(ub)];
+  const q = [g(va), g(vb)];
+  return {
+    u0: Math.min(p[0], p[1]),
+    u1: Math.max(p[0], p[1]),
+    v0: Math.min(q[0], q[1]),
+    v1: Math.max(q[0], q[1]),
+  };
+};
+
+/**
+ * **分数（声明基准 @ 声明比例）→ 本帧视口归一化**（`normalizeZones` 的 u/v 分支用这条）。
+ *
+ * 两步走：`fitRectToDesign`（还原画布位置）→ `designRectToViewport`（按本帧取景投影）。
+ * 走这条路而不是直接套 `convertFitRect`，是为了**只保留一份取景数学**
+ * （`halfH/halfHD` 的真相在 `initScene`）。
+ */
+export const uvRectToViewport = (
+  r: { u0: number; v0: number; u1: number; v1: number },
+  srcFit: ZoneFit,
+  srcAspect: number,
+  f: DesignFit
+): { u0: number; v0: number; u1: number; v1: number } =>
+  designRectToViewport(
+    fitRectToDesign(r, srcFit, f.designW, f.designH, srcAspect),
+    f
+  );
 
 /** 一次点击的命中结果 */
 export type ZoneHit = {
@@ -182,6 +377,10 @@ export type ZoneIssueCode =
   | 'E_ZONE_GEOM'
   /** `u0 > u1` 或 `v0 > v1` ⇒ 自动交换（多半是换算时漏了 y 轴翻转） */
   | 'W_ZONE_FLIPPED'
+  /** `fit` 不是 `'width'` / `'height'` ⇒ 按缺省 `'width'` 处理 */
+  | 'W_ZONE_FIT'
+  /** `aspect` 不是正有限数 ⇒ 按设计画幅比例处理（否则 u/v 无法还原到画布） */
+  | 'W_ZONE_ASPECT'
   /** 宽或高为 0 ⇒ 几乎点不中，保留但提醒 */
   | 'W_ZONE_DEGENERATE'
   /** 整块落在视口外 ⇒ 永远不可能被命中，保留但提醒 */
@@ -210,6 +409,62 @@ const isFiniteNum = (v: unknown): v is number =>
   typeof v === 'number' && isFinite(v);
 
 /**
+ * 解析 `zones[].fit`（**缺省 `'width'`**，2026-10-22 用户拍板）。
+ *
+ * 判据写成"只认 `'height'`"而不是"只认 `'width'`" ⇒ 与 `initScene.ts` /
+ * `settingsStore.readView` 的 `fitAspect` 解析口径**字字一致**（三处必须同向，
+ * 否则会出现"面板显示按宽、热区按高算"的假象）。非法值额外记一条 `W_ZONE_FIT`。
+ */
+const resolveSrcFit = (
+  raw: unknown,
+  id: string,
+  issues: ZoneIssue[]
+): ZoneFit => {
+  if (raw === undefined) {
+    return 'width';
+  }
+  if (raw === 'width' || raw === 'height') {
+    return raw;
+  }
+  issues.push({
+    code: 'W_ZONE_FIT',
+    level: 'warn',
+    id,
+    message: "fit 只能是 'width' | 'height' ⇒ 按缺省 'width' 处理",
+  });
+  return 'width';
+};
+
+/**
+ * 解析 `zones[].aspect`（**量 `u/v` 时的视口比例**，缺省 = 设计画幅比例）。
+ *
+ * 为什么必须有它：分数只有在"已知可见框尺寸"时才能还原成画布位置，而可见框
+ * 由比例决定（`width` 基准下 `h = Wd/A`、`height` 基准下 `w = Hd·A`）。
+ * 缺省设计比例 ⇒ 旧 `u/v`（在 1700×750 上量的）被解释成设计画布分数，
+ * 与 `design` 等价。
+ */
+const resolveSrcAspect = (
+  raw: unknown,
+  aspectD: number,
+  id: string,
+  issues: ZoneIssue[]
+): number => {
+  if (raw === undefined) {
+    return aspectD;
+  }
+  if (isFiniteNum(raw) && raw > 0) {
+    return raw;
+  }
+  issues.push({
+    code: 'W_ZONE_ASPECT',
+    level: 'warn',
+    id,
+    message: 'aspect 必须是正有限数 ⇒ 按设计画幅比例处理',
+  });
+  return aspectD;
+};
+
+/**
  * 归一 + 校验热区表。**纯函数，不抛异常**（畸形输入只产出 `issues`）。
  *
  * 为什么"宽容"：热区来自解包换算，坐标越界、矩形方向写反都是家常便饭；
@@ -218,7 +473,15 @@ const isFiniteNum = (v: unknown): v is number =>
  */
 export const normalizeZones = (
   raw: unknown,
-  /** 给了才能解析 `zones[].design`（设计画幅像素）；不给则只认 `u0..v1` */
+  /**
+   * 取景信息（来自 `index.ts` 的 `designFitOf()`）。
+   *
+   * - 给了：`zones[].design` 按本帧取景投影；`u0..v1` 按 `zones[].fit/aspect`
+   *   **还原到设计画布再投影** ⇒ 两种写法都随取景/对齐基准缩放；
+   * - 不给：`design` 区报 `E_ZONE_GEOM` 丢弃；`u/v` 原样当作视口分数（纯几何单测用）。
+   *
+   * ⚠️ 入参必须是**原始 config 的 zones**：归一结果已经投影过，再喂回来会二次投影。
+   */
   fit?: DesignFit
 ): NormalizeResult => {
   const issues: ZoneIssue[] = [];
@@ -269,10 +532,15 @@ export const normalizeZones = (
       return;
     }
     /**
-     * 几何来源二选一（2026-10-21）：
-     *   - `design`（**推荐**）：设计画幅像素，装配时按本帧取景投影 ⇒ 换分辨率不漂；
-     *   - `u0/v0/u1/v1`：视口归一化（旧口径），只对量它时的那个宽高比成立。
+     * 几何来源二选一（2026-10-21；2026-10-22 起**两者都会投影**）：
+     *   - `design`（**推荐**）：设计画布像素，装配时按本帧取景投影 ⇒ 换分辨率不漂；
+     *   - `u0/v0/u1/v1`：**声明基准下的分数**（`fit` 缺省 `'width'`、`aspect` 缺省
+     *     设计比例）⇒ 先还原成设计画布像素再投影。
      * `design` 优先（两个都写时以 design 为准）。
+     *
+     * ★ 2026-10-22 之前 `u/v` 是"视口分数"、**不随取景变** ⇒ 切对齐基准后热区留在
+     *   原地而角色缩放/移动，点手点不中（用户报的正是这个）。现在两者等价于
+     *   "设计画布位置"，只是书写单位不同。
      */
     const design = (z as { design?: DesignRect }).design;
     const hasDesign =
@@ -291,7 +559,6 @@ export const normalizeZones = (
     let u1: number;
     let v0: number;
     let v1: number;
-    let projected = false;
     if (hasDesign) {
       if (!fit) {
         issues.push({
@@ -308,12 +575,55 @@ export const normalizeZones = (
       u1 = p.u1;
       v0 = p.v0;
       v1 = p.v1;
-      projected = true;
     } else if (hasUV) {
-      u0 = z.u0;
-      u1 = z.u1;
-      v0 = z.v0;
-      v1 = z.v1;
+      let ru0 = z.u0;
+      let ru1 = z.u1;
+      let rv0 = z.v0;
+      let rv1 = z.v1;
+      /**
+       * ★ 端点方向**先修再换算**：负宽矩形进 `fitRectToDesign` 会被 `Math.min/max`
+       *   悄悄吞成"看起来正常的反向框"，此时再报 W_ZONE_FLIPPED 就说不清是谁反了。
+       *   （解包坐标系 Unity 的 y 轴**向上**、视口 y 轴**向下**，换算漏翻转就会整片反向。）
+       */
+      if (ru0 > ru1 || rv0 > rv1) {
+        if (ru0 > ru1) {
+          const t = ru0;
+          ru0 = ru1;
+          ru1 = t;
+        }
+        if (rv0 > rv1) {
+          const t = rv0;
+          rv0 = rv1;
+          rv1 = t;
+        }
+        issues.push({
+          code: 'W_ZONE_FLIPPED',
+          level: 'warn',
+          id,
+          message:
+            '矩形端点反向（已自动交换）：核对换算是否漏了 y 轴翻转（Unity y 向上、视口 y 向下）',
+        });
+      }
+      if (fit) {
+        const srcFit = resolveSrcFit(z.fit, id, issues);
+        const srcAspect = resolveSrcAspect(z.aspect, fit.aspectD, id, issues);
+        const p = uvRectToViewport(
+          { u0: ru0, v0: rv0, u1: ru1, v1: rv1 },
+          srcFit,
+          srcAspect,
+          fit
+        );
+        u0 = p.u0;
+        u1 = p.u1;
+        v0 = p.v0;
+        v1 = p.v1;
+      } else {
+        /** 没有取景信息 ⇒ 保持旧口径（纯视口分数），只做几何单测时走这条 */
+        u0 = ru0;
+        u1 = ru1;
+        v0 = rv0;
+        v1 = rv1;
+      }
     } else {
       issues.push({
         code: 'E_ZONE_GEOM',
@@ -324,27 +634,7 @@ export const normalizeZones = (
       });
       return;
     }
-    if (!projected && (u0 > u1 || v0 > v1)) {
-      // ★ 解包坐标系（Unity 的 y 轴**向上**）与视口（y 轴**向下**）方向相反，
-      //   换算时漏掉翻转就会整片反向 ⇒ 直接交换比"静默失效"友好得多，但要留痕。
-      if (u0 > u1) {
-        const t = u0;
-        u0 = u1;
-        u1 = t;
-      }
-      if (v0 > v1) {
-        const t = v0;
-        v0 = v1;
-        v1 = t;
-      }
-      issues.push({
-        code: 'W_ZONE_FLIPPED',
-        level: 'warn',
-        id,
-        message:
-          '矩形端点反向（已自动交换）：核对换算是否漏了 y 轴翻转（Unity y 向上、视口 y 向下）',
-      });
-    }
+    /** 端点方向在 u/v 分支里已就地修正（见上面的 `W_ZONE_FLIPPED`）；投影结果天然有序 */
 
     if (u1 - u0 < AREA_EPS || v1 - v0 < AREA_EPS) {
       issues.push({
@@ -386,6 +676,7 @@ export const normalizeZones = (
       u1,
       v1,
       priority,
+      geom: hasDesign ? 'design' : 'uv',
     });
   });
 

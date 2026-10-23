@@ -50,11 +50,14 @@ npx ts-node --transpile-only _regress/<脚本名>.ts [参数...]
 | `89_回归_事件开关.ts`           | **无**（`EventState` 归一/双向开关/零拷贝/悬空键清理 + 端到端"关掉≠删掉"）                                      | —                         | —                                              |
 | `90_回归_迁移等价.ts`           | **无**（旧池键 ↔ 条目级 `on`/`when` 的逐条等价、换序不漂移、孤儿不上线）                                        | —                         | —                                              |
 | `91_回归_事件文件.ts`           | **无**（JSONC 注释剥离/尾逗号/BOM/CRLF/报错行列/形状错误 + 文件 vs config 归一等价）                            | —                         | —                                              |
+| `102_回归_热区对齐换算.ts`      | `argv[2]` = `config.json`（**可选**：只用于 E 段的真实工程比对，文件缺失则该段跳过）                           | `WK_CONFIG`               | `public/assets/config.json`                    |
+| `103_回归_热区引用共享.ts`      | `argv[2]` = `config.json`（**可选**：只用于 C 段的真实工程比对，文件缺失则该段跳过）                           | `WK_CONFIG`               | `public/assets/config.json`                    |
 
 > ⚠️ **编号先看现状再取号**：`docx/PLAN_自定义事件系统_2026-10-18.md` §10 把自定义事件的
 > S1~S9 排在 **83~88**（77 = 触摸热区、82 = 多格式语音均已落地；78~81 留给并行工作线）。
 > **83~90 已于 2026-10-18 落地**（对应 S1+S3 / S2 / S4 / S5 / S6 / S7 / S9 / S8）。
-> 新脚本落地前先 `ls _regress` 确认下一个可用号（**91** 起）。
+> **91~103 已用**（91 事件文件 / 92~101 事件兼容与档案 / **102 热区对齐换算** /
+> **103 热区引用共享**）。新脚本落地前先 `ls _regress` 确认下一个可用号（**104** 起）。
 
 例：
 
@@ -93,6 +96,8 @@ npx ts-node --transpile-only _regress/64_回归_触摸通道并池.ts
 | `77`        | **「触摸热区 · 自定义与重叠裁决」（2026-10-17）** —— ① `normalizeZones` 的归一与校验（`E_ZONE_ID_MISSING` / `E_ZONE_ID_DUP` / `E_ZONE_GEOM` / `E_ZONES_NOT_ARRAY`、`W_ZONE_FLIPPED` **端点反向自动交换** / `W_ZONE_DEGENERATE` / `W_ZONE_OUT_OF_VIEW` / `W_ZONE_PRIORITY`，逐条对到 issue code）；② 裁决四判据（`enabled` 过滤 → `priority` **降序** → **面积升序** → 数组下标；含端点含、越界区仍命中、视口尺寸非正、`enabled:false` 让位、三区重叠的完整裁决序）；③ ★ **零回归**：把改动前的旧口径（"数组顺序先命中先返回"）抄回脚本，在同一批数据上做 **11×11 网格逐点比对** —— 单区 / 互不重叠多区 / **真实 `config.json`** 必须 `diff=0`，重叠多区必须 `diff>0` 且恰好 = 9（0.4~0.6 的 3×3，证明规则只在重叠处生效）；④ `touch.ts` 的 `hitTestZones` 已委派到 `src/touchZones.ts`、`describeZoneHit` 文案 |
 | `75`        | **P5-a「Sub Emitters · config 结构」（2026-10-17）** —— ⚠️ **只钉结构契约、不钉渲染**（引擎 P5-b 才接线，三个产物实测 0 个用例）：① **零回归**（现有 config 不含 `subEmitters`/`subOnly` ⇒ 校验器零警告）；② 合法配置与 `effectiveSubEmitterTargets()` 的 父 → 子 映射（含「同一目标被多个父共用」与「链式嵌套」）；③ **9 条 `severity: 'error'`** 逐条（target 缺失 / 找不到 / 自引用、trigger 非法、`collision`·`trigger` 未实现、inherit 非法、probability / instances / instanceMaxNum 越界）；④ **4 条 `severity: 'warn'`** 逐条（`z.mismatch`、`emission.notBurstOnly`（手册逐字：Death/Collision/Trigger/Manual 只能用 burst）、`subOnly.unreferenced`、`cycle` 成环）；⑤ 缺省值（trigger=birth / inherit=[] / probability=1 / instances=4）与 5 个继承位、5 档触发；⑥ 畸形输入不抛异常；⑦ ★ **P5-a 的边界**：`dist/bundle.js` 里**不含**校验器字符串 ⇒ 证明「未接线、对壁纸零影响」（**P5-b 接线后本条应改成反向断言**） |
 | `82`        | **多格式语音（2026-10-17，TODO 前置条件）** —— ① 纯函数：候选链顺序（原串在先 + extOrder 去重补位）、子目录保留、`extOrder: []` = 只试原扩展名、"非音频后缀不算扩展名"、`normalizeExtOrder` 的去点/小写/丢垃圾/全垃圾退缺省；② 运行时降级链：`NotSupportedError` 与元素 `error` 事件都会降级、`NotAllowedError` / `AbortError` **不**降级（前者是自动播放拦截、后者是我们自己打断）、全链失败静音且每个词干**只 warn 一次**；③ `canPlayType` 探测（判否跳过、**全判否时 fail-safe 照原顺序实测**）；④ 命中记忆（同词干下次先试上次成功的扩展名，且**按播放器实例隔离**）；⑤ 代际保护（连点两条时，上一条**迟到的失败**不得改写正在播的 `src`；`stop()` 后的迟到 `error` 不复活降级）；⑥ 零回归：老 config（无 `extOrder`）第一个候选仍是原串、行为不变                                                                                                                                                                           |
+
+| `102`       | **「热区对齐基准 · 宽 ⇄ 高 换算」（2026-10-22）** —— 用户报"换按宽/按高后热区不动、点手点不中"。① 换算自洽：`fitRectToDesign` / `designRectToFit` 两基准 × 五比例互为逆（误差 <1e-12）；② **设计比例下两基准完全重合** ⇒ `u/v` 等价于 `design` 分数；③ `convertFitRect` = 绕 `(0.5,1)` 的**均匀缩放** `k=(Wd/Hd)/A`（16:9 下 k≈1.275 放大、21:9 下 k≈0.971 缩小），且**换算前后画布位置不变**（"换基准不等于换位置"）；④ 接入 `normalizeZones` 后：同一组 `u/v` 在两种基准下结果**不同**（改前不变）但**同一个画布点都命中**、缺省 `u/v` ≡ 同位置 `design`、比例变了结果跟着变、声明 `aspect` 后 16:9 与 21:9 反投影回**同一块画布**、非法 `fit`/`aspect` 降级为 `W_ZONE_FIT`/`W_ZONE_ASPECT`、端点反向仍先修再换算、不传 `DesignFit` 时保持旧口径透传；⑤ 真实 `config.json`：`hit1` 兜底区在 5 组基准/比例下仍覆盖 `[0,1]²`，`design` 区随基准"更靠右更靠上"（取景放大 1.275×） |
 
 > ⚠️ `65` 的 D 段有一条**早已失配**的断言（找面板文案「旧版「touch 触发 greet 事件」开关打开的效果」，
 > 该短语在 `src/` 里根本不存在、且注释不会进 bundle）⇒ 它会稳定报 1 条 FAIL，与本次改动无关。

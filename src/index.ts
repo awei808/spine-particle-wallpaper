@@ -550,6 +550,26 @@ const main = async () => {
       issue.message
     );
   });
+  /**
+   * ★ u/v 区现在**也走投影**（2026-10-22）：它们在配置里是"某对齐基准下的分数"，
+   * 装配期先还原成设计画布像素、再按本帧取景投影 ⇒ 换基准/换比例时跟着角色一起缩放。
+   * 这一行把"每个 u/v 区被当成哪个基准、哪个比例"打出来 —— 点不中时先看它。
+   */
+  {
+    const aspectD = configs.width / configs.height;
+    touchZones
+      .filter((z) => z.geom === 'uv')
+      .forEach((z) => {
+        const declared = typeof z.aspect === 'number' && z.aspect > 0;
+        console.info(
+          '[touch.zones] %s: u/v 按 fit=%s / aspect=%s 投影到设计画布（说明见 config.type.ts）',
+          z.id,
+          z.fit === 'height' ? 'height' : 'width',
+          (declared ? (z.aspect as number) : aspectD).toFixed(4) +
+            (declared ? '' : '（缺省=设计比例）')
+        );
+      });
+  }
   if (touchEnabled && !touchZones.length) {
     console.warn(
       '[touch] config.json 缺少 touch.zones ⇒ 触摸交互已禁用（热区现在只认配置，代码里不再有兜底矩形）'
@@ -558,12 +578,14 @@ const main = async () => {
   const touchActive = touchEnabled && touchZones.length > 0;
 
   /**
-   * ★ 换分辨率 / 窗口比例 ⇒ **重投影** `design` 热区（2026-10-21）。
+   * ★ 换分辨率 / 窗口比例 ⇒ **重投影**热区（2026-10-21；2026-10-22 起 `u/v` 也走这条）。
    *
    * 原地改 `touchZones`（`touch` 控制器与覆盖层持有的是**同一个数组引用**），
    * 覆盖层若已建则 dispose ⇒ 下一帧按新矩形重建（它的框用百分比定位，不重建就是旧值）。
    *
-   * 只有 `zones[].design` 的工程会真的变；纯 `u0..v1` 的工程重算结果与原来一致（幂等）。
+   * 两种写法都会变：`design` 按本帧取景投影；`u/v` 先按 `fit`/`aspect` 还原到设计画布、
+   * 再按本帧取景投影 —— 即"热区跟着画布/角色走，而不是钉在屏幕上"。
+   * 入参始终是**原始 config**（`touchCfg.zones`），所以重算是幂等的（不会二次投影）。
    * 为什么要监听尺寸而不只在启动算一次：`fitAspect: 'width'` 下可见高随比例变，
    * 拖窗口 / 换显示器 / 多屏跨 DPI 都会让设计画幅的落点变，热区不跟着改就点不中。
    */
@@ -578,9 +600,30 @@ const main = async () => {
       const next = normalizeZones(touchCfg?.zones, designFitOf());
       touchZones.length = 0;
       touchZones.push(...next.zones);
+      /**
+       * ★★ 覆盖层必须**重建**（2026-10-23 修）。
+       *
+       * `createTouchZoneOverlay` 在构造时就把每个框的 `left/top/width/height`
+       * 按当时的 `u0..v1` 算死（百分比字符串，`touchZoneOverlay.ts:118-136`），
+       * 之后只改边框/底色，**不会重算几何** ⇒ 数组虽已原地更新，框还停在旧位置。
+       *
+       * 以前的写法只 `dispose()` + 置 `null`，而全工程唯一的 `createTouchZoneOverlay`
+       * 调用点在资源就绪回调里（下面 `touchShowZones && !zoneOverlay` 那段，只执行一次）
+       * ⇒ **拖一次窗口，调试框就永久消失**，直到重载页面。
+       *
+       * `hadOverlay` 守卫：只在"本来就有"时重建 —— 资源还没就绪时 resize 不能凭空
+       * 造一个覆盖层出来（那会抢在角色就绪之前上屏，与原有创建时机不一致）。
+       *
+       * ⚠️ `onZoneHit` 闭包读的是**变量** `zoneOverlay`（不是捕获的常量），
+       *    所以这里重新赋值后，控制器那条回调会自动指向新实例。
+       */
+      const hadOverlay = !!zoneOverlay;
       if (zoneOverlay) {
         zoneOverlay.dispose();
         zoneOverlay = null;
+      }
+      if (hadOverlay) {
+        zoneOverlay = createTouchZoneOverlay(touchZones);
       }
     });
   }

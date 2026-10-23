@@ -1,6 +1,6 @@
 # TODO
 
-> 最后更新：2026-10-21
+> 最后更新：2026-10-22
 > 本文件只回答「下一步做什么」。**已完成的过程记录**（自定义事件系统、事件文件化 A/B/C/D 四批、
 > `weight:0` bug 复盘、事件族 / 恢复默认首批）已整份归档到 `docx/_archive/2026-10/TODO_落地记录_2026-10-21.md`。
 > 设计真相：`PLAN_自定义事件系统_2026-10-18.md`（字段 / 条件 / 调度 / 校验）、`PLAN_事件配置文件_2026-10-19.md`（文件格式）。
@@ -23,6 +23,16 @@
 > ③ **档案分页** —— 顶部「全部 / 按事件族 / 按通道分组」三视图，后两种再按族 / 按组分页签（`archive.ts` 的 `Row.grp` / `Row.fam`，`rowCount()` 返回当前视图行数）；行数少了 ⇒ 缩放放大回 1 ⇒ 字变大；
 > ④ **指南** —— 档案页脚与设置面板「事件开关」页都写明：详细信息（条件 / 动作 / 粒子 / 念白 / 语音）在 `assets/events.jsonc` 看，**自定义事件也在同一个文件里实现**。
 > 回归：`_regress/100_回归_默认项与档案分页.ts`（25 条断言：默认项 4 + 补勾迁移 5 + 分页 13 + 指南 3），另附最小 DOM 替身 `_regress/100_dom_stub.ts`。
+
+> ✅ 2026-10-22 已完成：**热区跟着对齐基准走**（用户报「换按宽/按高后热区不动，点手点不中」）。
+> 根因：`u0..v1` 被当成**视口分数**，与取景无关；`design` 区虽会投影，但两种写法口径不统一。
+> 落点：`zones[].fit`（缺省 **`width`**）+ `zones[].aspect`（缺省设计比例）—— 先把分数按
+> 声明基准还原成**设计画布像素**，再按本帧取景投影（`touchZones.ts` 的
+> `fitRectToDesign` / `designRectToFit` / `convertFitRect` / `uvRectToViewport`）；
+> 换算工具：`scripts/convertZones.ts`（`npm run convert-zones -- <config> --to design`）。
+> 回归：`_regress/102`（33 条：换算往返 / 两基准在设计比例重合 / 均匀缩放 k=(Wd/Hd)/A /
+> 跨比例命中同一画布 / 非法值降级 / 真实 config 兜底仍覆盖全屏）+ `_regress/77`（55 条，零回归）
+> + `_regress/97`（三分辨率真实点击，12 条）。
 
 > ✅ 2026-10-21 已完成：**热区分区**（`hand` / `head` + `zones[].design` 跨分辨率坐标）。
 > 落点：`config.json` 的 `touch.zones`、`events.jsonc` 的 `custom:hold-hand`（`when.ctx.zone="hand"`，已去掉 `weight:0`）。

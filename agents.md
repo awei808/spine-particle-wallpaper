@@ -50,17 +50,26 @@ src/
   touch.ts          Hit zones + action gating (mutual exclusion / interrupt rules);
                     takes a `pick(zoneId)` callback — it does NOT select entries itself
   touchZones.ts     * THE hit-zone data layer: normalize / validate / hit-test / overlap
-                    arbitration. A zone may be authored either as viewport-normalized
-                    `u0..v1` (fractions — valid ONLY at the aspect you measured on) or as
-                    `design:{x,y,w,h}` (design-canvas pixels, denominator =
-                    `config.width × config.height`, top-left origin). `design` is projected
-                    at assembly and re-projected on resize via `normalizeZones(raw, fit)`;
-                    **calling it without a `fit` drops every `design` zone** with
-                    `E_ZONE_GEOM` — that is exactly how `_regress/77`'s C4 kept passing
-                    while silently testing a single zone. Why it matters: with
+                    arbitration. A zone may be authored either as `design:{x,y,w,h}`
+                    (design-canvas pixels, denominator = `config.width × config.height`,
+                    top-left origin) or as `u0..v1` **plus `fit`/`aspect`** (fractions of the
+                    aligned frame: `fit:'width'` default ⇒  visible w = design w,  visible
+                    h = design w / A; `aspect` = the viewport aspect you measured on, default
+                    = design aspect). BOTH are turned into design-canvas pixels and projected
+                    at assembly, then re-projected on resize via `normalizeZones(raw, fit)`
+                    — so zones follow the framing instead of being glued to the screen
+                    (that glue was the 2026-10-22 bug: switching 按宽/按高 moved the character
+                    but not the zones). `u/v` → design px is `fitRectToDesign`, the inverse is
+                    `designRectToFit`, and the 高⇄宽 conversion is `convertFitRect`
+                    (a single uniform scale `k = (Wd/Hd)/A` about `(0.5,1)`).
+                    **Calling `normalizeZones` without a `fit` drops every `design` zone**
+                    with `E_ZONE_GEOM` (and passes `u/v` through raw) — that is exactly how
+                    `_regress/77`'s C4 once kept passing while silently testing a single zone;
+                    `_regress/102` pins the conversion math. Why it matters: with
                     `fitAspect:'width'` the visible WIDTH is constant but the visible HEIGHT
                     follows the aspect, so a hand measured at v=0.128 (1700×750) sits at
-                    v≈0.316 on 1920×1080. **Never convert measured pixels to `u/v`.**
+                    v≈0.316 on 1920×1080. **Never convert measured pixels to `u/v`** — write
+                    `design` pixels, or write `u/v` AND record the `fit`/`aspect` you measured on.
   touchZoneOverlay.ts  Visual overlay for hit zones
   pointerTrail.ts   Cursor trail (deliberately separate from scene particles)
   settingsPanel.ts  Built-in settings panel (6 tabs — the last one, "壁纸独立设置", is
@@ -102,6 +111,12 @@ public/audio-check.html  Audio-format self-test page (canPlayType + real decode 
 ```
 
 ## Setup & build — read this before running anything
+
+> **Deploying to Wallpaper Engine?** The authoritative procedure for the three shipped
+> skins (S8 / S6 / S9) — source→target paths, the `21_` full-sync commands, festival voice
+> file locations, and the "new year has no voice line" rule — lives in
+> `D:\手游文件夹\灵魂潮汐\docs\02_部署与发布.md` → 「三个壁纸工程的标准部署」.
+> Do not duplicate it here.
 
 ```bash
 git clone --recurse-submodules https://github.com/awei808/spine-particle-wallpaper.git

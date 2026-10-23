@@ -561,7 +561,23 @@ export const createTouchController = (
     options.pick ?? (() => null);
   /** 池大小（**仅统计口径**，不参与播放判据） */
   const poolSize = typeof options.poolSize === 'number' ? options.poolSize : 0;
-  const zones = options.zones.slice();
+  /**
+   * ★★ 热区数组**必须与调用方共享同一个引用**，不能 `.slice()`（2026-10-23 修）。
+   *
+   * `index.ts` 的重投影逻辑（`resize` ⇒ `normalizeZones` ⇒
+   * `touchZones.length = 0; touchZones.push(...next.zones)`）是**原地改写**，
+   * 正是靠"控制器与覆盖层持有同一个数组"才让换分辨率/换对齐基准后命中框跟着走
+   * （该行为的说明见 `index.ts` 那段循环的注释）。
+   *
+   * 以前这里是 `options.zones.slice()` ⇒ 控制器拿的是启动那一刻的**快照**：
+   * 调用方后来怎么改都与它无关 ⇒ `onMouseDown` 永远用旧矩形判定，
+   * "热区跟随取景重投影"整条功能从来没有生效过（切到按宽基准后点手点到空白处）。
+   * 这个 bug 不报错、不改任何读数（`snapshot().zones` 也只是把那份旧副本念一遍）。
+   *
+   * ⚠️ 安全性：内部只**读**这个数组（`hitTestZonesDetailed` 在
+   * `collectZoneHitsAt` 里另建 `hits` 数组再排序），不会改写入参。
+   */
+  const zones = options.zones;
   const onZoneHit = options.onZoneHit;
   const onAction = options.onAction;
   const random = options.random ?? Math.random;
