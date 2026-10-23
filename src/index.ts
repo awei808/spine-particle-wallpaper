@@ -944,6 +944,16 @@ const main = async () => {
      * ⚠️ 必须**在 `entry` 为空时也照常触发**：动作与特效是两件事，
      *   念白缺失（`entry=null`）只意味着"不出字幕"，不意味着"不播特效"。
      */
+    /**
+     * ★★ `animationName` 为空串 = **纯台词事件**（2026-10-23）。
+     *
+     * 此时不查「动作 → 特效」表：空串作键永远查不到，但**明确早退**更省一次
+     * map 查找，也把语义写清楚 —— 纯台词没有动作，自然没有跟随动作的额外粒子。
+     * ⚠️ 事件级 `entry.particles` 仍要生效（那是显式声明，与动作无关），
+     *    所以只跳过"按动画名查 `actionEffects`"那一路，不能整段跳过 `playActionEffects`。
+     *    这里靠 `playActionEffects('' , entry)` 内部先判 `entry.particles` 来实现
+     *    （见它的实现：`entry.particles` 存在时**优先**，不会去看动画名）。
+     */
     playActionEffects(animationName, entry);
     if (!entry) {
       // 本次动作没配字幕 ⇒ 收起上一条，免得"动作换了、台词还是上一句"
@@ -1333,14 +1343,133 @@ const main = async () => {
      *   与抽中哪个变体无关，所以必须等"已经决定播它"之后再抽。
      */
     const entry = resolveEventVariant(picked, eventRandom);
-    if (!entry.animation) {
-      return false;
-    }
+    /**
+     * ★★ `!entry.animation` **不再拒绝**（2026-10-23）。
+     *
+     * 纯台词事件（有 `text`/`voice`、无 `animation`）从 2026-10-18 起就是合法形状
+     * （`config.type.ts:879`，`E_EVENT_EMPTY` 只判"两者皆空"）⇒ 校验放行、档案算进池。
+     * 改前这里一刀切 `return false` ⇒ 选中即空转，且零日志：若它是某类里唯一一条，
+     * 待机/问候通道会整条哑掉。现在交给 `touchController.trigger` 决定 ——
+     * 那里对"有 text 无 animation"会走**只广播字幕**的分支（见 `touch.ts` 的 `trigger`）。
+     *
+     * ⚠️ 真正"什么内容都没有"的条目仍会被 `trigger` 挡下（计 skip + warn），
+     *    而且正常路径上它已被 `E_EVENT_EMPTY` 判 reject 进 `unplayable`，进不了这里。
+     */
     /**
      * ⚠️ 记账（`eventLog.commit`）**不在这里**：由 `onAction` 在"真的开始播"时统一做。
      *   否则一次被忙碌闸门拒绝的抽取会白白吃掉一次配额。
      */
     return touchController.trigger(entry, source);
+  };
+
+  /**
+   * ══════════════════════════════════════════════════════════════════════════
+   * **手动触发**（调试面板 / `__WB_DIALOGUE__.trigger`）—— 唯一的两个入口共用
+   * ══════════════════════════════════════════════════════════════════════════
+   *
+   * ## ★★ 2026-10-23（P0-4）为什么必须补这一层
+   *
+   * 改前这两条路径都是 `touchController.trigger(findByEventKey(...), src)` ——
+   * **完全绕过漏斗**，却仍然会经 `onAction` 走到 `eventLog.commit`。后果：
+   *
+   * | 缺失的闸门 | 后果 |
+   * |---|---|
+   * | 不判 `enabled === false` | 被本机开关关掉的事件能从调试面板播出来 |
+   * | 不判 `unplayable` | 被校验 `reject`（骨架里没这条 clip 等）的事件能播 |
+   * | 不判 `on` 非空 | `on: []` 的"显式不可达"条目能播 |
+   * | 不调 `beginTick()` | `commit` 把 `groups[g]` 写成**上一次**的 tick 号 ⇒ 互斥组判定失准 |
+   * | 但**会** `commit` | 手动点几下吃光 `quota.ever` ⇒ 自动通道从此再也不播 |
+   *
+   * ## 设计取舍：手动**不判**冷却/配额，但**也不消耗**它们
+   *
+   * 手动触发的用途是"我现在就要看这一条"（排查"它到底播出来什么样"）。
+   * 若也按冷却/配额拦截，正在冷却的事件就点不动 —— 那会让这个调试入口在最需要时失效。
+   * 折中：**放行**（不看 `allows`），但记账走 `manual: true`（不涨配额计数）。
+   *
+   * ⚠️ 与真实触发**仍然不同源**的一点是"不看冷却/配额"—— 这是刻意的，
+   *    注释在此声明，避免以后有人以为漏了。其余四层（`enabled` / `unplayable` /
+   *    `on` 非空 / `beginTick`）与自动路径**完全一致**。
+   *
+   * @returns 是否真的播了（`false` ⇒ 面板红闪，这正是它该给的诊断信息）
+   */
+  /**
+   * 「本次播放是手动触发的」一次性标记（2026-10-23，P0-4）。
+   *
+   * 为什么要这么绕：记账的唯一落点是 `onAction` 回调（它在 `createTouchController`
+   * 的 options 里，闭包已捕获）。而"手动/自动"这个区别只有 `triggerManual` 知道。
+   * 三条备选：
+   *   ① 在 `triggerManual` 里再 commit 一次 ⇒ **双份记账**，配额还是会被吃；
+   *   ② 给 `trigger` 加一个 `manual` 形参，一路透传到 `onAction` 的 payload
+   *      ⇒ 要改 `TouchController` 接口 + `ActionPlayPayload` + 所有实现/回归桩；
+   *   ③ 用一次性标记跨过那一次同步调用 ⇒ 记账点仍然唯一（当前采用）。
+   *
+   * `trigger` → `playAction` → `onAction` 是**同步**的，所以置位后立刻会被消费；
+   * 万一某条路径没走到 `onAction`（被闸门拒绝），下一次 `triggerManual` 会重新置位，
+   * 且标记只影响"涨不涨配额"，不会让自动播放松掉记账（默认 `false`）。
+   */
+  let nextCommitIsManual = false;
+
+  const triggerManual = (
+    key: EventKeyInput,
+    source: 'touch' | 'greet' | 'standby' = 'touch'
+  ): boolean => {
+    if (!touchController) {
+      return false;
+    }
+    /**
+     * ★ 从 `phasedDialogues` 找（= 动作族投影 + 存在性 + **全局事件族闸门**）。
+     *   ⚠️ 不能退化成 `eventTable` / `activeDialogues`：那样会绕开事件族闸门，
+     *   让"被用户勾掉的族"从调试面板漏出来，读数与真实行为不符。
+     */
+    const entry = findByEventKey(phasedDialogues, key);
+    if (!entry) {
+      return false;
+    }
+    /**
+     * ① 权限层 —— 与 `collectCandidates` 同口径（那三条缺一不可）：
+     *    `enabled` / `unplayable` / `on` 非空。
+     */
+    if (entry.enabled === false) {
+      console.info('[debug] 「%s」被本机事件开关关掉 ⇒ 手动触发也拒绝', key);
+      return false;
+    }
+    const ek = eventKeyOf(entry);
+    if (!ek || unplayable[ek]) {
+      console.info(
+        '[debug] 「%s」被校验判为不可播（骨架缺动画等）⇒ 手动触发也拒绝',
+        key
+      );
+      return false;
+    }
+    if (!channelsOf(entry).length) {
+      console.info(
+        '[debug] 「%s」的 on 为空（显式不可达）⇒ 手动触发也拒绝',
+        key
+      );
+      return false;
+    }
+    /**
+     * ② 变体：顺手抽一次 —— 手动触发也该看到"这一条会播成什么样"，
+     *    与 `playEvent` / 触摸 `pick` 保持同源。
+     */
+    const picked = resolveEventVariant(entry, eventRandom);
+    /**
+     * ③ 开新 tick：让 `commit` 写下的互斥组 tick 号是**当前**这一拍。
+     *    不调的话写进去的是上一次自动抽取的 tick，下次自动抽取可能撞号。
+     */
+    eventLog.beginTick();
+    /**
+     * ④ 记账**不在这里**：由 `onAction`（唯一记账点）消费这个标记后完成，
+     *    参数 `manual: true` ⇒ 只写 `lastAt`，不涨配额。
+     *    ⚠️ 标记必须在 `trigger` **之前**置位（`trigger` 内部同步调 `onAction`）。
+     */
+    nextCommitIsManual = true;
+    const played = touchController.trigger(picked, source);
+    if (!played) {
+      /** 没播成（忙碌/骨架缺动画等）⇒ `onAction` 没被调用，标记要撤掉 */
+      nextCommitIsManual = false;
+    }
+    return played;
   };
 
   /**
@@ -2080,9 +2209,24 @@ const main = async () => {
                       idleSequence?.resume(mixSeconds),
                     touchAnimations: touchNames,
                     zones: touchZones,
-                    /** ★ 唯一漏斗：命中哪个热区 → 哪一条（由 `resolveEvent` 决定） */
-                    pick: (zoneId) =>
-                      resolveEvent('touch', touchKinds, { zone: zoneId }),
+                    /**
+                     * ★ 唯一漏斗：命中哪个热区 → 哪一条（由 `resolveEvent` 决定）。
+                     *
+                     * ★★ 2026-10-23 补 `resolveEventVariant`：此前这里**只调了漏斗、
+                     *   没抽变体** ⇒ `variants` 在触摸通道上完全失效（永远播基准那条）。
+                     *   greet/standby 走 `playEvent`，那里面已经抽了；两条路径必须同源，
+                     *   否则"同一条事件在点击与待机下播的内容不一样"。
+                     *   顺序也与 `playEvent` 保持一致：**先**过漏斗（含冷却/配额判定），
+                     *   **再**抽变体 —— 冷却/配额只看事件、与抽中哪个变体无关。
+                     */
+                    pick: (zoneId) => {
+                      const picked = resolveEvent('touch', touchKinds, {
+                        zone: zoneId,
+                      });
+                      return picked
+                        ? resolveEventVariant(picked, eventRandom)
+                        : null;
+                    },
                     poolSize: touchPool.length,
                     // 命中哪块就把哪块点亮——桌面上截图即可判读热区位置对不对；
                     // ★ 同时把"本次命中的全部候选"传进去 ⇒ 重叠处能看出谁赢、谁被压住
@@ -2100,9 +2244,16 @@ const main = async () => {
                        *
                        * 三个通道都汇到这里，且只有**真的开始播**才会回调
                        * ⇒ 冷却 / 配额 / 互斥组不会被"抽到了但被闸门拒绝"白白消耗。
+                       *
+                       * ★ `nextCommitIsManual`：**唯一**区分"手动/自动"的口子。
+                       *   `triggerManual` 发起播放前置位，这里消费并复位 ——
+                       *   这样记账仍然只有这一处（不新增第二份计数逻辑），
+                       *   只是把"要不要涨配额"这个参数传下去。
                        */
                       if (payload.entry) {
-                        eventLog.commit(payload.entry, Date.now());
+                        const manual = nextCommitIsManual;
+                        nextCommitIsManual = false;
+                        eventLog.commit(payload.entry, Date.now(), manual);
                       }
                       showDialogue(payload.entry, payload.animation);
                     },
@@ -2266,18 +2417,15 @@ const main = async () => {
          * ★ `weight:0` 的事件只能从这里手动播（自动通道永不选中它）。
          */
         trigger: (key: EventKeyInput, source?: string) => {
-          if (!touchController) {
-            return false;
-          }
-          /**
-           * ★★★ 从 `phasedDialogues` 找（= 动作族投影 + 存在性 + **全局事件族闸门**）
-           *   —— 与真实点击/待机**完全同源**。
-           *   ⚠️ 不能退化成 `activeDialogues`：那样探针会绕过事件族，读数与真实行为不符。
-           */
-          const entry = findByEventKey(phasedDialogues, key);
           const src =
             source === 'greet' || source === 'standby' ? source : 'touch';
-          return entry ? touchController.trigger(entry, src) : false;
+          /**
+           * ★★ 2026-10-23（P0-4）：改走 `triggerManual`，不再直接 `touchController.trigger`。
+           *   改前这条路径完全绕过漏斗（`enabled` / `unplayable` / `on` 非空都不判、
+           *   `beginTick` 也不调），却仍然经 `onAction` 记账 ⇒ 探针点几下就能
+           *   把 `quota.ever` 吃光。闸门与记账口径见 `triggerManual` 的注释。
+           */
+          return triggerManual(key, src);
         },
         /**
          * **事件表校验报告**（PLAN §6.3）。回归断言用。
@@ -2635,17 +2783,16 @@ const main = async () => {
          *   `__WB_DIALOGUE__.trigger`（下面 2055 行）**同一条**路径，不新增第二判据。
          */
         onTriggerEvent: (key: string) => {
-          if (!touchController) {
-            return false;
-          }
           /**
-           * ★★ 从 `phasedDialogues` 里找（动作族投影 + 存在性 + **全局事件族闸门**）：
-           *   ① 用 `activeDialogues` 会播婚前动画名，看起来像"动作族没生效"；
-           *   ② 不过闸门 ⇒ 点一条被事件族勾掉的条目居然能播，与真实触发不符。
-           *   条目被闸门挡住时返回 false，面板红闪 —— 这正是它该有的诊断信息。
+           * ★★ 2026-10-23（P0-4）：改走 `triggerManual` —— 与 `__WB_DIALOGUE__.trigger`
+           *   现在是**同一行代码**，不再各写一份判据。
+           *
+           * 改前这里同样绕过漏斗：被本机开关关掉的 / 被校验 reject 的 / `on: []` 的
+           * 条目都能从面板点出来，而且照样吃 `quota.ever`。
+           * 现在：`enabled` / `unplayable` / `on` 非空三层照判（不通过 ⇒ 面板红闪，
+           * 这正是它该有的诊断信息）；冷却 / 配额**放行但不消耗**。
            */
-          const entry = findByEventKey(phasedDialogues, key);
-          return touchController.trigger(entry, 'touch');
+          return triggerManual(key, 'touch');
         },
         /**
          * 调试面板「触发事件」的候选 = 本状态下**存在**的全部念白（`activeDialogues`）。

@@ -105,6 +105,13 @@ import {
   TouchZoneConfig,
 } from './config.type';
 import { hitTestZonesDetailed, TouchZone, ZoneHit } from './touchZones';
+/**
+ * `eventKeyOf`：纯台词事件的 warn 去重要用它的 id 当键。
+ *
+ * ⚠️ 依赖方向安全：`eventModel.ts` 只依赖 `config.type.ts` / `conditions.ts`，
+ * **不 import `touch.ts`**（已核对），因此不构成循环引用。
+ */
+import { eventKeyOf } from './eventModel';
 
 /**
  * ⚠️ `TouchZone` 的**权威定义已迁到 `touchZones.ts`**（2026-10-17：热区有了自己的
@@ -309,7 +316,14 @@ export const decidePlay = (
   return candidate.priority > active.priority ? 'play' : base;
 };
 
-/** 一次动作播放的载荷。`entry` 为 `null` ⇒ 该动作没有配字幕（只播动作） */
+/**
+ * 一次动作播放的载荷。
+ *
+ * - `entry` 为 `null` ⇒ 该动作没有配字幕（只播动作）
+ * - `animation` 为**空串** ⇒ 这是一条**纯台词事件**（只有 text/voice，没有 spine 动作），
+ *   此时 `entry` 必非空。消费方（`index.ts` 的 `showDialogue`）据此只走字幕/语音、
+ *   不碰任何动作轨道 —— 见 `trigger` 里"纯台词"那段注释。
+ */
 export type ActionPlayPayload = {
   source: ActionSource;
   animation: string;
@@ -618,6 +632,14 @@ export const createTouchController = (
    * 免得用户连点十下刷十条一样的日志（与 `index.ts` 的 `warnedEffectNames` 同一口径）。
    */
   const warnedMissingAnim: { [name: string]: boolean } = {};
+  /**
+   * 已经 warn 过"这条事件既无动作也无文本"的事件键。
+   *
+   * ★ 与 `warnedMissingAnim` **分开存**：那个按"动画名"去重，这个按 `EventKey`。
+   *   混用一个表会让"动画名叫 `game:64005`"这种巧合互相干扰（理论上不会发生，
+   *   但两个命名空间共用一个字典是没必要的隐患）。
+   */
+  const warnedEmptyEvent: { [key: string]: boolean } = {};
 
   /** 当前 track 2 上的 entry；非空且未被 end/dispose 即视为"忙" */
   let activeEntry: threejsSpine.TrackEntry = null;
@@ -628,6 +650,33 @@ export const createTouchController = (
    * 触摸通道不看它（用户设置优先）。
    */
   let activePriority = 0;
+  /**
+   * **纯台词事件**（无 spine 动作）的字幕**预计收起时刻**（`Date.now()` 毫秒）。
+   *
+   * ## 为什么需要一份独立的状态（2026-10-23）
+   *
+   * 纯台词不占任何轨道 ⇒ `activeEntry` 恒为 `null` ⇒ 若不记这一笔，
+   * `isBusy()` 会返回 false，而 `index.ts` 的 `tickStandby` 每秒轮询一次：
+   * 字幕还在屏幕上（停留好幾秒），下一拍就抽一条新的 ⇒ **台词互相打断**。
+   *
+   * ★ 刻意**不与 `activeEntry` 合并**：那是 spine 的 `TrackEntry`，纯台词没有它；
+   *   混在一起会让 `playingAnimation()` / `snapshot().playing` 之类的读数谎报一个动作。
+   * ★ 到期自动失效（读的时候比一次 `Date.now()`），不需要定时器 ——
+   *   WE 暂停时 `Date.now()` 照走，恢复后不会卡在"永远在播"。
+   */
+  let textOnlyUntil = 0;
+  /**
+   * 纯台词的停留时长（毫秒），与 `index.ts` 的 `showDialogue` **同一口径**：
+   * `textTime` 优先，没给就退到 6 秒。
+   *
+   * ⚠️ 不参与 `min(textTime, 动画时长)` 那条夹取 —— 纯台词没有动画，
+   *    本来就该按 `textTime` 走满。`index.ts` 那边拿 `animationDurations['']` 也查不到
+   *    ⇒ 会自动落到 `textTime`（见 `showDialogue` 的 `animDur` 计算），结果一致。
+   */
+  const textOnlyDurationMs = (e: DialogueEntry): number => {
+    const t = typeof e.textTime === 'number' && e.textTime > 0 ? e.textTime : 0;
+    return (t > 0 ? t : 6) * 1000;
+  };
 
   /**
    * 是否处于常驻态：直接读 track 0 的真实动画名，不用自维护的状态变量。
@@ -688,6 +737,15 @@ export const createTouchController = (
     activeEntry = null;
     activeSource = null;
     activePriority = 0;
+    /**
+     * ★ 纯台词字幕的停留登记一并撤销（2026-10-23）。
+     *
+     * `clearActive()` 的语义是"当前这条不再占着位置"。纯台词没有轨道，
+     * 只靠 `textOnlyUntil` 表达占用；不在这里撤掉的话，`playAction` 里那句
+     * `textOnlyUntil = 0` 就得单独维护，而 `dispose()` 走的是另一条路
+     * （它调 `clearActive`，不调 `playAction`）⇒ 会漏。
+     */
+    textOnlyUntil = 0;
     if (!prev) {
       return;
     }
@@ -788,6 +846,13 @@ export const createTouchController = (
     }
     activeEntry = trackEntry;
     activeSource = source;
+    /**
+     * ★ 真动作开播 ⇒ 撤掉"纯台词还在停留"的登记（2026-10-23）。
+     *
+     * 纯台词的字幕此刻会被 `showDialogue` 换成这一条的（动作与字幕同源）；
+     * 若旧登记还留着，`isBusy()` 会在一段不相干的时间里继续返回 true。
+     */
+    textOnlyUntil = 0;
     activePriority =
       entry && typeof entry.pick?.priority === 'number'
         ? entry.pick.priority
@@ -915,6 +980,75 @@ export const createTouchController = (
     source: ActionSource
   ): boolean => {
     const animationName = entry?.animation ?? '';
+    /**
+     * ★★ **纯台词事件**（有 `text`/`voice`、没有 `animation`）—— 2026-10-23 新增。
+     *
+     * ## 为什么不能像以前那样直接 `return false`
+     *
+     * `config.type.ts:879` / `:972` 从 2026-10-18 起就允许这种形状（`E_EVENT_EMPTY`
+     * 只判"既无 animation 又无 text"），`eventValidate` 放行、档案把它算进池
+     * ⇒ **漏斗会正常选中它**。但改前这里与 `index.ts` 的 `playEvent` 双双硬拒
+     * `!entry.animation` ⇒ 选中即空转：
+     *   - 该 tick 白白消耗（`selectEvent` 已经把它从候选里取出来了）；
+     *   - 若它是某类里**唯一**一条，那个通道就整条哑掉；
+     *   - 全程零日志、计数器不涨，用户只看到"待机/问候再也没动静了"。
+     *   这与 `weight: 0` 占档那个线上 bug 是同一种静默失效形态。
+     *
+     * ## 语义：不占轨道，只广播字幕
+     *
+     * 纯台词事件**不碰 spine**：不过闸门（没有动作要抢轨道）、不 `clearActive()`
+     * （不该打断正在演的动作）、不计 `firedCount` 之类"动作计数"。
+     * 只调 `onAction` 且 `animation` 传**空串**，由 `index.ts` 的 `showDialogue`
+     * 走"只出字幕/语音"的分支。
+     *
+     * ## 为什么这就是"占用"了
+     *
+     * 字幕要停留几秒。若它不登记为"有事在做"，`tickStandby` 会在下一拍就再抽一条
+     * ⇒ 台词互相打断。⇒ 必须挂到 `activeEntry` 之外的一份状态上，见 `textOnlyUntil`。
+     *
+     * ⚠️ 判据写的是 `entry && !animationName`（而不是 `!animationName`）：
+     *     `entry === null` 是"只播动作但没配台词"的老路径，由 `playTouch` 的随机
+     *     动画名兜底处理，**不能**在这里被当成纯台词而静默吞掉。
+     */
+    if (entry && !animationName) {
+      /**
+       * 该条**一条内容都没有**（既无 text 也无 voice）⇒ 真没什么可播。
+       * 正常情况下 `E_EVENT_EMPTY` 已在校验阶段 reject 掉它，这里只兜"没跑校验"
+       * 的路径（回归 / 探针手工喂表），保持"不静默"：计一次 skip 并 warn 一次。
+       */
+      const hasText = typeof entry.text === 'string' && !!entry.text;
+      const hasVoice = typeof entry.voice === 'string' && !!entry.voice;
+      if (!hasText && !hasVoice) {
+        const ek = eventKeyOf(entry) || '(无 id)';
+        if (!warnedEmptyEvent[ek]) {
+          warnedEmptyEvent[ek] = true;
+          console.warn(
+            '[touch] 事件 "%s" 既没有 animation 也没有 text/voice ⇒ 无法播放（应由 E_EVENT_EMPTY 在校验期拦住）',
+            ek
+          );
+        }
+        skippedCount++;
+        return false;
+      }
+      /**
+       * 与动作路径一致：**忙就不插嘴**（自动事件之间不互相打断）。
+       *
+       * ⚠️ 这里**故意不看 `feedbackMode`**：纯台词没有轨道可抢，`'immediate'` 的语义
+       * （"打断正在播的动作"）对一条只有字幕的事件没有意义；而用户点击一条纯台词时
+       * 也不该把画面上的动作砍掉。⇒ 统一"忙则让位"，与 `decideAction` 对自动事件的口径一致。
+       */
+      if (activeEntry || pendingQueue.length > 0) {
+        skippedCount++;
+        return false;
+      }
+      textOnlyUntil = Date.now() + textOnlyDurationMs(entry);
+      lastPick = '(纯台词)';
+      if (onAction) {
+        /** ⚠️ `animation` 传空串 = "本次没有动作"（见 `ActionPlayPayload` 的注释） */
+        onAction({ source, animation: '', entry });
+      }
+      return true;
+    }
     if (!animationName) {
       return false;
     }
@@ -1016,6 +1150,23 @@ export const createTouchController = (
      */
     entry = pickEntry(zoneId);
     animationName = entry?.animation ?? '';
+    /**
+     * ★★ **纯台词事件不能走"随机动画名"兜底**（2026-10-23）。
+     *
+     * 下面那条兜底的本意是"**池里抽不到条目**时随便播个动作"。而纯台词事件是
+     * "抽到了、但它就是没有动作"——两者语义完全不同：给它补一个随机动画名，
+     * 等于把作者写的"只出字幕"变成"出字幕 + 一个不相干的手势"，比不播更糟。
+     *
+     * ⚠️ 判据必须写成 `entry && !animationName`：`entry === null` 才是"池空"，
+     *    那条要继续走兜底（老行为，`_regress` 覆盖着）。
+     */
+    if (entry && !animationName) {
+      const played = trigger(entry, 'touch');
+      if (played) {
+        lastPick = '(纯台词)';
+      }
+      return played;
+    }
     if (!animationName) {
       // 没配字幕池 ⇒ 退回"只随机挑动画名"的老行为
       const i = Math.min(
@@ -1086,15 +1237,26 @@ export const createTouchController = (
     trigger,
     /** 见类型注释：与点击同路径、不过闸门、`entry = null`（不出台词） */
     playAnimation: (name: string) => playAction(name, 'touch', null),
-    /** 正在播 = 有 track entry；**待播也算忙**（否则 `queue` 模式下双击会被待机 tick 插队） */
-    isBusy: () => !!activeEntry || pendingQueue.length > 0,
+    /**
+     * 正在播 = 有 track entry / 有待播 / **有一条纯台词字幕还在停留**。
+     *
+     * ★ 最后一项是 2026-10-23 补的：纯台词不占轨道，`activeEntry` 恒为空，
+     *   漏掉它会让待机 tick 在字幕还在屏幕上时再插一条（台词互相打断）。
+     *   判据与 `textOnlyUntil` 的注释一致：到期即自动失效。
+     */
+    isBusy: () =>
+      !!activeEntry || pendingQueue.length > 0 || Date.now() < textOnlyUntil,
     playingAnimation: () => activeEntry?.animation?.name ?? '',
     snapshot: () => ({
       idleName,
       touchNames,
       poolSize,
-      /** 与 `isBusy()` 同一口径：待播那条也算"有事在做" */
-      busy: !!activeEntry || pendingQueue.length > 0,
+      /**
+       * 与 `isBusy()` **同一口径**（含纯台词停留）——
+       * 这两个读数必须一致，否则探针会说"空闲"而待机 tick 说"忙"。
+       */
+      busy:
+        !!activeEntry || pendingQueue.length > 0 || Date.now() < textOnlyUntil,
       playing: activeEntry?.animation?.name ?? '',
       source: activeSource ?? '',
       firedCount,

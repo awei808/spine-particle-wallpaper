@@ -166,8 +166,15 @@ export type EventLog = {
   tick: () => number;
   /** 预测：这条现在能不能被自动抽中（不动状态） */
   allows: (e: DialogueEntry, nowMs: number) => boolean;
-  /** 真播之后记账（写冷却 / 配额 / 互斥组） */
-  commit: (e: DialogueEntry, nowMs: number) => void;
+  /**
+   * 真播之后记账（写冷却 / 配额 / 互斥组）。
+   *
+   * @param manual `true` = **手动触发**（调试面板 / 探针钩子）：
+   *   只写 `lastAt`（冷却照旧开始计时，因为"刚播过"是事实），
+   *   **不涨 `total` / `session` / `dayCount`** —— 手动点几下不该把
+   *   `quota.ever` 吃光、让自动通道从此再也不播。详见 `commit` 的实现注释。
+   */
+  commit: (e: DialogueEntry, nowMs: number, manual?: boolean) => void;
   /** 读某条记录（探针/档案用；没有 ⇒ `undefined`） */
   peek: (key: EventKey) => EventLogEntry | undefined;
   /** 整份快照（只读拷贝） */
@@ -272,21 +279,47 @@ export const createEventLog = (storage?: LogStorage | null): EventLog => {
       }
       return true;
     },
-    commit: (e, nowMs) => {
+    commit: (e, nowMs, manual = false) => {
       const key = eventKeyOf(e);
       if (!key) {
         return;
       }
       const rec = get(key);
       const today = dayKey(nowMs);
+      /**
+       * 冷却起算点：**手动也写**。理由 —— "这条刚才是播过的"是客观事实，
+       * 手动播完立刻让自动驾驶再抽一次同一条，观感上是重复，不是修复。
+       */
       rec.lastAt = nowMs;
-      rec.total += 1;
-      rec.session += 1;
+      /**
+       * ★★ 配额：**手动不计**（2026-10-23，P0-4）。
+       *
+       * 改前手动路径也走这里，于是调试面板点几下就把 `quota.ever` 吃光
+       * ⇒ 自动通道从此**再也不播**这条，而且没有任何提示。
+       * 手动触发的语义是"我现在就要看这一条"，不该消耗"这条一生能自动播几次"的额度。
+       *
+       * ⚠️ 顺序要紧：**先判跨天清零，再累加当天计数**。
+       *    反过来写（先 `dayCount += 1` 再判跨天）会把刚加的那一次清掉
+       *    ⇒ 跨天后的第一次播放不计数，`quota.day` 实际能多播一次。
+       *    （`_regress/86` 的 B9 就是钉这个的，改动时踩过一次。）
+       */
       if (rec.day !== today) {
         rec.day = today;
         rec.dayCount = 0;
       }
-      rec.dayCount += 1;
+      if (!manual) {
+        rec.total += 1;
+        rec.session += 1;
+        rec.dayCount += 1;
+      }
+      /**
+       * 互斥组：手动**也写**，但写的必须是**当前 tick**。
+       *
+       * 改前手动路径根本不调 `beginTick()` ⇒ 这里会把 `groups[g]` 写成**上一次**
+       * 自动抽取的 tick 号 ⇒ 下一次自动抽取若恰好也用那个 tick，该组会被
+       * 整组误判为"本 tick 已出过"，静默哑一次。现在由 `commitManual` 先
+       * `beginTick()` 再进来，语义正确。
+       */
       if (e.pick?.group) {
         state.groups[e.pick.group] = tick;
       }
