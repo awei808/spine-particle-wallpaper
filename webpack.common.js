@@ -12,7 +12,15 @@ const PUBLIC_FOLDER = 'public';
 module.exports = (env) => ({
   mode: 'development',
   entry: './src/index.ts',
-  devtool: 'inline-source-map',
+  /**
+   * `devtool` 不在这里定 —— 由两个子配置各自声明：
+   *   - `webpack.dev.js`        → `'inline-source-map'`（dev-server，内联最快）
+   *   - `webpack.production.js` → `'source-map'`（外置 .map，见那里的注释）
+   *
+   * ★ 以前这里写死 `'inline-source-map'`，被 production 完整继承 ⇒
+   *   `dist/bundle.js` 6.61 MB 里 5.64 MB 是 base64 内联 map（实测占 85%）。
+   *   放在公共配置里等于"谁忘了覆盖谁中招"，所以挪走。
+   */
   output: {
     path: path.resolve(__dirname, DIST_FOLDER),
     filename: 'bundle.js',
@@ -64,15 +72,22 @@ module.exports = (env) => ({
       ],
     }),
     /**
-     * 编译期开关：`npm run build -- --env probe=off` 产出**不带探针**的 bundle。
+     * 编译期开关：`__PROBE__` 只是探针的**缺省值**（见 `src/probe.ts:60-68`）。
      *
      * 为什么用 DefinePlugin 而不是 URL 参数：WE 桌面环境走 `file://`，
      * query/hash 的行为不确定；而"换头像做 A/B"要求两份产物在
      * index.html 上完全可切换——编译期常量最可靠，也零运行时开销。
-     * 默认（不传 env）探针是**开**的，避免"忘了带参数导致以为探针坏了"。
+     *
+     * `--env probe=on` 才置 true；不传 ⇒ **false**（发布态缺省不挂探针）。
+     *
+     * ★★ 注意这个缺省**不决定最终行为**：`config.probe.enabled`（含设置面板
+     *    「调试」页写下的覆盖层）由 `applyProbeConfig()` 注入，**双向都能覆盖**
+     *    ⇒ 发布包里用户照样能打开诊断。这里改成 false 只是"忘了传参时别默认开着"。
+     * ★ 也别指望它能减小包体：`probe.ts` 早就不按 `__PROBE__` 做死代码消除
+     *   （09-25 去掉了那道单向闸门），探针代码始终在产物里。
      */
     new webpack.DefinePlugin({
-      __PROBE__: JSON.stringify(String(env?.probe ?? 'on') !== 'off'),
+      __PROBE__: JSON.stringify(String(env?.probe ?? 'off') === 'on'),
     }),
   ],
   devServer: {
