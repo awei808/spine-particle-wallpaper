@@ -20,7 +20,8 @@ const os = require('os');
 const { spawn } = require('child_process');
 
 const DIST = path.resolve(__dirname, '..', 'dist');
-const PY = process.env.PY || 'C:/Users/19342/.workbuddy/binaries/python/versions/3.14.3/python.exe';
+// 默认用 PATH 里的 python；本机若不在 PATH，用 PY=<解释器路径> 覆盖
+const PY = process.env.PY || 'python';
 const PORT_OLD = 8931; // 现状
 const PORT_NEW = 8932; // 优化后
 

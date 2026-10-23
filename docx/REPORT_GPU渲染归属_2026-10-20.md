@@ -83,7 +83,7 @@ Get-Counter '\GPU Process Memory(*)\Local Usage' |
   Select-Object InstanceName, @{n='MB';e={[math]::Round($_.CookedValue/1MB,1)}}
 
 # 一键复测（CPU ms/帧 + GPU 引擎占用）
-powershell -File "D:\手游文件夹\spine-wallpaper-engine\_regress\gpu_sample.ps1"
+powershell -File "_regress/gpu_sample.ps1"
 ```
 
 另一个更直接的通道：WE 的 `config.json` 里已经有 `"cefcommandline": "--remote-debugging-port=9222"`，但**当前没生效**——webwallpaper 进程 22:11 启动，配置 22:21 才改。重启 WE 后 `curl http://127.0.0.1:9222/json` 就能连进页面，直接读 `WEBGL_debug_renderer_info` 的 `UNMASKED_RENDERER_WEBGL` 字符串（预期形如 `ANGLE (AMD, AMD Radeon(TM) Graphics ..., Direct3D11 vs_5_0 ps_5_0, D3D11)`）。顺带还能量真实 rAF 帧率、draw call 数。

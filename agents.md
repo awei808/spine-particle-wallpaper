@@ -114,8 +114,9 @@ public/audio-check.html  Audio-format self-test page (canPlayType + real decode 
 
 > **Deploying to Wallpaper Engine?** The authoritative procedure for the three shipped
 > skins (S8 / S6 / S9) — source→target paths, the `21_` full-sync commands, festival voice
-> file locations, and the "new year has no voice line" rule — lives in
-> `D:\手游文件夹\灵魂潮汐\docs\02_部署与发布.md` → 「三个壁纸工程的标准部署」.
+> file locations, and the "new year has no voice line" rule — lives in the **wallpaper
+> project tree** (outside this repo; assets are not tracked here):
+> `docs/02_部署与发布.md` → 「三个壁纸工程的标准部署」.
 > Do not duplicate it here.
 
 ```bash
