@@ -1,0 +1,46 @@
+{
+  "type": "web",
+  "title": "星见亚砂 · 盛夏游乐场（S9 示例工程）",
+  "description": "本仓库的示例工程：22 层分层场景、触摸热区、语音与字幕气泡、粒子特效、节日/自定义事件的完整配置范例。配合 demo/README.md 阅读，用于学习如何把自己的 Spine 素材接进本框架。",
+  "file": "index.html",
+  "preview": "preview.jpg",
+  "general": {
+    "properties": {
+      "showCornerButtons": {
+        "order": 100,
+        "text": "显示右上角按钮",
+        "type": "bool",
+        "value": true
+      },
+      "muteAll": {
+        "order": 101,
+        "text": "全部静音",
+        "type": "bool",
+        "value": false
+      },
+      "debugEnabled": {
+        "order": 102,
+        "text": "调试总开关",
+        "type": "bool",
+        "value": false
+      },
+      "showDisclaimer": {
+        "order": 103,
+        "text": "显示免责声明与许可证要求",
+        "type": "bool",
+        "value": false
+      },
+      "showArchive": {
+        "order": 104,
+        "text": "显示档案",
+        "type": "bool",
+        "value": false
+      }
+    }
+  },
+  "tags": [
+    "Anime",
+    "Game"
+  ],
+  "workshopid": "0"
+}

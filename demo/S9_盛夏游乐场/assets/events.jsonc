@@ -1,0 +1,301 @@
+// ════════════════════════════════════════════════════════════════════════
+//  事件表 —— 本壁纸所有事件的唯一来源
+// ════════════════════════════════════════════════════════════════════════
+//
+//  这个文件取代了 config.json 的 subtitle.dialogues：内置事件与自定义事件
+//  都在这里，config.json 只管环境参数（字幕样式、热区几何、音量…）。
+//
+//  ── 怎么改 ─────────────────────────────────────────────────────────────
+//  1. 直接编辑本文件（UTF-8）。允许 // 与 /* */ 注释、允许行尾多余逗号；
+//     但**属性名和字符串必须用双引号**，不能写单引号/无引号。
+//  2. 保存后，在 Wallpaper Engine 里重新加载壁纸（事件表在启动时一次性构建，
+//     不做热重载）。
+//  3. 改完可以先自检（不启动 WE）：
+//     npx ts-node --transpile-only scripts/validateEvents.ts <本文件的目录>
+//
+//  ── 和设置面板的关系 ───────────────────────────────────────────────────
+//  设置面板里的「事件开关」页**只负责开 / 关**，不提供增删改：
+//    · 增删事件、改触发条件 / 动作 / 粒子 / 念白 / 语音 ⇒ 都改这个文件；
+//    · 面板的开关存在本机（localStorage），不改本文件；
+//    · 这里写 "enabled": false = 默认关闭（面板里仍可被用户打开）。
+//
+//  ── 一条事件有哪些字段 ─────────────────────────────────────────────────
+//  id            "custom:xxx" 或 "game:64005"。省略则由 actionId 派生 game:<n>
+//  actionId      仅内置事件：与游戏表对齐、供档案溯源
+//  label         显示名（内置换行）      displayName  显示名（优先）
+//  note          一句话备注（进档案细则）
+//  enabled       缺省 true；false = 作者默认关闭
+//  on            触发通道："touch" / "standby" / "resume"，可写数组；缺省 standby
+//  kind          类别："touch" / "chat" / "greet"；缺省按 on[0] 推
+//  when          条件（全部可选，可嵌套 and / or / not）：
+//                  { "time":     { "start": 23, "end": 4 } }     时分，跨零点
+//                  { "calendar": { "month": 2, "day": 14 } }    每年这一天
+//                  { "ctx":      { "idleMs": 30000 } }          静置时长
+//                  { "ctx":      { "zone": "hit1" } }           命中的热区 id
+//                  { "and": [ ... ] } / { "or": [ ... ] } / { "not": {...} }
+//  phase         事件族 id（建议**不写**：落缺省族 = 不换名、恒可见）
+//  phaseAnimations  按族改动画名：{ "oath": "greet_marry" }
+//  animation     spine 动画名；不写 = 纯台词事件
+//  particles     本条的粒子组名（config.meshes[].name），不写 = 按动画名回落
+//  variants      整包随机：[{ animation, text, voice }, ...]
+//  text          念白          textTime  念白停留秒数
+//  voice         语音文件名（相对 assets/，可带子目录与扩展名）
+//  pick          选取策略：
+//                  { "priority": 0..100 }   同一次触发先比优先级档
+//                  { "weight": 0 }          0 = 不参加自动抽取，只能手动触发
+//                  { "group": "g" }         互斥组：同一次触发至多出一条
+//                  { "cooldownMs": 60000 }  最短间隔
+//                  { "quota": { "max": 1, "per": "day" } }  配额（day / ever）
+//                  { "interrupt": true }    允许打断当前动作
+//
+//  ── 优先级五档（约定，不是硬限制） ─────────────────────────────────────
+//    80  用户操作（点击）      50  节日 / 特殊日期
+//    20  时段问候              10  日常闲聊
+//     0  缺省（不与别人抢）
+//  同档内按 weight 加权随机；weight 缺省 1。
+//
+//  ── 三条示例（照抄改参数即可；示例本身不要解开注释以外的花括号） ───────
+//
+//  ① 内置型：上午 5–11 点回到壁纸时问候，带语音与念白
+//     {
+//       "id": "game:64001", "actionId": 64001,
+//       "label": "晴日上午问候",
+//       "on": ["resume"], "kind": "greet",
+//       "when": { "time": { "start": 5, "end": 11 } },
+//       "animation": "greet",
+//       "text": "早上好，今天也要打起精神来。",
+//       "textTime": 6,
+//       "voice": "CV/Asuna/Morning_01.ogg"
+//     }
+//
+//  ② 纯手动型：不参与自动抽取，只能从调试面板「触发事件」播
+//     {
+//       "id": "custom:hold-hand",
+//       "on": ["touch"], "kind": "touch", "animation": "touch1",
+//       "pick": { "weight": 0, "priority": 80 },
+//       "text": "牵着手也不错。"
+//     }
+//
+//  ③ 节日型：2 月 14 日回到壁纸时优先播，每天最多一次
+//     {
+//       "id": "custom:valentine",
+//       "on": ["resume"], "kind": "greet", "animation": "greet",
+//       "when": { "calendar": { "month": 2, "day": 14 } },
+//       "pick": { "priority": 50, "quota": { "max": 1, "per": "day" } },
+//       "text": "情人节快乐。",
+//       "voice": "Valentine_Greet.ogg"
+//     }
+//
+//  ── 常见坑 ─────────────────────────────────────────────────────────────
+//  · 同一通道下所有事件的 weight 都是 0 ⇒ 该通道永远不会自动触发（启动时会 warn）
+//  · 写了 "on": [] 或指向不存在的通道 ⇒ 这条不可达（档案里标「不可达」）
+//  · particles 里写错组名 ⇒ 该组被忽略、事件照播（不会静默整条失效）
+// ════════════════════════════════════════════════════════════════════════
+{
+  "schema": 1,
+  "events": [
+    {
+      "id": "game:64001",
+      "actionId": 64001,
+      "label": "时装-盛夏游乐场-问候-晴天上午",
+      "on": ["resume"],
+      "kind": "greet",
+      "when": { "time": { "start": 5, "end": 12 } },
+      "animation": "greet",
+      "text": "早上好，你今天会遇到好事，打起精神来吧。",
+      "textTime": 6,
+      "voice": "CV/Asuna/Asuna_Sunny_Morning_Greet_02.ogg"
+    },
+    {
+      "id": "game:64002",
+      "actionId": 64002,
+      "label": "时装-盛夏游乐场-问候-晴天下午",
+      "on": ["resume"],
+      "kind": "greet",
+      "when": { "time": { "start": 12, "end": 18 } },
+      "animation": "greet",
+      "text": "现在放松的话，本该邂逅的幸运也会擦肩而过。我可能正是因为一直坚持，所以才遇见了你吧。",
+      "textTime": 6,
+      "voice": "CV/Asuna/Asuna_Sunny_Noon_Greet_03.ogg"
+    },
+    {
+      "id": "game:64003",
+      "actionId": 64003,
+      "label": "时装-盛夏游乐场-问候-晴天晚上",
+      "on": ["resume"],
+      "kind": "greet",
+      "when": { "time": { "start": 18, "end": 5 } },
+      "animation": "chat",
+      "text": "我看见了。在遥远的未来，你仍旧和我并肩作战。……谢谢。",
+      "textTime": 11,
+      "voice": "CV/Asuna/Asuna_Sunny_Morning_Greet_03.ogg"
+    },
+    {
+      "id": "game:64004",
+      "actionId": 64004,
+      "label": "时装-盛夏游乐场-休闲待机",
+      "on": ["standby"],
+      "kind": "chat",
+      "animation": "chat",
+      "text": "这对丝带很可爱？嗯，也算是我的自信之作了。",
+      "textTime": 6,
+      "voice": "CV/Asuna/Asuna_Touch_Head_03.ogg"
+    },
+    {
+      "id": "game:64005",
+      "actionId": 64005,
+      "label": "时装-盛夏游乐场-触碰1",
+      "on": ["touch"],
+      "kind": "touch",
+      "animation": "touch1",
+      "text": "对女孩子来说，手是很重要的。",
+      "textTime": 5,
+      "voice": "CV/Asuna/Asuna_Touch_Hand_02.ogg"
+    },
+    {
+      "id": "game:64006",
+      "actionId": 64006,
+      "label": "时装-盛夏游乐场-触碰2",
+      "on": ["touch"],
+      "kind": "touch",
+      "animation": "touch1",
+      "text": "埋藏在心底的秘密又增加了一个……是甜美的秘密。",
+      "textTime": 9,
+      "voice": "CV/Asuna/Asuna_Touch_Breast_03.ogg"
+    },
+    {
+      "id": "game:64007",
+      "actionId": 64007,
+      "label": "时装-盛夏游乐场-触碰3",
+      "on": ["touch"],
+      "kind": "touch",
+      "animation": "touch2",
+      "text": "虽然我可以看见未来，但是人心是看不见的，你没有在想什么下流的事吧？",
+      "textTime": 10,
+      "voice": "CV/Asuna/Asuna_Chat_05.ogg"
+    },
+    {
+      "id": "game:64008",
+      "actionId": 64008,
+      "label": "时装-盛夏游乐场-触碰4",
+      "on": ["touch"],
+      "kind": "touch",
+      "animation": "touch3",
+      "text": "你的手，威力可能比沙皇炸弹还强呢……",
+      "textTime": 6,
+      "voice": "CV/Asuna/Asuna_Touch_Hip_02.ogg"
+    },
+    {
+      "id": "game:64009",
+      "actionId": 64009,
+      "label": "时装-盛夏游乐场-触碰5",
+      "on": ["touch"],
+      "kind": "touch",
+      "animation": "touch3",
+      "text": "亲密的触摸……这种和年龄相符的举动，我是不是该多做点？",
+      "textTime": 9,
+      "voice": "CV/Asuna/Asuna_Touch_Reaction_01.ogg"
+    },
+    {
+      "id": "game:64010",
+      "actionId": 64010,
+      "label": "时装-盛夏游乐场-触碰6",
+      "on": ["touch"],
+      "kind": "touch",
+      "animation": "touch2",
+      "text": "暂时把所有事都抛诸脑后，只感觉你的存在，也挺好的呢。",
+      "textTime": 10,
+      "voice": "CV/Asuna/Asuna_Touch_Head_05.ogg"
+    },
+    {
+      "id": "custom:hold-hand",
+      "displayName": "牵着手也不错",
+      "note": "自定义热区：只在点中「手」区（design 1012,96,88,126）时播；priority 80 压过普通触摸（0）",
+      "on": ["touch"],
+      "kind": "touch",
+      "when": { "ctx": { "zone": "hand" } },
+      "pick": { "priority": 80 },
+      "animation": "touch1",
+      "text": "虽然会妨碍战斗，但在这之外的时间，牵着手也不错。",
+      "textTime": 6,
+      "voice": "Asuna_Touch_Hand_05.ogg"
+    },
+    {
+      "id": "custom:valentine-greet",
+      "displayName": "情人节问候",
+      "note": "节日族：2 月 14 日回到壁纸时优先播（priority 50）；语音/念白取自游戏语音库，每天最多一次",
+      "on": ["resume"],
+      "kind": "greet",
+      "phase": "festival",
+      "when": {"calendar": {"month": 2, "day": 14}},
+      "pick": { "priority": 50, "quota": { "max": 1, "per": "day" } },
+      "animation": "greet",
+      "text": "情人节快乐。锁定你的心。",
+      "textTime": 6,
+      "voice": "Asuna_Valentine_Greet.ogg"
+    },
+    // ── 自定义事件 ────────────────────────────────────────────────────────
+    // ★ 2026-10-23 清理：删掉三条 2026-10-20 加进来的「验收示例」
+    //   （custom:dawn-greet / custom:headpat-soft / custom:newyear-greet），理由：
+    //   ① `custom:headpat-soft` 的 `priority: 20` 会让**每一次点击**都先抽它，
+    //      内置 7 条 touch（p=0）只在它 60 秒冷却期内才有机会 —— 相当于把整个
+    //      触摸池锁死在那一条台词上。这是"验收示例遗留在发布态"造成的实伤。
+    //   ② `custom:dawn-greet`（05–08 点，p=30）压过内置 `game:64001`
+    //      （同时段 05–12，p=0）⇒ 清晨问候被换成另一条文案；
+    //      且它与 `game:64001` **共用同一段语音**（Asuna_Sunny_Morning_Greet_02），
+    //      两条同时存在只是重复。
+    //   ③ `custom:newyear-greet` 的正文与 `game:64003`（晚间问候）
+    //      **逐字相同**（"我看见了。在遥远的未来…"），却挂 `priority: 70` —— 1 月 1 日
+    //      会播一段本该属于晚间问候的台词，且它没有语音（纯字幕）⇒ 文案与语境错位。
+    //      元旦问候本工程**不需要**：游戏语音库里没有元旦音频（见部署文档 §四）。
+    //   ⚠️ 若将来要恢复"验收示例"，请放在**单独的验收工程**里，不要进发布源。
+    //
+    // ★ 保留的两条是**功能性的**，不是示例：
+    //   · `custom:hold-hand` —— 手部热区专用（`when.ctx.zone="hand"`、p=80）。
+    //     它只在点中「手」区时才是候选，不会污染其它热区，p=80 是有意为之。
+    //   · 四条节日问候（情人节 / 七夕 / 春节 / 圣诞）—— `phase: "festival"` +
+    //     `when.calendar|dates` + 每日配额，只在对应日期生效。
+    {
+      "id": "custom:qixi-greet",
+      "displayName": "七夕问候",
+      "note": "节日族：七夕=农历七月初七，公历逐年漂移 ⇒ 用 when.dates 列出（每年追加一行）；priority 50",
+      "on": ["resume"],
+      "kind": "greet",
+      "phase": "festival",
+      "when": {"dates": ["2026-08-19", "2027-08-08", "2028-08-26", "2029-08-16", "2030-08-05", "2031-08-24"]},
+      "pick": { "priority": 50, "quota": { "max": 1, "per": "day" } },
+      "animation": "greet",
+      "text": "明明是神，却不知道自己的行为会导致怎样的未来吗？",
+      "textTime": 8,
+      "voice": "Asuna_Qixi_Greet.ogg"
+    },
+    {
+      "id": "custom:spring-festival-greet",
+      "displayName": "春节问候",
+      "note": "节日族：春节=农历正月初一，用 when.dates 列出（每年追加一行）；priority 60",
+      "on": ["resume"],
+      "kind": "greet",
+      "phase": "festival",
+      "when": {"dates": ["2026-02-17", "2027-02-06", "2028-01-26", "2029-02-13", "2030-02-03", "2031-01-23"]},
+      "pick": { "priority": 60, "quota": { "max": 1, "per": "day" } },
+      "animation": "greet",
+      "text": "新年快乐。接下来一年会发生什么？我看见了，但不告诉你。",
+      "textTime": 9,
+      "voice": "Asuna_SpringFestival_Greet.ogg"
+    },
+    {
+      "id": "custom:christmas-greet",
+      "displayName": "圣诞问候",
+      "note": "节日族：12 月 25 日回到壁纸时优先播（priority 50），每天最多一次",
+      "on": ["resume"],
+      "kind": "greet",
+      "phase": "festival",
+      "when": {"calendar": {"month": 12, "day": 25}},
+      "pick": { "priority": 50, "quota": { "max": 1, "per": "day" } },
+      "animation": "greet",
+      "text": "圣诞快乐。……你打算那么送礼物啊。",
+      "textTime": 7,
+      "voice": "Asuna_Christmas_Greet.ogg"
+    }
+  ]
+}

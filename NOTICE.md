@@ -50,6 +50,20 @@ Substantial changes have been made since 2026-09. Additions include, but are not
 
 ## Assets
 
-This repository intentionally ships **no** game assets, audio, or text.
-`public/assets/*` is gitignored; only documentation and `config.example.json` are tracked.
-Users must supply their own assets and are responsible for holding the rights to them.
+The engine itself ships **no** assets: `public/assets/*` is gitignored, and only
+documentation plus `config.example.json` are tracked. Users supply their own assets and
+are responsible for holding the rights to them.
+
+**Exception — `demo/`:** the sample project under `demo/S9_盛夏游乐场/` is a complete,
+ready-to-import Wallpaper Engine project, and therefore does contain third-party game art,
+Spine skeletons, voice lines and music. All rights in those assets remain with their
+original holders; they are included solely as a technical example for study and exchange.
+Do not extract or redistribute those assets on their own, and do not present this work as
+official content.
+
+## Disclaimer
+
+This project is for personal study and technical exchange only. It does **not** enforce or
+verify any user's Spine Editor license — whether one is needed, and how to obtain it, is
+each user's own responsibility. The original author accepts no liability arising from the
+use of this software.

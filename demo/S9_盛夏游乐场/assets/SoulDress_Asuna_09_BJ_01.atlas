@@ -1,0 +1,97 @@
+
+SoulDress_Asuna_09_BJ_01.png
+size: 512,2048
+format: RGBA8888
+filter: Linear,Linear
+repeat: none
+Q0
+  rotate: false
+  xy: 215, 599
+  size: 98, 158
+  orig: 98, 158
+  offset: 0, 0
+  index: -1
+Q1
+  rotate: false
+  xy: 2, 561
+  size: 211, 196
+  orig: 211, 196
+  offset: 0, 0
+  index: -1
+Q10
+  rotate: false
+  xy: 194, 43
+  size: 134, 124
+  orig: 134, 124
+  offset: 0, 0
+  index: -1
+Q11
+  rotate: false
+  xy: 2, 2
+  size: 190, 174
+  orig: 190, 174
+  offset: 0, 0
+  index: -1
+Q12
+  rotate: false
+  xy: 223, 1936
+  size: 93, 106
+  orig: 93, 106
+  offset: 0, 0
+  index: -1
+Q2
+  rotate: true
+  xy: 2, 178
+  size: 182, 202
+  orig: 182, 202
+  offset: 0, 0
+  index: -1
+Q3
+  rotate: false
+  xy: 2, 759
+  size: 234, 218
+  orig: 234, 218
+  offset: 0, 0
+  index: -1
+Q4
+  rotate: true
+  xy: 2, 979
+  size: 304, 303
+  orig: 304, 303
+  offset: 0, 0
+  index: -1
+Q5
+  rotate: false
+  xy: 2, 362
+  size: 203, 197
+  orig: 203, 197
+  offset: 0, 0
+  index: -1
+Q6
+  rotate: true
+  xy: 2, 1285
+  size: 324, 286
+  orig: 324, 286
+  offset: 0, 0
+  index: -1
+Q7
+  rotate: true
+  xy: 207, 384
+  size: 175, 157
+  orig: 175, 157
+  offset: 0, 0
+  index: -1
+Q8
+  rotate: false
+  xy: 2, 1611
+  size: 219, 431
+  orig: 219, 431
+  offset: 0, 0
+  index: -1
+Q9
+  rotate: true
+  xy: 206, 169
+  size: 191, 154
+  orig: 191, 154
+  offset: 0, 0
+  index: -1

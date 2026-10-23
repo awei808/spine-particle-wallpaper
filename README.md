@@ -148,6 +148,7 @@ src/
   animator/                texture / spine / video / particle layers
 _regress/                  Regression scripts (ts-node)
 public/assets/             Assets and config.json (assets are gitignored)
+demo/S9_盛夏游乐场/        * Sample project: a complete, ready-to-import wallpaper + tutorial (see demo/README.md)
 ```
 
 ## Known issues
@@ -160,8 +161,30 @@ public/assets/             Assets and config.json (assets are gitignored)
 - Spine Runtimes: **Spine Runtimes License Agreement**, see [LICENSE.spine.txt](./LICENSE.spine.txt).
 - Derived from spicy-wolf/spine-wallpaper-engine (GPL-3.0), see [NOTICE.md](./NOTICE.md).
 
+### Spine Runtimes licensing (read before using)
+
+The Spine Runtimes are **not open source**. Per the license text:
+
+1. **Each user must obtain their own Spine Editor license**;
+2. **Redistribution in any form must include that license and the copyright notice.**
+
+In practice: this framework is free and open source, but **whoever plays Spine animations
+with it needs a valid Spine license of their own**.
+Full text: <https://esotericsoftware.com/spine-runtimes-license>
+
+The same notice ships inside the wallpaper itself — tick "显示免责声明与许可证要求"
+(Show disclaimer & license notice) in the wallpaper properties to display it to end users.
+
 ## Disclaimer
 
-This program only brings **your own** Spine animations to the desktop. Make sure you hold the rights to any assets, audio, and text you use — this repository ships no game assets (`public/assets/*` is gitignored; only documentation and an example config are kept).
-
-Use it at your own risk. The author is not liable for any damages arising from its use.
+- **For personal study and technical exchange only.** No commercial or for-profit use.
+- **This project does not enforce or verify anyone's Spine license.** Whether you need a
+  Spine Editor license, and how to obtain one, is your own call and your own responsibility.
+- The sample project under `demo/` contains third-party game art, Spine skeletons, voice
+  lines and music. All rights belong to their original owners; it is included purely as a
+  technical example. **Do not extract or redistribute those assets on their own**, and do
+  not present this work as official content. The rest of the repo (`public/assets/*`) still
+  ships no assets at all.
+- Use at your own risk. Any dispute or liability arising from asset rights, license
+  eligibility, or any use of this software is **solely the user's**; **the original author
+  accepts no responsibility**.

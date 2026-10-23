@@ -404,6 +404,7 @@ src/
 _regress/                 回归脚本（ts-node）
 scripts/voiceManifest.ts  语音清单/引用校验（npm run voice-manifest）
 public/assets/            素材与 config.json（素材已 gitignore）
+demo/S9_盛夏游乐场/       ★ 示例工程：可直接导入 WE 的完整成品 + 教程（见 demo/README.md）
 ```
 
 ## 已知缺陷
@@ -416,9 +417,26 @@ public/assets/            素材与 config.json（素材已 gitignore）
 - Spine 运行时：**Spine Runtimes License Agreement**，见 [LICENSE.spine.txt](./LICENSE.spine.txt)。
 - 衍生自 spicy-wolf/spine-wallpaper-engine（GPL-3.0），详见 [NOTICE.md](./NOTICE.md)。
 
+### Spine Runtimes 的许可约束（用之前请先看）
+
+Spine Runtimes **不是开源软件**。按其许可协议原文：
+
+1. **每一位使用者都须自行取得 Spine Editor 许可证**；
+2. **以任何形式再分发本作品时，必须随附该许可证与版权声明**。
+
+也就是说：本框架免费开源，但**用它播放 Spine 动画的人需要自己持有合法的 Spine 授权**。
+许可证原文：<https://esotericsoftware.com/spine-runtimes-license>
+
+壁纸内已内置同一份声明的弹窗，在壁纸属性里勾选「显示免责声明与许可证要求」即可打开，
+方便在成品里直接向最终使用者展示。
+
 ## 免责声明
 
-本程序只是把**你自己的** Spine 动画搬上桌面。请确保你对所用素材、音频、文本拥有合法权利 ——
-仓库本身不含任何游戏素材（`public/assets/*` 已被 gitignore，仅保留说明文档与示例配置）。
-
-使用本程序的风险由你自行承担，作者不对任何损害负责。
+- **本仓库仅供个人学习与技术交流**，不得用于任何商业或营利用途。
+- **本项目不对使用者的 Spine 授权情况做任何强制要求或核查**——是否需要 Spine Editor
+  许可证、如何取得，由使用者自行判断、自行负责。
+- `demo/` 目录下的示例工程含有第三方游戏的角色立绘、Spine 骨架、语音与音乐，
+  其著作权归原权利人所有，此处仅作技术示例。**请勿单独提取或再分发其中素材**，
+  也不要宣称本作品为官方内容。仓库其余部分（`public/assets/*`）依然不含任何素材。
+- 使用本程序的风险与后果由使用者自行承担；因素材权利、授权资质或任何使用行为引发的
+  纠纷与责任，**原作者不承担任何责任**。
