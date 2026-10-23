@@ -101,6 +101,22 @@ point completely. Sole exception: a channel with **only `greet` selected** still
 
 ## Quick start
 
+### Just want a wallpaper — no build, no Node.js
+
+Grab the **engine pack** (~300 KB) from
+[Releases](https://github.com/awei808/spine-particle-wallpaper/releases). It ships the
+engine only, no assets:
+
+1. Unzip, drop your Spine trio (`*.skel` / `*.atlas` / `*.png`) into `assets/`
+2. Copy `assets/config.example.json` to `config.json` and edit it for your assets
+3. Put the whole folder into `<WE>/projects/myprojects/` and apply it in Wallpaper Engine
+
+See `使用说明.md` inside the pack. Swapping assets, editing config, and writing dialogue
+never require repackaging — `config.json` and `events.jsonc` are read from `assets/` at
+runtime, and `bundle.js` is a generic engine.
+
+### Only if you want to modify the engine itself
+
 ```bash
 git clone --recurse-submodules https://github.com/awei808/spine-particle-wallpaper.git
 cd spine-particle-wallpaper
@@ -108,6 +124,8 @@ npm ci
 ```
 
 > ⚠️ `--recurse-submodules` is required: `packages/threejs-spine-3.8-runtime-es6` is a submodule and the build fails without it.
+>
+> **To produce the engine pack**: `npm run pack` (builds, strips local assets, emits the zip — see `scripts/packEngine.ts`).
 
 Assets and config:
 

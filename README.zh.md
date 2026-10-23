@@ -355,6 +355,20 @@ npx ts-node --transpile-only scripts/voiceManifest.ts <语音目录> <config 路
 
 ## 快速开始
 
+### 只想做壁纸 —— 不用编译，也不用装 Node.js
+
+直接下载 [Releases](https://github.com/awei808/spine-particle-wallpaper/releases) 里的
+**引擎包**（约 300 KB）。它只含引擎，不含任何素材：
+
+1. 解压，把你的 Spine 三件套（`*.skel` / `*.atlas` / `*.png`）放进 `assets/`
+2. 把 `assets/config.example.json` 复制成 `config.json`，按素材改
+3. 整个目录放进 `<WE>/projects/myprojects/`，在 Wallpaper Engine 里应用
+
+详见包内的「使用说明.md」。换素材、改配置、写台词都**不需要重新打包**——
+`config.json` 与 `events.jsonc` 都是运行时从 `assets/` 读的，`bundle.js` 是通用引擎。
+
+### 要改引擎本身 —— 才需要工具链
+
 ```bash
 git clone --recurse-submodules https://github.com/awei808/spine-particle-wallpaper.git
 cd spine-particle-wallpaper
@@ -362,6 +376,8 @@ npm ci
 ```
 
 > ⚠️ 必须带 `--recurse-submodules`：`packages/threejs-spine-3.8-runtime-es6` 是子模块，漏了会构建失败。
+>
+> **打引擎包给别人用**：`npm run pack`（构建 + 剔除本地素材 + 产出 zip，见 `scripts/packEngine.ts`）。
 
 放素材与配置：
 
