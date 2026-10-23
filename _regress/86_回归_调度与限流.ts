@@ -216,6 +216,53 @@ ok('B12 同组同 tick 的其它条目出局', !log.allows(g2, T0 + HOUR));
 log.beginTick();
 ok('B13 下一个 tick 恢复', log.allows(g2, T0 + HOUR));
 
+/**
+ * ★★ B14 / B15：`groups` **不跨会话持久化**（2026-10-23，P0-5）。
+ *
+ * `groups` 的值是自增的 `tick` 号，而 `tick` 每次重载从 0 重开。
+ * 改前 `save()` 把它一起落盘 ⇒ 重载前最后用到的 tick（比如 7）会在**新会话**的
+ * 第 7 次 resolve 时恰好撞号 ⇒ 该互斥组整组被判"本 tick 已出过" ⇒ 通道静默哑一次。
+ *
+ * 这里用"同一份 storage 建两个 log 实例"精确复现"重载"：
+ * 第二个实例 = 重载后的进程，`tick` 从 0 起。
+ */
+{
+  const store: Record<string, string> = {};
+  const fake = {
+    getItem: (k: string) => store[k] ?? null,
+    setItem: (k: string, v: string) => {
+      store[k] = v;
+    },
+  };
+  const logA = createEventLog(fake);
+  /** 把 tick 推到 7，并在第 7 拍 commit 一次（groups['g'] = 7） */
+  for (let i = 0; i < 7; i++) {
+    logA.beginTick();
+  }
+  logA.commit(g1, T0);
+  ok(
+    'B14 前置：本会话第 7 拍确实写了 groups',
+    logA.snapshot().groups['g'] === 7
+  );
+
+  /** "重载"：新实例读同一份 storage */
+  const logB = createEventLog(fake);
+  ok(
+    'B15 重载后 groups 被清空（否则 tick 撞号会让互斥组静默哑）',
+    Object.keys(logB.snapshot().groups).length === 0
+  );
+
+  /** 走到新会话的第 7 拍 —— 改前这一拍会因撞号被误判 */
+  for (let i = 0; i < 6; i++) {
+    logB.beginTick();
+  }
+  logB.beginTick();
+  ok(
+    'B16 新会话第 7 拍：同组另一条**仍可**抽中（改前在这里被误判出局）',
+    logB.allows(g2, T0)
+  );
+}
+
 console.log('\nC. decidePlay：抢占矩阵');
 /** 旧行为逐格对照：`decideAction` 本体未被改动 */
 eq(

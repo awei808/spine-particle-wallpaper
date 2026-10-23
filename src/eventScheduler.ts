@@ -204,6 +204,18 @@ export const createEventLog = (storage?: LogStorage | null): EventLog => {
         Object.keys(state.entries).forEach((k) => {
           state.entries[k].session = 0;
         });
+        /**
+         * ★★ `groups` **读进来就丢掉**（2026-10-23，P0-5）。
+         *
+         * 旧存档里存的是**上一次会话**的 tick 号（自增，从 0 起）。本会话的 `tick`
+         * 也刚从 0 开始 ⇒ 两边一旦撞号，该互斥组会被误判"本 tick 已出过" ⇒
+         * 静默哑一次。`save()` 那边已经不再写它；这里必须**同时**在读入时清零，
+         * 否则"上一次会话留下的脏值"会撑到本次会话的第一次 `commit` 才被覆盖。
+         *
+         * 保留字段本身（`{}`）而不是 `delete`：`save()` / 读取分支都还在判
+         * `parsed.groups` 是否存在，删掉会让老存档走 catch 分支、把 `entries` 一起丢了。
+         */
+        state.groups = {};
       }
     }
   } catch (err) {
@@ -220,7 +232,20 @@ export const createEventLog = (storage?: LogStorage | null): EventLog => {
         const e = state.entries[k];
         copy.entries[k] = { ...e, session: 0 };
       });
-      copy.groups = { ...state.groups };
+      /**
+       * ★★ `groups` **不落盘**（2026-10-23，P0-5）。
+       *
+       * `groups` 的语义是"**本 tick** 已经出过同组的一条"，是一个**单次会话内**的
+       * 概念，值就是自增的 `tick` 号；而 `tick` 每次重载都从 0 重开。
+       *
+       * 改前这里把它一起持久化了 ⇒ 重载前最后一次 resolve 的 tick 可能是 7，
+       * 重载后走到会话内第 7 次 resolve 时 `state.groups['g'] === 7` **恰好命中**
+       * ⇒ 该互斥组整组被判定"本 tick 已消费" ⇒ 该通道静默哑一次，零日志。
+       *
+       * ⇒ 存空对象（字段留着，保证旧存档结构兼容、读取分支的 `parsed.groups` 判据不炸）。
+       * 旧存档里已经写进去的那些脏值，也会在**第一次 save 时被这条覆盖清掉**。
+       */
+      copy.groups = {};
       storage.setItem(EVENT_LOG_STORAGE_KEY, JSON.stringify(copy));
     } catch (err) {
       /** 写失败不影响本次会话（只是重载后配额会重置） */

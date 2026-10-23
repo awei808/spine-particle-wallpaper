@@ -89,6 +89,7 @@ import {
   writeEventState,
 } from './eventOverrides';
 import { loadEventsFile } from './eventsFile';
+import { readJsonFile } from './assetText';
 import {
   summarizeReport,
   validateEvents,
@@ -313,6 +314,58 @@ installWallpaperPropertyListener((properties) => {
  */
 installWeFpsSignal();
 
+/**
+ * 把**致命启动失败**打到屏幕上（2026-10-23，P0-6）。
+ *
+ * ## 为什么需要它
+ *
+ * 桌面壁纸没有 DevTools。改前 `main()` 的第一条语句是裸 `await fetch(...)`，
+ * 失败即 unhandled rejection ⇒ **黑屏**，用户只能说"壁纸是黑的"，而
+ * `/weblog.txt` 里也未必有线索。事件表读不到时更糟：画面完全正常、
+ * 只是永远不说话，根本看不出是"文件没到"。
+ *
+ * ## 口径
+ *
+ * - **绝不抛异常**：它自己出问题也不能把调用链带下去（外面套 try/catch）。
+ * - 红条 id 独立于 `initScene` 的 `#__fitErr`：那个每帧会被 `warn()` 增删，
+ *   混用会被它删掉。这里用 `#__fatalErr` 并且**永不移除**（重启才消失）。
+ * - 文案给人看的：讲清"哪个文件、什么原因、怎么修"。技术细节（HTTP 状态等）
+ *   由调用方拼进 `detail`。
+ */
+const showFatal = (title: string, detail: string): void => {
+  // 通道 1：控制台（有 DevTools 或 weblog 时可见）
+  console.error('[fatal] %s\n%s', title, detail);
+  // 通道 2：屏幕红条（桌面壁纸唯一能看见的通道）
+  try {
+    if (typeof document === 'undefined' || !document.body) {
+      return;
+    }
+    let el = document.getElementById('__fatalErr');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = '__fatalErr';
+      el.style.cssText = [
+        'position:fixed',
+        'left:0',
+        'top:0',
+        'right:0',
+        'z-index:2147483647',
+        'background:#b71c1c',
+        'color:#fff',
+        'font:14px/1.7 Consolas,Menlo,monospace',
+        'padding:14px 18px',
+        'white-space:pre-wrap',
+        'word-break:break-all',
+        'pointer-events:none',
+      ].join(';');
+      document.body.appendChild(el);
+    }
+    el.textContent = '壁纸启动失败：' + title + '\n\n' + detail;
+  } catch (err) {
+    /* 连红条都画不出来 ⇒ 只剩控制台那条，别再抛 */
+  }
+};
+
 const main = async () => {
   /**
    * ★ 运行时设置：`config.json` 是**只读默认值**，用户在 WE / 右上角面板里改的是
@@ -320,10 +373,28 @@ const main = async () => {
    *
    * 顺序很重要：**先读原始 config，再合并覆盖层**，其余代码一律只看 `configs`，
    * 这样"面板里显示当前生效值"与"实际行为"永远同源。
+   *
+   * ★★ 2026-10-23（P0-6）改了两件事：
+   *   ① **不走 `fetch`** —— WE 是 `file://`，fetch 在此受 CORS 限制且各版本行为不一；
+   *      本工程其它所有资源（`.skel`/`.atlas`/贴图）本来就靠 XHR。见 `assetText.ts`。
+   *   ② **不再裸 `await`** —— 这是 `main()` 的第一条语句，失败即 unhandled rejection
+   *      ⇒ 黑屏，而桌面壁纸看不到 DevTools。现在失败会打到屏幕红条上再停住。
    */
-  const rawConfigs: Configs = await (
-    await fetch('./assets/config.json')
-  ).json();
+  const cfgRes = await readJsonFile<Configs>('./assets/config.json');
+  /**
+   * ⚠️ 必须写 `=== false` 而不是 `!cfgRes.ok`：本项目 `tsconfig` **没开
+   *   `strictNullChecks`**，在这一档下 TS 不会对布尔字面量做判别式收窄
+   *   （`!r.ok` 之后仍读不到 `r.reason`，报 TS2339）。显式比较可绕过。
+   */
+  if (cfgRes.ok === false) {
+    showFatal(
+      '读不到 assets/config.json',
+      cfgRes.reason +
+        '\n（WE 里页面是 file://，请确认 dist/assets/config.json 真的存在、且与 index.html 同级）'
+    );
+    return;
+  }
+  const rawConfigs: Configs = cfgRes.value;
   /**
    * ★★ **新事件族的补勾迁移**（2026-10-21）—— 必须在 `applyOverrides` **之前**。
    *
@@ -348,7 +419,22 @@ const main = async () => {
    */
   const eventsFile = await loadEventsFile();
   if (!eventsFile.ok) {
-    console.error('[events] ' + (eventsFile.error ?? '事件文件不可用'));
+    /**
+     * ★★ 事件表读不到 ⇒ **必须打到屏幕上**（2026-10-23，P0-6）。
+     *
+     * 这条失败特别隐蔽：壁纸照常渲染、BGM 照常响、点击也有动作，
+     * 只是**字幕与语音永远不出现**。改前只有一行 `console.error`，
+     * 桌面壁纸看不到 ⇒ 用户只能报"没字幕"，根因在文件层却无从查起。
+     *
+     * ⚠️ 不 `return`：与 config 不同，事件表缺失时画面**还能用**（只是不说话），
+     *   红条与"继续跑"并存比直接黑屏更有用。
+     */
+    showFatal(
+      '读不到事件表 assets/events.jsonc',
+      (eventsFile.error ?? '事件文件不可用') +
+        '\n\n后果：壁纸能显示、有 BGM，但**不会出现任何字幕与角色语音**。' +
+        '\n修法：确认 dist/assets/events.jsonc 存在（与 index.html 同级），且 JSONC 语法正确。'
+    );
   }
   eventsFile.issues.forEach((it) => console.warn('[events] ' + it.detail));
   /**
@@ -3037,4 +3123,21 @@ const main = async () => {
   requestAnimationFrame(waitLoad);
 };
 
-main();
+/**
+ * ★★ 顶层兜底（2026-10-23，P0-6）。
+ *
+ * `main()` 是 async，但**改前是裸调用** `main();` ⇒ 任何未捕获的 rejection
+ * （骨架加载失败、`Scene.initScene` 抛错、某个 `await` 没人管…）都只在控制台留一行，
+ * 桌面壁纸表现为"一片黑，什么都没有"。
+ *
+ * 这里只兜**启动链路**（`await main()`）；渲染循环里的异常不在此列 ——
+ * 那些每帧都可能触发，套一层会让 console 刷屏且掩盖真实问题。
+ */
+main().catch((err: unknown) => {
+  const msg = (err as Error)?.stack ?? String(err);
+  showFatal(
+    '启动过程中抛出未捕获异常',
+    msg +
+      '\n\n若这是首次在此机器上出现，先看 dist/assets/ 是否齐全（config / events / 骨架 / 贴图）。'
+  );
+});

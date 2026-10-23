@@ -33,6 +33,7 @@
 
 import { DialogueEntry } from './config.type';
 import { Issue, makeIssue } from './eventModel';
+import { readTextFile } from './assetText';
 
 /** 相对 `index.html` 的路径（与 `config.json` 同目录） */
 export const EVENTS_FILE_PATH = './assets/events.jsonc';
@@ -262,17 +263,30 @@ export const parseEventsFile = (text: string): EventsFileResult => {
   return { ok: true, events, issues, error: null };
 };
 
-/** 只描述用到的 fetch 能力（便于回归里注入假实现，不依赖 `Response`） */
+/** 只描述用到的读取能力（便于回归里注入假实现，不依赖 `Response`） */
 type Fetcher = (
   url: string
 ) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
 
-const defaultFetcher: Fetcher = (url) =>
-  fetch(url, { cache: 'no-store' }).then((r) => ({
+/**
+ * 缺省读取实现 = **XHR**（不是 `fetch`）。
+ *
+ * ★★ 2026-10-23（P0-6）：WE 里页面是 `file://`，`fetch()` 在此受 CORS 限制且
+ * 各版本行为不一 —— 本工程其它所有资源（`.skel` / `.atlas` / 贴图）本来就靠
+ * `XMLHttpRequest`，唯独 config 与事件表用了 fetch，属于口径分裂。
+ * 读不到事件表的后果还特别隐蔽：`ok:false, events:[]` ⇒ 壁纸照常渲染、
+ * BGM 照常响，但**字幕与语音永远不出现**（用户只会报"没字幕"）。
+ *
+ * 详见 `assetText.ts` 的文件头。
+ */
+const defaultFetcher: Fetcher = async (url) => {
+  const r = await readTextFile(url);
+  return {
     ok: r.ok,
     status: r.status,
-    text: () => r.text(),
-  }));
+    text: async () => (r.ok ? r.text : ''),
+  };
+};
 
 /**
  * 取回并解析事件文件。

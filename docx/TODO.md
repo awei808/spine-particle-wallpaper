@@ -1,10 +1,41 @@
 # TODO
 
-> 最后更新：2026-10-22
+> 最后更新：2026-10-23
 > 本文件只回答「下一步做什么」。**已完成的过程记录**（自定义事件系统、事件文件化 A/B/C/D 四批、
 > `weight:0` bug 复盘、事件族 / 恢复默认首批）已整份归档到 `docx/_archive/2026-10/TODO_落地记录_2026-10-21.md`。
 > 设计真相：`PLAN_自定义事件系统_2026-10-18.md`（字段 / 条件 / 调度 / 校验）、`PLAN_事件配置文件_2026-10-19.md`（文件格式）。
 > 编号沿用旧 §4 的 1–9，新增项接 10 起，方便对旧记录。
+
+## 0. 代码审查遗留（2026-10-23 全量审查的剩余项）
+
+> 审查报告：`REVIEW_全面代码审查_2026-10-23.md`（6 P0 / 14 P1 / 33 P2）。
+> **P0-1 ~ P0-6 已全部修复**，明细见 §4 的落地记录。下面只留未开工的部分。
+
+### 0.1 P1 中等（14 条，按建议顺序）
+
+| # | 项 | 位置 / 现状 |
+|---|---|---|
+| 12 | **面板缩放到下限后永久脱离全局缩放** | `settingsPanel.ts:1150-1169` 的 `fitPanelScale`：`panelK` 触底 `K_MIN` 后 `next === panelK` ⇒ 提前 `break` ⇒ **不写** `--wb-ui-s`。之后换显示器/改分辨率，面板内层与气泡/HUD 的缩放比例脱钩。`disclaimer.ts:345-372` 同构。修法：把"要不要写样式"的判据从 `panelK` 换成**实际要写入的值** |
+| 13 | **滑块位置与数字读数不同量纲** | `settingsPanel.ts:3227-3232`。`gapMs=25000` 滑块被钳到第 100 格（=10s）而文字显示"25000 毫秒"；`standbyIdleSec=25` 出厂就有 ±1s 错位。修法：读数由**滑块当前格**反算；`syncFromDraft` 把钳位值回写 `draft` |
+| 14 | **排队模式下 `onAction` 在"入队"而非"开播"回调** | `touch.ts:885` 的 `onAction` 在 `addAnimation` 之后同步触发，而 `trackEntry.listener.start` 被写成空函数。排队模式响应延迟 = 当前常驻动作剩余时长（最长 11s）⇒ 字幕/语音/配额**提前**落地。修法：把 `onAction` 挪进 `listener.start` |
+| 15 | **常驻序列吞掉刚排上的自动通道动作** | `touch.ts:989` 的交接保护只判 `source === 'touch'`；greet/standby 在 `complete` 后的窗口里排上 `addAnimation`，随即被 `idleSequence.resume()` 的 `setAnimation(0,…)` 的 `disposeNext` 丢掉 ⇒ 字幕播了、动画没播。修法：判据放宽到所有 source |
+| 16 | **漏斗池与档案池的 `enabled` 判据不一致** | `index.ts:1151` 的 `poolOfKind` 没判 `enabled !== false`，而 `archive.ts:635` 判了 ⇒ `poolSize` 虚高、`hasChat` 误判、"全 weight:0"告警漏报。修法：加一条判据 |
+| 17 | **无 `texture` 层时相机 y = `Infinity`** | `initScene.ts:185/216`：`zMin` 初值 `Infinity` 且无兜底 ⇒ `halfH`/`camY` 全 NaN ⇒ 整屏不渲染，而红条只说"露黑"，排查方向被带偏 |
+| 18 | **暂停期间"不许起播"只有语音实现** | `bgmPlayer.ts:173-200` 无 `suspended` 闸门（`voicePlayer.ts:599-603` 有）。加上 `audioMaster.paused` 从未读宿主（`audioMaster.ts:117` 的注释是假的），若 WE 在 `createAudioMaster` 之前下发过 `setPaused(true)`，恢复时 BGM 会在已暂停的壁纸上响 |
+| 19 | **BGM 缺 `ended` 判据** | `loop:false` 时 `resume()` 对已 `ended` 的元素调 `play()` ⇒ 整条 BGM 从头重播。`voicePlayer` 已修过同款（`voicePlayer.ts:78-93`），BGM 侧没同步 |
+| 20 | **JSONC 两条边界让"行:列"失效** | `eventsFile.ts:76-83` 行注释只认 `\n`（纯 `\r` 不退出）；`85-94` 块注释 EOF 未闭合无检测 ⇒ 都退化成 "Unexpected end of JSON input"，`positionOf` 拿不到位置 |
+| 21 | **`time.start === end` 四处口径打架** | `config.type.ts:746` 说"= 全天"、`compileCondition:387` 也按全天；但 `inspectCondition:184` 报 `E_COND_INVALID`（strict 下 reject）、`describeCondition:506` 说"非法"。`_regress/85` 的 A4 还把这个不一致**钉成了测试** |
+| 22 | **`conditions` 的 `month`/`day` 放过 `NaN`** | `conditions.ts:525` 用 `typeof` 判数 ⇒ 档案打出 `NaN月NaN日`。`compile`/`inspect`/`describe` 是**三份独立 switch**，建议抽共享 `parseLeaf` |
+| 23 | **无 `test` 脚本、无 CI** | `package.json` 没有 `test`；仓库根无任何 CI 配置；67 个回归靠手工 `npx ts-node` 跑。且 64/65/67/69 依赖 `dist/bundle.js` ⇒ 测的是**上一次构建产物** |
+| 24 | **`tsconfig` 没开 `strict`** | 无 `strictNullChecks` ⇒ 以下问题编译期全不可见（本次 P0-6 的类型收窄就因此踩了坑）。`scripts/` 与 `_regress/` 也不在 `include` 里 |
+| 25 | **其余 P1/P2** | 见审查报告 §「P2 轻微」：死代码（`subEmitterConfig.ts` 361 行完全没接线、4 个 `dispose()` 零调用、`toNumber`/`toEnum`/`setVisible` 零调用）、监听器泄漏（`bgmPlayer.armUnlock` 重复累积、`settingsPanel` 的 flashTimer/drag 监听、`SpineAnimator` 无 dispose）、以及 `pointerTrail` / `ParticleAnimator` 的每帧分配 |
+
+### 0.2 遗留观察
+
+- ~~`_regress/93` 的 D3 FAIL~~ ⇒ **确认是既有失败**（HEAD 上也 FAIL），断言"touch 类条数 == 事件表 touch 类条数"与当前 config 数据不匹配，需按实际数据重算期望值
+- `packages/threejs-spine-3.8-runtime-es6` 子模块指针指向 `b160f53`（`perf(mesh): only flag needsUpdate…`），**该提交不在任何远端分支上** ⇒ 别人 clone 会 fetch 失败。要么推到自己的 fork 并改 `.gitmodules` 的 url，要么退回 `bd54703`
+
+---
 
 ## 1. 待办
 
@@ -45,7 +76,7 @@
 |---|---|---|
 | 6 | `initScene.ts:517` 删掉 `mousemove` 的 `preventDefault()` | 仍在（行号已从 :496 移到 :517，2026-10-21 复核） |
 | 7 | 6 个骨架的 mousedown / mouseup 收敛成共享分发器 | 未做，仍各自 `addEventListener` |
-| 8 | 发布态探针默认关 | 未做，`webpack.common.js:75` 仍是 `env?.probe ?? 'on'`（已复核） |
+| 8 | ~~发布态探针默认关~~ | ✅ **2026-10-23 已完成**：`webpack.common.js` 改 `env?.probe ?? 'off'`；生产 `devtool: 'source-map'`（外置）；`config.json` 的 `probe.enabled → false`。★ 注意 `__PROBE__` 只是**缺省值**（`probe.ts` 不做 DCE），真正省 CPU 的是 config 那一刀 |
 | 9 | `ParticleAnimator.buildGeometry` 加 dirty 判定 | 未做 |
 
 ### 1.3 恢复默认（首批已落地，收尾两项）
@@ -73,6 +104,57 @@ BoxShell / BoxEdge / Mesh / Sprite —— 三个产物 0 用例。
 **这些章节在本文件里已不存在**（§2 现在是"已知限制"）⇒ 引用全部失效，读者按图索骥会找不到。
 需逐个改指到 `RESEARCH_粒子系统复刻参考.md` 或 `config.type.ts` 自身的注释。
 涉及：`src/animator/ParticleAnimator.ts`（约 8 处）、`src/config.type.ts`（约 5 处）、`src/subEmitterConfig.ts`（2 处）。
+
+---
+
+## 1.9 2026-10-23 落地记录（代码审查 P0 全清）
+
+> 审查报告 `REVIEW_全面代码审查_2026-10-23.md`；6 条 P0 已全部修完并各有回归 + 反向验证。
+
+### P0-5 `eventLog.groups` 持久化 tick，重载后撞号（1 行代码，2 处）
+
+`groups` 的值是自增的 `tick` 号（"本 tick 已出过同组的一条"），而 `tick` **每次重载从 0 重开**。
+改前 `save()` 把它一起落盘 ⇒ 重载前最后用到 tick 7，新会话第 7 次 resolve 时
+`groups['g'] === 7` **恰好命中** ⇒ 该互斥组整组被判"已消费" ⇒ 通道静默哑一次，零日志。
+
+- `eventScheduler.ts` 的 `save()`：`copy.groups = {}`（不落盘）
+- `createEventLog` 的读盘分支：`state.groups = {}`（**旧存档的脏值必须读进来就丢**，
+  否则要撑到本次会话第一次 `commit` 才被覆盖）
+- 保留字段本身而不是 `delete`：`save()`/读取分支都还判 `parsed.groups` 是否存在，
+  删掉会让老存档走 catch 分支、把 `entries` 一起丢了
+- 回归：`_regress/86` 新增 **B14/B15/B16**（用同一份 storage 建两个实例精确复现"重载"）
+
+### P0-6 `main()` 裸 fetch，失败即黑屏 / 永远没字幕
+
+WE 是 `file://`。工程自己在 `voicePlayer.ts:102-108` 与 `eventValidate.ts:12` 都记录过
+"fetch 在此受 CORS 限制且各版本行为不一"，而**其它所有资源**（`.skel`/`.atlas`/贴图）
+本来就靠 XHR（`AssetManager.ts:48`）—— 唯独 config 与事件表交给 fetch，是口径分裂。
+
+失败后果分两档：config 读不到 ⇒ **黑屏**（`main()` 第一条语句，unhandled rejection，
+桌面看不到 DevTools）；events 读不到 ⇒ **更隐蔽**：画面正常、BGM 正常、点击有动作，
+只是字幕与语音永远不出现，用户只会报"没字幕"。
+
+- **新增 `src/assetText.ts`**：`readTextFile()`（XHR 封装）/ `readJsonFile()`。
+  关键点：① ★ `file://` 下 `status` 恒为 **0**，只判 200 会让本地部署**全部**读不到 config；
+  ② 必须设 `timeout`（路径写错时某些 CEF 既不 `onerror` 也不 `onload` ⇒ 永久 pending）；
+  ③ `overrideMimeType('text/plain; charset=utf-8')`（`.jsonc` 扩展名不认识，否则中文乱码）；
+  ④ 去 BOM（Windows 编辑器常见）；⑤ 失败**不抛异常**，返回人话 `reason`
+- `eventsFile.ts` 的 `defaultFetcher` 改为基于 `readTextFile`
+- `index.ts`：config 走 `readJsonFile`；新增 `showFatal()` 屏幕红条（id 用
+  `#__fatalErr`，与 `initScene` 每帧增删的 `#__fitErr` 分开）；events 失败**也打红条
+  但不 return**（画面还能用，只是不说话）；顶层 `main()` → `main().catch(...)`
+- 回归：`_regress/106`（20 条断言：status=0 / 各类失败原因 / 超时 / MIME / BOM /
+  JSON 语法错误 / 缺省读取器不是 fetch / 顶层是 `main().catch`）
+
+### 顺带（本轮同批修的）
+
+- **P0-3 纯台词事件**（见 `_regress/104`）：真支持"只播字幕"，新增 `textOnlyUntil`
+  让 `isBusy()` 覆盖字幕停留期（否则待机 tick 会插嘴打断台词）
+- **P0-4 手动触发记账**（见 `_regress/105`）：新增 `triggerManual` 统一入口，
+  补三层闸门 + `beginTick`；`commit(manual=true)` 只写 `lastAt` 不涨配额
+- **触摸通道漏抽变体**：`pick` 只调漏斗没调 `resolveEventVariant` ⇒ `variants` 在
+  点击路径完全失效（永远播基准那条）
+- **生产包体积**：6.61 MB → 1001 KB（内联 sourcemap 改外置 `bundle.js.map`）
 
 ---
 
