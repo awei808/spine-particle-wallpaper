@@ -7,3 +7,8 @@ public/assets/*
 !public/assets/README*.md
 !public/assets/config.example.json
 docx/_archive
+
+# 宣传/推广产物：不进版本库（_promo 是 1.3G 的帧序列）
+# 成品视频请挂到 GitHub Release 附件，不要提交进 git
+_promo/
+*.mp4

@@ -38,7 +38,13 @@ Substantial changes have been made since 2026-09. Additions include, but are not
 ## Third-party components
 
 - **three.js** — MIT License. <https://github.com/mrdoob/three.js>
-- **threejs-spine-3.8-runtime-es6** (git submodule, <https://github.com/spicy-wolf/threejs-spine-3.8-runtime-es6>)
+- **threejs-spine-3.8-runtime-es6** (git submodule)
+  — fork: <https://github.com/awei808/threejs-spine-3.8-runtime-es6>
+  — upstream: <https://github.com/spicy-wolf/threejs-spine-3.8-runtime-es6>
+  The fork tracks upstream `bd54703` plus one local patch
+  (`b160f53` — `perf(mesh): only flag needsUpdate when the texture actually changes`).
+  The submodule URL points at the fork so a plain `git clone --recurse-submodules`
+  resolves; upstream never carried that commit.
   — subject to the Spine Runtimes License Agreement, see [LICENSE.spine.txt](./LICENSE.spine.txt).
   Using or distributing the Spine Runtimes requires a valid [Spine license](https://esotericsoftware.com/spine-purchase).
 
