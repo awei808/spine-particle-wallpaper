@@ -11,7 +11,8 @@
     "voice-manifest": "ts-node --transpile-only scripts/voiceManifest.ts",
     "validate-events": "ts-node --transpile-only scripts/validateEvents.ts public/assets",
     "convert-zones": "ts-node --transpile-only scripts/convertZones.ts",
-    "pack": "npm run build && ts-node --transpile-only scripts/packEngine.ts"
+    "pack": "npm run build && ts-node --transpile-only scripts/packEngine.ts",
+    "deploy:pages": "ts-node --transpile-only scripts/deployPages.ts"
   },
   "repository": {
     "type": "git",
