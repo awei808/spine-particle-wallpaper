@@ -1,0 +1,904 @@
+<!---
+Spine Wallpaper Engine. This is a Spine animation player for wallpaper engine.
+Copyright (C) 2023 Spicy Wolf
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+-->
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>星见亚砂 · 盛夏游乐场（S9）— Spine 交互壁纸 在线 Demo</title>
+
+  <meta name="description"
+    content="把 Spine 角色做成 Wallpaper Engine 交互壁纸的开源框架，在线演示：22 图层分层场景、触摸热区、粒子特效、语音字幕与 BGM。">
+  <meta name="theme-color" content="#0a0d16">
+  <meta name="robots" content="index,follow">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="spine-particle-wallpaper">
+  <meta property="og:title" content="星见亚砂 · 盛夏游乐场（S9）— Spine 交互壁纸 在线 Demo">
+  <meta property="og:description"
+    content="22 图层分层场景 · 触摸热区 · 粒子特效 · 语音字幕 · BGM。基于 Spine 3.8 + three.js 的 Wallpaper Engine 交互壁纸框架。">
+  <meta property="og:image" content="preview.jpg">
+  <meta property="og:url" content="https://awei808.github.io/spine-particle-wallpaper/">
+  <meta name="twitter:card" content="summary_large_image">
+
+  <link rel="icon"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a0d16'/%3E%3Ccircle cx='16' cy='13' r='6' fill='none' stroke='%237dd3fc' stroke-width='2.4'/%3E%3Cpath d='M9 26a7 7 0 0 1 14 0z' fill='%237dd3fc'/%3E%3C/svg%3E">
+
+  <style>
+    /* ============================================================
+       一、宿主布局契约 —— 与 bundle.js 的 initScene 配套，勿改
+       ------------------------------------------------------------
+       画布的 CSS 尺寸由 JS 按视口精确设定：正常比例 -> 铺满；
+       超出 minAspect~maxAspect -> 按边界尺寸渲染、居中留边。
+       所以 canvas 这里绝不能再写 width:100% / height:auto，
+       那会覆盖 JS 设的 CSS 尺寸，在 letterbox 情况下把画面拉变形。
+       ============================================================ */
+    html,
+    body {
+      height: 100%;
+    }
+
+    body {
+      margin: 0;
+      overflow: hidden;
+      height: 100vh;
+      width: 100vw;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+    }
+
+    canvas {
+      display: block;
+    }
+
+    /* ============================================================
+       二、展示页自身的外观层（不参与场景取景）
+       ============================================================ */
+    :root {
+      --ink: #eef2ff;
+      --dim: rgba(238, 242, 255, .60);
+      --line: rgba(255, 255, 255, .13);
+      --glass: rgba(11, 15, 28, .58);
+      --glass-hi: rgba(26, 32, 52, .74);
+      --accent: #7dd3fc;
+      --shadow: 0 12px 34px rgba(0, 0, 0, .48);
+      --font: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC",
+        system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    .layer {
+      position: fixed;
+      inset: 0;
+    }
+
+    /* --- 入场门（Gate）：先出海报，点击后才加载 bundle。
+           这么做唯一的目的：把 bundle 内部的 AudioElement.play()
+           推迟到用户手势之后，绕开浏览器自动播放限制。 --- */
+    #gate {
+      z-index: 60;
+      display: grid;
+      place-items: center;
+      background: #05070d;
+      transition: opacity .7s ease, visibility .7s ease;
+      overflow: hidden;
+    }
+
+    #gate.hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    /* 海报背景：一张图做的，缩放外扩消除模糊白边 */
+    .gate-bg {
+      position: absolute;
+      inset: -60px;
+      background: #05070d url("preview.jpg") center / cover no-repeat;
+      filter: blur(26px) saturate(1.15) brightness(.62);
+      transform: scale(1.08);
+    }
+
+    .gate-bg::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(120% 90% at 50% 40%, transparent 20%, rgba(5, 7, 13, .82) 78%),
+        linear-gradient(180deg, rgba(5, 7, 13, .55), rgba(5, 7, 13, .25) 40%, rgba(5, 7, 13, .92));
+    }
+
+    .gate-inner {
+      position: relative;
+      text-align: center;
+      padding: 0 26px;
+      max-width: 760px;
+      animation: rise .9s cubic-bezier(.22, .8, .3, 1) both;
+    }
+
+    @keyframes rise {
+      from {
+        opacity: 0;
+        transform: translateY(18px);
+      }
+
+      to {
+        opacity: 1;
+        transform: none;
+      }
+    }
+
+    .eyebrow {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      letter-spacing: .28em;
+      color: var(--accent);
+      opacity: .9;
+      margin-bottom: 18px;
+    }
+
+    .title {
+      font-family: var(--font);
+      font-size: clamp(30px, 6.4vw, 58px);
+      font-weight: 800;
+      letter-spacing: .02em;
+      line-height: 1.14;
+      margin: 0;
+      color: #fff;
+      text-shadow: 0 6px 30px rgba(0, 0, 0, .6);
+    }
+
+    .subtitle {
+      margin: 14px auto 0;
+      max-width: 30em;
+      font-family: var(--font);
+      font-size: clamp(13px, 1.7vw, 15px);
+      line-height: 1.75;
+      color: var(--dim);
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      justify-content: center;
+      margin: 22px 0 30px;
+    }
+
+    .chip {
+      font-family: var(--font);
+      font-size: 11.5px;
+      padding: 5px 11px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, .05);
+      color: rgba(238, 242, 255, .78);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+    }
+
+    .btn {
+      font-family: var(--font);
+      font-size: 14.5px;
+      font-weight: 600;
+      color: #06121c;
+      background: linear-gradient(180deg, #a5e4ff, #56bdf0);
+      border: 0;
+      border-radius: 999px;
+      padding: 13px 30px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      box-shadow: 0 10px 30px rgba(86, 189, 240, .34), inset 0 1px 0 rgba(255, 255, 255, .5);
+      transition: transform .18s ease, box-shadow .18s ease, filter .18s ease;
+    }
+
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 16px 38px rgba(86, 189, 240, .46), inset 0 1px 0 rgba(255, 255, 255, .5);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+      filter: brightness(.96);
+    }
+
+    .btn[disabled] {
+      cursor: progress;
+      filter: saturate(.5) brightness(.9);
+      transform: none;
+    }
+
+    .btn svg {
+      width: 15px;
+      height: 15px;
+      display: block;
+    }
+
+    .foot-note {
+      margin-top: 16px;
+      font-family: var(--font);
+      font-size: 11.5px;
+      color: rgba(238, 242, 255, .40);
+      line-height: 1.7;
+    }
+
+    .foot-note a {
+      color: rgba(238, 242, 255, .66);
+      text-decoration: none;
+      border-bottom: 1px solid rgba(238, 242, 255, .22);
+    }
+
+    .foot-note a:hover {
+      color: #fff;
+    }
+
+    /* --- 加载指示 --- */
+    #loading {
+      display: none;
+      align-items: center;
+      gap: 9px;
+      margin-top: 20px;
+      font-family: var(--font);
+      font-size: 12.5px;
+      color: var(--dim);
+    }
+
+    #loading.on {
+      display: inline-flex;
+    }
+
+    .spinner {
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      border: 2px solid rgba(255, 255, 255, .2);
+      border-top-color: var(--accent);
+      animation: spin .8s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    #fatal {
+      display: none;
+      margin: 20px auto 0;
+      max-width: 34em;
+      padding: 13px 16px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 120, 120, .34);
+      background: rgba(60, 16, 20, .5);
+      color: #ffc9c9;
+      font-family: var(--font);
+      font-size: 12.5px;
+      line-height: 1.7;
+      text-align: left;
+    }
+
+    #fatal.on {
+      display: block;
+    }
+
+    /* ============================================================
+       三、薄 UI 层：整层 pointer-events:none，只有可点控件开 auto，
+       否则会吃掉 bundle 的触摸热区（右下的 dock 尤其要避开热区）。
+       ============================================================ */
+    #ui {
+      z-index: 50;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity .45s ease;
+      font-family: var(--font);
+    }
+
+    #ui.on {
+      opacity: 1;
+    }
+
+    /* 鼠标静止一段时间后自动隐去，把画面让给壁纸本身 */
+    #ui.idle {
+      opacity: .18;
+    }
+
+    #ui.idle .brand,
+    #ui.idle .dock {
+      pointer-events: none;
+    }
+
+    .brand {
+      position: absolute;
+      top: max(16px, env(safe-area-inset-top));
+      left: max(16px, env(safe-area-inset-left));
+      pointer-events: auto;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 14px 8px 10px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: var(--glass);
+      backdrop-filter: blur(14px) saturate(1.3);
+      -webkit-backdrop-filter: blur(14px) saturate(1.3);
+      box-shadow: var(--shadow);
+    }
+
+    .brand-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #4ade80;
+      box-shadow: 0 0 0 4px rgba(74, 222, 128, .18);
+      flex: 0 0 auto;
+    }
+
+    .brand-txt {
+      line-height: 1.35;
+    }
+
+    .brand-t1 {
+      font-size: 13px;
+      font-weight: 650;
+      color: var(--ink);
+    }
+
+    .brand-t2 {
+      font-size: 10.5px;
+      color: var(--dim);
+      letter-spacing: .04em;
+    }
+
+    .dock {
+      position: absolute;
+      right: max(16px, env(safe-area-inset-right));
+      bottom: max(16px, env(safe-area-inset-bottom));
+      pointer-events: auto;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: var(--glass);
+      backdrop-filter: blur(14px) saturate(1.3);
+      -webkit-backdrop-filter: blur(14px) saturate(1.3);
+      box-shadow: var(--shadow);
+    }
+
+    .dock button {
+      appearance: none;
+      border: 1px solid transparent;
+      background: rgba(255, 255, 255, .06);
+      color: rgba(238, 242, 255, .82);
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 550;
+      height: 34px;
+      padding: 0 12px;
+      border-radius: 11px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      transition: background .16s ease, color .16s ease, border-color .16s ease;
+    }
+
+    .dock button:hover {
+      background: rgba(255, 255, 255, .13);
+      color: #fff;
+    }
+
+    .dock button.active {
+      background: rgba(125, 211, 252, .16);
+      border-color: rgba(125, 211, 252, .4);
+      color: #cdeeff;
+    }
+
+    .dock button svg {
+      width: 14px;
+      height: 14px;
+      display: block;
+    }
+
+    .sep {
+      width: 1px;
+      height: 20px;
+      background: var(--line);
+      margin: 0 2px;
+    }
+
+    /* 右下角 dock 上方是提示新访客的气泡 */
+    .tip {
+      position: absolute;
+      right: max(16px, env(safe-area-inset-right));
+      bottom: calc(max(16px, env(safe-area-inset-bottom)) + 54px);
+      max-width: 270px;
+      padding: 10px 13px;
+      border-radius: 13px;
+      border: 1px solid var(--line);
+      background: var(--glass-hi);
+      backdrop-filter: blur(14px) saturate(1.3);
+      -webkit-backdrop-filter: blur(14px) saturate(1.3);
+      box-shadow: var(--shadow);
+      font-size: 12px;
+      line-height: 1.65;
+      color: rgba(238, 242, 255, .8);
+      pointer-events: none;
+      transition: opacity .5s ease, transform .5s ease;
+    }
+
+    .tip.hide {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+
+    /* --- 说明弹窗 --- */
+    #modal {
+      z-index: 70;
+      display: none;
+      place-items: center;
+      padding: 24px;
+      background: rgba(3, 5, 10, .62);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+    }
+
+    #modal.on {
+      display: grid;
+    }
+
+    .card {
+      width: min(660px, 100%);
+      max-height: min(78vh, 720px);
+      overflow: auto;
+      padding: 26px 28px 24px;
+      border-radius: 20px;
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(21, 27, 45, .96), rgba(12, 16, 29, .96));
+      box-shadow: 0 30px 80px rgba(0, 0, 0, .6);
+      animation: pop .28s cubic-bezier(.2, .9, .3, 1) both;
+      pointer-events: auto;
+    }
+
+    @keyframes pop {
+      from {
+        opacity: 0;
+        transform: translateY(14px) scale(.985);
+      }
+
+      to {
+        opacity: 1;
+        transform: none;
+      }
+    }
+
+    .card h2 {
+      margin: 0 0 4px;
+      font-size: 18px;
+      color: #fff;
+    }
+
+    .card .lead {
+      margin: 0 0 18px;
+      font-size: 12.5px;
+      color: var(--dim);
+      line-height: 1.7;
+    }
+
+    .card h3 {
+      margin: 20px 0 9px;
+      font-size: 12px;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    .card p,
+    .card li {
+      font-size: 13px;
+      line-height: 1.8;
+      color: rgba(238, 242, 255, .84);
+      margin: 0 0 9px;
+    }
+
+    .card ol {
+      margin: 0;
+      padding-left: 20px;
+    }
+
+    .card code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      padding: 1.5px 6px;
+      border-radius: 6px;
+      background: rgba(125, 211, 252, .12);
+      color: #bfe8ff;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    .cell {
+      padding: 10px 12px;
+      border-radius: 11px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, .04);
+    }
+
+    .cell b {
+      display: block;
+      font-size: 17px;
+      color: #fff;
+      font-weight: 700;
+    }
+
+    .cell span {
+      font-size: 11.5px;
+      color: var(--dim);
+    }
+
+    .notice {
+      margin-top: 20px;
+      padding: 13px 15px;
+      border-radius: 12px;
+      border: 1px solid rgba(253, 224, 71, .26);
+      background: rgba(253, 224, 71, .07);
+      font-size: 12px;
+      line-height: 1.8;
+      color: rgba(254, 240, 190, .9);
+    }
+
+    .card-close {
+      margin-top: 22px;
+      width: 100%;
+      height: 40px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, .07);
+      color: #fff;
+      font-family: inherit;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .card-close:hover {
+      background: rgba(255, 255, 255, .12);
+    }
+
+    @media (max-width: 560px) {
+      .brand-t2 {
+        display: none;
+      }
+
+      .tip {
+        display: none;
+      }
+
+      .dock button {
+        padding: 0 10px;
+      }
+
+      .hide-sm {
+        display: none !important;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * {
+        animation-duration: .01ms !important;
+        transition-duration: .01ms !important;
+      }
+    }
+  </style>
+</head>
+
+<body id="body">
+
+  <!-- =========================================================
+       入场门：点击「进入」之后才注入 bundle.js。
+       所需素材在用户点击之后才拉取，同时让 BGM / 语音的首次播放
+       落在手势链路里 —— 不必再向浏览器申请音频权限。
+       ========================================================= -->
+  <div class="layer" id="gate">
+    <div class="gate-bg" aria-hidden="true"></div>
+    <div class="gate-inner">
+      <div class="eyebrow">SPINE 3.8 × THREE.JS × WALLPAPER ENGINE</div>
+      <h1 class="title">星见亚砂 · 盛夏游乐场</h1>
+      <p class="subtitle">
+        这不是视频，是实时渲染的 Spine 骨骼动画壁纸。22 张图层按 Z 轴堆叠合成场景，
+        摩天轮、气球、云与流光都是 Unity 风格的粒子发射器在跑。
+      </p>
+      <div class="chips">
+        <span class="chip">22 图层合成</span>
+        <span class="chip">3 个触摸热区</span>
+        <span class="chip">8 组粒子特效</span>
+        <span class="chip">15 条语音字幕</span>
+        <span class="chip">BGM 自动播放</span>
+        <span class="chip">跟随人物光标凝视</span>
+      </div>
+      <button class="btn" id="enterBtn" type="button">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M8 5v14l11-7z" />
+        </svg>
+        <span>点击进入 Demo</span>
+      </button>
+      <div id="loading" role="status">
+        <span class="spinner" aria-hidden="true"></span>
+        <span id="loadingText">正在加载场景资源…</span>
+      </div>
+      <div id="fatal" role="alert"></div>
+      <p class="foot-note">
+        页面含音频，进入后有需要可用右上角齿轮旁的静音按钮关闭<br>
+        <a href="https://github.com/awei808/spine-particle-wallpaper" target="_blank" rel="noopener">查看源码与教程 →</a>
+      </p>
+    </div>
+  </div>
+
+  <!-- =========================================================
+       薄 UI：只在场景之上加一层说明与出口，绝不给画面挖洞。
+       刻意避开右上角 —— 那里是框架自带的入口列（设置 / 静音 / 免责 / 档案）。
+       ========================================================= -->
+  <div class="layer" id="ui">
+    <div class="brand">
+      <span class="brand-dot" aria-hidden="true"></span>
+      <div class="brand-txt">
+        <div class="brand-t1">星见亚砂 · 盛夏游乐场</div>
+        <div class="brand-t2">SPINE WALLPAPER ENGINE · LIVE</div>
+      </div>
+    </div>
+
+    <div class="tip" id="tip">试着把鼠标移到画面中间偏左的位置 —— 角色会转头看你，背景也会跟着漂。</div>
+
+    <div class="dock">
+      <button type="button" id="btnIntro">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+          aria-hidden="true">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 11v6M12 7.6v.9" />
+        </svg>
+        <span>这是什么</span>
+      </button>
+      <button type="button" id="btnFull">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+          stroke-linejoin="round" aria-hidden="true">
+          <path d="M8 3H3v5M16 3h5v5M16 21h5v-5M8 21H3v-5" />
+        </svg>
+        <span class="hide-sm">全屏</span>
+      </button>
+      <div class="sep" aria-hidden="true"></div>
+      <button type="button" id="btnRepo" title="GitHub 仓库">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path
+            d="M12 .5C5.7.5.8 5.5.8 11.8c0 5 3.2 9.2 7.7 10.7.6.1.8-.2.8-.6v-2.2c-3.1.7-3.8-1.5-3.8-1.5-.5-1.3-1.2-1.7-1.2-1.7-1-.7.1-.7.1-.7 1.1.1 1.7 1.1 1.7 1.1 1 1.7 2.6 1.2 3.2.9.1-.7.4-1.2.7-1.5-2.6-.3-5.3-1.3-5.3-5.8 0-1.3.4-2.3 1.1-3.1-.1-.3-.5-1.5.1-3 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0C18.2 4.3 19.2 4.6 19.2 4.6c.6 1.5.2 2.7.1 3a4.4 4.4 0 0 1 1.1 3.1c0 4.5-2.7 5.5-5.3 5.8.4.4.8 1.1.8 2.2v3.3c0 .4.2.7.8.6 4.5-1.5 7.7-5.7 7.7-10.7C23.2 5.5 18.3.5 12 .5z" />
+        </svg>
+        <span class="hide-sm">GitHub</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- 说明弹窗 -->
+  <div class="layer" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="card">
+      <h2 id="modalTitle">这是什么</h2>
+      <p class="lead">
+        <b>spine-particle-wallpaper</b> 是一个把 Spine 角色做成 Wallpaper Engine 交互壁纸的开源框架。
+        你眼前这一帧，就是它在浏览器里实时渲染的结果 —— 不是录屏，也不是视频。
+      </p>
+
+      <h3>这一帧里在跑什么</h3>
+      <div class="grid">
+        <div class="cell"><b>22</b><span>图层（12 贴图 / 8 粒子 / 2 骨架）</span></div>
+        <div class="cell"><b>3</b><span>触摸热区（手 / 头 / 兜底）</span></div>
+        <div class="cell"><b>15</b><span>条事件与配音语音</span></div>
+        <div class="cell"><b>1700×750</b><span>设计画布，按宽自适应</span></div>
+      </div>
+
+      <h3>可以试试</h3>
+      <ul>
+        <li><b>移动鼠标</b> —— 角色会转头跟随光标，背景图层做视差位移。</li>
+        <li><b>点头部 / 手部</b> —— 触发对应的触摸事件，出语音和字幕气泡。</li>
+        <li><b>右上角齿轮</b> —— 框架自带的设置面板（6 个页签，含全部壁纸开关）。</li>
+        <li><b>右上角喇叭</b> —— 静音总闸，BGM 与角色语音一起关。</li>
+      </ul>
+
+      <h3>装到自己的 Wallpaper Engine</h3>
+      <ol>
+        <li>打开仓库里的 <code>demo/S9_盛夏游乐场</code> 目录，整个拷进 WE 的工程目录<br>
+          <code>&lt;WE安装目录&gt;/projects/myprojects/</code></li>
+        <li>回到 Wallpaper Engine 刷新列表，选中应用即可。不需要 <code>npm install</code>，也不需要构建。</li>
+        <li>想换成自己的角色：把 Spine 三件套（<code>.skel</code> + <code>.atlas</code> + <code>.png</code>）放进
+          <code>assets/</code>，改 <code>config.json</code> 的图层表，再改 <code>events.jsonc</code> 的台词表。</li>
+      </ol>
+
+      <div class="notice">
+        <b>关于素材与许可</b><br>
+        本页面所用的角色模型、贴图、语音与背景音乐版权均归各自权利人所有，此处仅作为渲染框架的技术演示，
+        未作任何商业用途，也不随本仓库授权。若你是相关权利人且不希望素材出现在此演示中，
+        请通过仓库 Issue 联系，将第一时间下架。<br>
+        代码部分遵循 GPL-3.0，Spine 运行时部分遵循 Spine Runtimes License Agreement。
+      </div>
+
+      <button class="card-close" type="button" id="btnClose">知道了，继续看</button>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      var REPO = 'https://github.com/awei808/spine-particle-wallpaper';
+      var $ = function (id) { return document.getElementById(id); };
+      var gate = $('gate'), ui = $('ui'), tip = $('tip'), modal = $('modal');
+      var btn = $('enterBtn'), loading = $('loading'), loadingText = $('loadingText'), fatal = $('fatal');
+      var started = false;
+
+      /* ---------- 1. 进入：延后加载 bundle，让 audio 落在用户手势里 ---------- */
+      var canvasReadyAt = Date.now();
+
+      function onFatal(msg) {
+        loading.classList.remove('on');
+        btn.disabled = false;
+        fatal.textContent = msg;
+        fatal.classList.add('on');
+      }
+
+      function waitForCanvas(cb, timeoutMs) {
+        // bundle 起来后会把 <canvas> 挂到 body；以它出现作为"场景已就绪"的信号，
+        // 比盲等固定时长可靠得多（首次访问要拉 13MB 素材）。
+        if (document.querySelector('canvas')) return cb();
+        var timer = setTimeout(function () {
+          mo.disconnect();
+          cb();
+        }, timeoutMs);
+        var mo = new MutationObserver(function () {
+          if (document.querySelector('canvas')) {
+            clearTimeout(timer);
+            mo.disconnect();
+            cb();
+          }
+        });
+        mo.observe(document.body, { childList: true, subtree: true });
+      }
+
+      btn.addEventListener('click', function () {
+        if (started) return;
+        started = true;
+        btn.disabled = true;
+        fatal.classList.remove('on');
+        loading.classList.add('on');
+        loadingText.textContent = '正在加载场景资源…';
+
+        if (window.___wpxUnpause || window.wallpaperRegisterAudioListener) {
+          // 万一将来有人把这份 index.html 放进 WE 宿主里跑：
+          // 宿主对象必须在 bundle 之前先存在，否则属性面板永不生效。
+          window.wallpaperPropertyListener = window.wallpaperPropertyListener || {};
+        }
+
+        var s = document.createElement('script');
+        s.src = 'bundle.js';
+        s.async = true;
+        s.onerror = function () {
+          onFatal('bundle.js 加载失败。若你是从本地打开的本页，请改用 http(s) 访问 —— file:// 协议下浏览器会拦截资源加载。');
+        };
+        s.onload = function () {
+          loadingText.textContent = '正在解析骨骼与粒子资源…';
+        };
+        document.head.appendChild(s);
+
+        waitForCanvas(function () {
+          loading.classList.remove('on');
+          gate.classList.add('hidden');
+          ui.classList.add('on');
+          canvasReadyAt = Date.now();
+          armIdle();
+          setTimeout(function () { tip.classList.add('hide'); }, 9000);
+        }, 25000);
+
+        // bundle 迟迟不吐 canvas（脚本执行即报错的常见表现）时给个兜底提示
+        setTimeout(function () {
+          if (gate.classList.contains('hidden')) return;
+          loadingText.textContent = '资源较多，仍在加载…（首次访问约需十几秒）';
+        }, 8000);
+      });
+
+      /* ---------- 2. 静止一段时间后隐去 UI，还给画面本身 ---------- */
+      var idleTimer = null;
+      function armIdle() {
+        function wake() {
+          ui.classList.remove('idle');
+          clearTimeout(idleTimer);
+          idleTimer = setTimeout(function () { ui.classList.add('idle'); }, 4200);
+        }
+        ['pointermove', 'pointerdown', 'wheel', 'keydown', 'touchstart'].forEach(function (e) {
+          window.addEventListener(e, wake, { passive: true });
+        });
+        wake();
+      }
+
+      /* ---------- 3. dock 按钮。
+             这些按钮单独挡板点击穿透，避免误触发 bundle 的触摸热区。 ---------- */
+      function swallow(el) {
+        ['pointerdown', 'mousedown', 'touchstart', 'click'].forEach(function (e) {
+          el.addEventListener(e, function (ev) { ev.stopPropagation(); }, { passive: true });
+        });
+      }
+      [ui.querySelector('.brand'), ui.querySelector('.dock')].forEach(swallow);
+
+      function openModal() {
+        modal.classList.add('on');
+        $('btnIntro').classList.add('active');
+      }
+      function closeModal() {
+        modal.classList.remove('on');
+        $('btnIntro').classList.remove('active');
+      }
+
+      $('btnIntro').addEventListener('click', function () {
+        modal.classList.contains('on') ? closeModal() : openModal();
+      });
+      $('btnClose').addEventListener('click', closeModal);
+      modal.addEventListener('click', function (e) {
+        if (e.target === modal) closeModal();
+      });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') closeModal();
+      });
+
+      $('btnRepo').addEventListener('click', function () {
+        window.open(REPO, '_blank', 'noopener');
+      });
+
+      function toggleFull() {
+        var el = document.documentElement;
+        if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+          (el.requestFullscreen || el.webkitRequestFullscreen || function () { }).call(el);
+        } else {
+          (document.exitFullscreen || document.webkitExitFullscreen || function () { }).call(document);
+        }
+      }
+      $('btnFull').addEventListener('click', toggleFull);
+
+      /* ---------- 4. 报错兜底：让"白屏"至少说出原因 ---------- */
+      window.addEventListener('error', function (e) {
+        if (!gate.classList.contains('hidden')) {
+          onFatal('初始化出错：' + (e.message || '未知错误') + '（控制台有完整堆栈）');
+        }
+      });
+
+      // 从别的页面带 ?auto=1 进来时自动进入（方便自己测试，注意此时音频仍可能被拦）
+      if (/[?&]auto=1\b/.test(location.search)) {
+        setTimeout(function () { btn.click(); }, 60);
+      }
+    })();
+  </script>
+</body>
+
+</html>
