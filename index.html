@@ -255,19 +255,67 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
       color: #fff;
     }
 
-    /* --- 加载指示 --- */
+    /* --- 加载指示：真实字节进度（数据来自 assets/manifest.json） --- */
     #loading {
       display: none;
+      flex-direction: column;
       align-items: center;
-      gap: 9px;
-      margin-top: 20px;
+      gap: 11px;
+      margin-top: 24px;
       font-family: var(--font);
       font-size: 12.5px;
       color: var(--dim);
     }
 
     #loading.on {
-      display: inline-flex;
+      display: flex;
+    }
+
+    .bar {
+      width: min(320px, 66vw);
+      height: 4px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, .14);
+      overflow: hidden;
+    }
+
+    .bar>i {
+      display: block;
+      height: 100%;
+      width: 0;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #56bdf0, #a5e4ff);
+      box-shadow: 0 0 12px rgba(125, 211, 252, .55);
+      transition: width .3s ease;
+    }
+
+    /* 拿不到 manifest 时退回转圈，不显示进度条 */
+    #loading.nobar .bar {
+      display: none;
+    }
+
+    .load-txt {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      line-height: 1.5;
+    }
+
+    .load-txt .pct {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+      min-width: 3.4em;
+      text-align: right;
+    }
+
+    .load-txt .spinner {
+      display: none;
+    }
+
+    #loading.nobar .load-txt .spinner {
+      display: inline-block;
     }
 
     .spinner {
@@ -642,7 +690,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
         <span class="chip">8 组粒子特效</span>
         <span class="chip">15 条语音字幕</span>
         <span class="chip">BGM 自动播放</span>
-        <span class="chip">跟随人物光标凝视</span>
+        <span class="chip">按宽自适应取景</span>
       </div>
       <button class="btn" id="enterBtn" type="button">
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -650,9 +698,13 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
         </svg>
         <span>点击进入 Demo</span>
       </button>
-      <div id="loading" role="status">
-        <span class="spinner" aria-hidden="true"></span>
-        <span id="loadingText">正在加载场景资源…</span>
+      <div id="loading" role="status" aria-live="polite">
+        <div class="bar"><i id="barFill"></i></div>
+        <div class="load-txt">
+          <span class="pct" id="pctNum">0%</span>
+          <span class="spinner" aria-hidden="true"></span>
+          <span id="loadingText">正在加载场景资源…</span>
+        </div>
       </div>
       <div id="fatal" role="alert"></div>
       <p class="foot-note">
@@ -675,7 +727,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
       </div>
     </div>
 
-    <div class="tip" id="tip">试着把鼠标移到画面中间偏左的位置 —— 角色会转头看你，背景也会跟着漂。</div>
+    <div class="tip" id="tip">移动鼠标会拖出一条光带；点角色的头部或手部，会有不同的反应和台词。</div>
 
     <div class="dock">
       <button type="button" id="btnIntro">
@@ -723,8 +775,8 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
       <h3>可以试试</h3>
       <ul>
-        <li><b>移动鼠标</b> —— 角色会转头跟随光标，背景图层做视差位移。</li>
-        <li><b>点头部 / 手部</b> —— 触发对应的触摸事件，出语音和字幕气泡。</li>
+        <li><b>移动鼠标</b> —— 指针会拖出一条粒子光带（拖尾开关在右上角设置面板里）。</li>
+        <li><b>点头部 / 手部</b> —— 两个独立热区，触发各自的动作、语音与字幕气泡。</li>
         <li><b>右上角齿轮</b> —— 框架自带的设置面板（6 个页签，含全部壁纸开关）。</li>
         <li><b>右上角喇叭</b> —— 静音总闸，BGM 与角色语音一起关。</li>
       </ul>
@@ -758,7 +810,96 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
       var $ = function (id) { return document.getElementById(id); };
       var gate = $('gate'), ui = $('ui'), tip = $('tip'), modal = $('modal');
       var btn = $('enterBtn'), loading = $('loading'), loadingText = $('loadingText'), fatal = $('fatal');
+      var barFill = $('barFill'), pctNum = $('pctNum');
       var started = false;
+
+      /* ---------- 0. 资源预取 ------------------------------------------
+         为什么要有这一段：
+         Three.js 在 renderer 初始化那一刻就把 <canvas> 挂上去了，但此刻贴图
+         还一张没到 —— 所以"canvas 出现"根本不等于"画面就绪"。原先拿它当
+         淡出门层的信号，结果就是门一开、露出十几秒黑屏（CDN 限速时更久）。
+
+         改成：门层期间按字节加权**先**把画面必需的资源全拉完（进 HTTP 缓存），
+         再注入 bundle。bundle 随后请求同一批 URL 全部命中缓存 ⇒ 出来就是成品画面。
+
+         字节数来自打包时生成的 assets/manifest.json —— 按"文件个数"算进度会
+         严重失真：3.6MB 的 BGM 和 5KB 的星点贴图不是一个量级。
+         ---------------------------------------------------------------- */
+
+      function fetchJSON(url) {
+        return fetch(url, { cache: 'no-cache' }).then(function (r) {
+          if (!r.ok) throw new Error(url + ' → HTTP ' + r.status);
+          return r.json();
+        });
+      }
+
+      /**
+       * 并发预取一组资源，按**字节**回调进度。
+       *
+       * ★ 单文件失败一律跳过、不阻断：宁可上线时少一张贴图，
+       *   也不能让访客卡在 97% 上看着进度条发呆。整体还有 120s 硬超时兜底。
+       */
+      function preload(entries, concurrency, onTick, onDone) {
+        var list = entries.map(function (e) {
+          return { p: e.p, n: e.n || 0, _s: 0, _l: 0, _t: 0 };
+        });
+        var total = list.reduce(function (s, e) { return s + e.n; }, 0);
+        var cursor = 0, done = 0, stopped = false;
+
+        function currentBytes() {
+          var sum = 0;
+          for (var i = 0; i < list.length; i++) {
+            var e = list[i];
+            // _s: 0 排队 / 1 进行中 / 2 结束（成功或失败都算结束）
+            if (e._s === 2) sum += e.n;
+            else if (e._s === 1 && e._t > 0) sum += e.n * Math.min(1, e._l / e._t);
+          }
+          return sum;
+        }
+
+        function settle() {
+          done += 1;
+          if (cursor < list.length) { pump(); return; }
+          if (done < list.length) return;
+          stopped = true;
+          clearInterval(timer);
+          if (onTick) onTick(currentBytes(), total);
+          if (onDone) onDone();
+        }
+
+        function one(e) {
+          e._s = 1;
+          var xhr = new XMLHttpRequest();
+          xhr.open('GET', e.p, true);
+          xhr.responseType = 'blob';
+          xhr.timeout = 90000;
+          xhr.onprogress = function (ev) {
+            e._l = ev.loaded;
+            // 服务器不开 Content-Length（gzip 常这样）时用清单里的字节数兜底
+            e._t = ev.lengthComputable ? ev.total : 0;
+          };
+          xhr.onload = function () { e._s = 2; settle(); };
+          xhr.onerror = function () { e._s = 2; settle(); };
+          xhr.ontimeout = function () { e._s = 2; settle(); };
+          try { xhr.send(); } catch (err) { e._s = 2; settle(); }
+        }
+
+        function pump() { if (cursor < list.length) one(list[cursor++]); }
+
+        var timer = setInterval(function () {
+          if (!stopped) onTick && onTick(currentBytes(), total);
+        }, 120);
+
+        var kick = Math.max(1, Math.min(concurrency, list.length));
+        for (var k = 0; k < kick; k++) pump();
+
+        setTimeout(function () {
+          if (stopped) return;
+          stopped = true;
+          clearInterval(timer);
+          onDone && onDone();
+        }, 120000);
+      }
 
       /* ---------- 1. 进入：延后加载 bundle，让 audio 落在用户手势里 ---------- */
       var canvasReadyAt = Date.now();
@@ -788,45 +929,74 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
         mo.observe(document.body, { childList: true, subtree: true });
       }
 
-      btn.addEventListener('click', function () {
-        if (started) return;
-        started = true;
-        btn.disabled = true;
-        fatal.classList.remove('on');
-        loading.classList.add('on');
-        loadingText.textContent = '正在加载场景资源…';
-
+      /** 资源全部到位后再注入 bundle —— 此时它请求的资源已尽在缓存里 */
+      function injectBundle() {
         if (window.___wpxUnpause || window.wallpaperRegisterAudioListener) {
           // 万一将来有人把这份 index.html 放进 WE 宿主里跑：
           // 宿主对象必须在 bundle 之前先存在，否则属性面板永不生效。
           window.wallpaperPropertyListener = window.wallpaperPropertyListener || {};
         }
-
         var s = document.createElement('script');
         s.src = 'bundle.js';
         s.async = true;
         s.onerror = function () {
           onFatal('bundle.js 加载失败。若你是从本地打开的本页，请改用 http(s) 访问 —— file:// 协议下浏览器会拦截资源加载。');
         };
-        s.onload = function () {
-          loadingText.textContent = '正在解析骨骼与粒子资源…';
-        };
         document.head.appendChild(s);
 
         waitForCanvas(function () {
-          loading.classList.remove('on');
-          gate.classList.add('hidden');
-          ui.classList.add('on');
-          canvasReadyAt = Date.now();
-          armIdle();
-          setTimeout(function () { tip.classList.add('hide'); }, 9000);
-        }, 25000);
+          // canvas 挂上去 ≠ 画面已渲染。再让两帧过去，等第一帧真正画出来再开门，
+          // 否则门层淡出的那 0.7s 里露出的是还没上色的画面。
+          requestAnimationFrame(function () {
+            requestAnimationFrame(reveal);
+          });
+        }, 30000);
+      }
 
-        // bundle 迟迟不吐 canvas（脚本执行即报错的常见表现）时给个兜底提示
-        setTimeout(function () {
-          if (gate.classList.contains('hidden')) return;
-          loadingText.textContent = '资源较多，仍在加载…（首次访问约需十几秒）';
-        }, 8000);
+      function reveal() {
+        loading.classList.remove('on');
+        gate.classList.add('hidden');
+        ui.classList.add('on');
+        canvasReadyAt = Date.now();
+        armIdle();
+        setTimeout(function () { tip.classList.add('hide'); }, 9000);
+      }
+
+      btn.addEventListener('click', function () {
+        if (started) return;
+        started = true;
+        btn.disabled = true;
+        fatal.classList.remove('on');
+        loading.classList.add('on');
+        loadingText.textContent = '正在读取资源清单…';
+
+        fetchJSON('assets/manifest.json')
+          .then(function (mf) {
+            var visual = (mf && mf.visual) || [];
+            var audio = (mf && mf.audio) || [];
+            if (!visual.length) throw new Error('manifest.visual 为空');
+
+            loadingText.textContent = '正在加载场景资源…';
+            // BGM 3.6MB，跟画面并行在后台下 —— 不为它多等一秒
+            preload(audio, 2, function () { });
+
+            preload(visual, 6, function (loaded, total) {
+              var mb = function (b) { return (b / 1048576).toFixed(1); };
+              var pct = total ? Math.min(100, Math.round((loaded / total) * 100)) : 0;
+              barFill.style.width = pct + '%';
+              pctNum.textContent = pct + '%';
+              loadingText.textContent = '已加载 ' + mb(loaded) + ' / ' + mb(total) + ' MB';
+            }, function () {
+              loadingText.textContent = '资源就绪，正在初始化渲染…';
+              injectBundle();
+            });
+          })
+          .catch(function () {
+            // 拿不到清单就别卡住访客：退回"直接注入 bundle"的老路子（门层会一直盖着）
+            loading.classList.add('nobar');
+            loadingText.textContent = '正在加载场景…';
+            injectBundle();
+          });
       });
 
       /* ---------- 2. 静止一段时间后隐去 UI，还给画面本身 ---------- */

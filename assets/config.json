@@ -154,7 +154,7 @@
     ]
   },
   "probe": {
-    "enabled": true,
+    "enabled": false,
     "hud": false
   },
   "pointerTrail": {

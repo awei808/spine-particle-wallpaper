@@ -1,0 +1,145 @@
+{
+ "generatedBy": "scripts/deployPages.ts",
+ "note": "展示页专用资源清单：字节数用于加权进度条。改了 config.json 的贴图/骨架后重跑本脚本。",
+ "visual": [
+  {
+   "p": "assets/config.json",
+   "n": 50714
+  },
+  {
+   "p": "assets/events.jsonc",
+   "n": 15322
+  },
+  {
+   "p": "assets/Asuna_S9_Background_12.png",
+   "n": 298018
+  },
+  {
+   "p": "assets/Asuna_S9_Background_02.png",
+   "n": 35524
+  },
+  {
+   "p": "assets/Asuna_S9_Background_04.png",
+   "n": 189536
+  },
+  {
+   "p": "assets/Asuna_S9_Background_14.png",
+   "n": 264616
+  },
+  {
+   "p": "assets/Asuna_S9_Background_15.png",
+   "n": 27959
+  },
+  {
+   "p": "assets/Asuna_S9_Background_16.png",
+   "n": 36777
+  },
+  {
+   "p": "assets/Asuna_S9_Background_11.png",
+   "n": 103402
+  },
+  {
+   "p": "assets/Asuna_S9_Background_13.png",
+   "n": 236895
+  },
+  {
+   "p": "assets/Asuna_S9_Background_10.png",
+   "n": 104124
+  },
+  {
+   "p": "assets/Asuna_S9_Background_01.png",
+   "n": 759604
+  },
+  {
+   "p": "assets/Asuna_S9_Background_05.png",
+   "n": 78773
+  },
+  {
+   "p": "assets/Asuna_S9_Background_08.png",
+   "n": 160502
+  },
+  {
+   "p": "assets/SoulDress_Asuna_09.skel",
+   "n": 376147
+  },
+  {
+   "p": "assets/SoulDress_Asuna_09.atlas",
+   "n": 11515
+  },
+  {
+   "p": "assets/SoulDress_Asuna_09.png",
+   "n": 2527774
+  },
+  {
+   "p": "assets/SoulDress_Asuna_09_BJ_01.skel",
+   "n": 2990
+  },
+  {
+   "p": "assets/SoulDress_Asuna_09_BJ_01.atlas",
+   "n": 1310
+  },
+  {
+   "p": "assets/SoulDress_Asuna_09_BJ_01.png",
+   "n": 351104
+  },
+  {
+   "p": "assets/FX_cf_aixin02.png",
+   "n": 132827
+  },
+  {
+   "p": "assets/FX_cf_yun011.png",
+   "n": 232004
+  },
+  {
+   "p": "assets/FX_cf_niao05.png",
+   "n": 14456
+  },
+  {
+   "p": "assets/FX_cf_motianlun03.png",
+   "n": 1203938
+  },
+  {
+   "p": "assets/FX_cf_chexiang02.png",
+   "n": 8084
+  },
+  {
+   "p": "assets/FX_cf_chexiang01.png",
+   "n": 7828
+  },
+  {
+   "p": "assets/FX_cf_star1.png",
+   "n": 4676
+  },
+  {
+   "p": "assets/FX_cf_mask082.png",
+   "n": 42061
+  },
+  {
+   "p": "assets/FX_cf_saoguang012.png",
+   "n": 3412
+  },
+  {
+   "p": "assets/FX_glow04_01.png",
+   "n": 5077
+  },
+  {
+   "p": "assets/FX_glow_05.png",
+   "n": 12544
+  },
+  {
+   "p": "assets/bubble_frame.png",
+   "n": 851
+  },
+  {
+   "p": "bundle.js",
+   "n": 1028280
+  }
+ ],
+ "audio": [
+  {
+   "p": "assets/bgm/Anniversary_03.ogg",
+   "n": 3706832
+  }
+ ],
+ "visualBytes": 8328644
+}
