@@ -23,15 +23,31 @@
  * 页面在根 ⇒ `assets/` 必须也在根。同理 `bundle.js` 必须与 `index.html` 同级。
  * 这是 WE 壁纸目录的形态，Pages 这边照抄它最省事：一份产出，两个用途都对得上。
  *
- * ## ★ 这里唯一会改动素材内容的地方：`probe.hud`
+ * ## ★ 这里会向 `assets/` 里额外写 `manifest.json`
  *
- * demo 的 `config.json` 里 `probe: {enabled: true, hud: true}` —— 那是给作者在本机调试用的，
- * 屏幕边上会挂一层诊断 HUD。发布到公网页必须关掉，否则访客第一眼看到的是调试数字。
+ * 从 `config.json` 反查出"画面出现之前必须到位"的文件清单（贴图 / 骨架 / atlas + 同名 png /
+ * 拖尾贴图 / 气泡贴图 / config / events / bundle.js），连同**字节数**一起写进
+ * `assets/manifest.json`。展示页靠它做真实的字节加权进度条。
  *
- * 只改 `hud`、**保留 `probe.enabled`**：后者管的是 `window.__WB_DIALOGUE__` / `__WB_FX__`
- * 这两个只读快照 API 是否挂上去 —— 远程排查线上问题时这是唯一抓手，留着不占任何画面。
+ * 为什么在这里算而不是让页面运行时解析 config：字节数只有打包时才知道，
+ * 而按"文件个数"算进度会严重失真 —— 3.6MB 的 BGM 和 5KB 的星点贴图根本不是一个量级。
  *
- * 除此之外**一个字节都不改** —— 尤其是 `events.jsonc` 和各图层数值： Pages 上看到的
+ * 音频（BGM）**不进**画面必需组：单曲 3.6MB，让它跟画面并行在后台下，
+ * 不为它多等一秒。语音更是按需拉取，只下抽到的那一条。
+ *
+ * ## ★ 这里唯一会改动素材内容的地方：`probe`
+ *
+ * demo 的 `config.json` 里 `probe: {enabled: true, hud: true}` —— 那是给作者在本机调试用的。
+ * 公网 demo 必须**两个都关**：
+ *
+ * - `hud: true` 会在屏幕边上挂一层诊断数字，第一眼就出戏；
+ * - `enabled: true` 会让 `probeEnabled` 缺省为真 ⇒ 右上角「调试」入口一进去就是开着的，
+ *   还会把 `__WB_DIALOGUE__` / `__WB_FX__` 挂到 window 上。
+ *
+ * ⚠️ 代价：线上出问题时失去了那两个调试抓手。取舍是明确的 —— 面向访客的展示页，
+ *   默认状态的整洁 > 作者的远程排查便利。真要排查，临时在本地跑一份改回 true 的包即可。
+ *
+ * 除此之外**一个字节都不改** —— 尤其是 `events.jsonc` 和各图层数值：Pages 上看到的
  * 必须跟在 WE 里看到的逐像素一致，否则这个 demo 就失去了"所见即所得"的意义。
  *
  * ## 幂等与安全
@@ -119,16 +135,75 @@ fs.rmSync(assetTarget, { recursive: true, force: true });
 copyTree(path.join(demoDir, 'assets'), assetTarget);
 
 /* ------------------------------------------------------------------ */
-/* 3. 发布态覆盖：关掉调试 HUD（详见文件头）                              */
+/* 3. 资源清单 manifest.json（供展示页做真实加载进度，详见文件头）          */
 /* ------------------------------------------------------------------ */
+/**
+ * 从 config 里反查出"画面出现之前必须到位"的文件。
+ *
+ * 为什么不顺便加上 voice/*.ogg：语音是**按需**拉的（抽到哪条才下哪条），
+ * 首屏为了它们多等 2MB 不划算；BGM 同理，单曲 3.6MB，让它跟画面并行、后台慢慢下。
+ */
+const rel = (p: string) => p.replace(/^\.\//, '').replace(/\\/g, '/');
+
+const collectVisual = (cfg: any): string[] => {
+  const files = new Set<string>();
+  const push = (p?: string | null) => {
+    if (p) files.add('assets/' + rel(String(p)));
+  };
+  // 这两个是 bundle 启动时自己要 fetch 的，预取掉能省一次往返
+  files.add('assets/config.json');
+  files.add('assets/events.jsonc');
+  (cfg.meshes ?? []).forEach((m: any) => {
+    push(m.textureFileName);
+    push(m.skeletonFileName);
+    push(m.maskFileName);
+    if (m.atlasFileName) {
+      push(m.atlasFileName);
+      // .atlas 只描述切图，真正的像素在同名的 .png 里
+      push(String(m.atlasFileName).replace(/\.atlas$/i, '.png'));
+    }
+  });
+  (cfg.pointerTrail?.emitters ?? []).forEach((e: any) => push(e.textureFileName));
+  push(cfg.subtitle?.skin?.image);
+  return [...files].filter((f) => fs.existsSync(path.join(target, f)));
+};
+
+const collectAudio = (cfg: any): string[] => {
+  const out: string[] = [];
+  if (cfg.bgm?.enabled !== false && cfg.bgm?.file) {
+    out.push(rel(String(cfg.bgm.path ?? './assets/bgm/') + cfg.bgm.file));
+  }
+  return out.filter((f) => fs.existsSync(path.join(target, f)));
+};
+
 const cfgPath = path.join(assetTarget, 'config.json');
 const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-const probeBefore = JSON.stringify(cfg.probe ?? null);
-cfg.probe = { ...(cfg.probe ?? {}), hud: false };
-fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
+
+const manifest = {
+  generatedBy: 'scripts/deployPages.ts',
+  note: '展示页专用资源清单：字节数用于加权进度条。改了 config.json 的贴图/骨架后重跑本脚本。',
+  visual: collectVisual(cfg).map((p) => ({ p, n: bytes(path.join(target, p)) })),
+  audio: collectAudio(cfg).map((p) => ({ p, n: bytes(path.join(target, p)) })),
+};
 
 /* ------------------------------------------------------------------ */
-/* 4. 自检报告                                                          */
+/* 4. 发布态覆盖：调试功能默认关闭（详见文件头）                           */
+/* ------------------------------------------------------------------ */
+const probeBefore = JSON.stringify(cfg.probe ?? null);
+cfg.probe = { enabled: false, hud: false };
+fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
+
+// 清单必须在 probe 覆盖**之后**写：两者读的是同一份 config，顺序反了会漏。
+manifest.visual.push({ p: 'bundle.js', n: bytes(path.join(target, 'bundle.js')) });
+const visualBytes = manifest.visual.reduce((s, e) => s + e.n, 0);
+fs.writeFileSync(
+  path.join(assetTarget, 'manifest.json'),
+  JSON.stringify({ ...manifest, visualBytes }, null, 1),
+  'utf8'
+);
+
+/* ------------------------------------------------------------------ */
+/* 5. 自检报告                                                          */
 /* ------------------------------------------------------------------ */
 const voiceN = fs.existsSync(path.join(assetTarget, 'voice'))
   ? fs.readdirSync(path.join(assetTarget, 'voice')).length
@@ -159,7 +234,22 @@ check(
   'assets/SoulDress_Asuna_09.skel（主骨架）'
 );
 console.log('  语音 ' + voiceN + ' 条 · BGM ' + bgmN + ' 首');
-console.log('  probe: ' + probeBefore + ' → ' + JSON.stringify(cfg.probe) + '（仅关 HUD）');
+console.log('  probe: ' + probeBefore + ' → ' + JSON.stringify(cfg.probe) + '（调试默认关闭）');
+console.log(
+  '  manifest: 画面必需 ' +
+    manifest.visual.length +
+    ' 项 / ' +
+    kb(visualBytes) +
+    '（预热）· 音频 ' +
+    manifest.audio.length +
+    ' 项（后台并行，不阻塞出画面）'
+);
+// 清单里出现 0 字节的文件，说明 config 引用了不存在的资源 —— 线上会卡在进度条上
+const emptyInManifest = manifest.visual.filter((e) => e.n === 0);
+if (emptyInManifest.length) {
+  console.error('  ★ manifest 里有 0 字节条目：' + emptyInManifest.map((e) => e.p).join(', '));
+  failed = true;
+}
 
 const totalWithBundle =
   totalBytes + bytes(path.join(target, 'bundle.js')) + bytes(path.join(target, 'preview.jpg'));

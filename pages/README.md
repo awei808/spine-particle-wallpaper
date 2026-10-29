@@ -45,6 +45,34 @@ pages/
 
 副产品：13MB 素材不在首屏白等，访客先看海报，体验比干等好。
 
+### 加载：为什么没有黑屏
+
+这是整个展示页**唯一有工程含量**的地方，改动前线上有十几秒黑屏。
+
+原因：Three.js 在 renderer 初始化那一刻就把 `<canvas>` 挂上去了，但此刻贴图还一张没到。
+原先拿「canvas 出现」当"画面就绪"的信号去淡出门层 —— 于是门一开，露出的是还没上色的画面，
+CDN 限速时就是十几秒纯黑。
+
+修法分两步：
+
+1. **门层期间先按字节把画面必需的资源全拉完**（进 HTTP 缓存），再注入 bundle。
+   bundle 随后请求同一批 URL 全部命中缓存 ⇒ 开门即是成品画面。
+2. **开门前再让两帧过去**（`requestAnimationFrame` 套两层），
+   等第一帧真正画出来再淡出，避免淡出的 0.7 秒里露出上色过程。
+
+进度条是**字节加权**的，不是数文件个数 —— 3.6MB 的 BGM 和 5KB 的星点贴图不是一个量级。
+字节数由 `deployPages.ts` 在打包时写进 `assets/manifest.json`（从 config 反查资源，
+顺带校验引用到的文件真实存在）。
+
+几个边界情况都处理了：
+
+| 情况 | 行为 |
+| --- | --- |
+| `manifest.json` 拿不到 | 降级为直接注入 bundle，不显示进度条，不卡住访客 |
+| 单个文件 404 / 超时 | **跳过并继续**，宁可少一张贴图也不能卡在 97% |
+| BGM（3.6MB） | 划到音频组，与画面并行后台下载，**不阻塞出画面** |
+| 语音 | 完全不预取，引擎按需只拉抽到的那一条 |
+
 ### 薄 UI
 
 - **左上角**：项目名胶囊（带一个绿色"live"小点）
@@ -108,7 +136,8 @@ cd "<目标目录>" && git add -A && git commit -m "demo: 更新展示页" && gi
 
 | 项 | 说明 |
 | --- | --- |
-| **只改一处素材** | `deployPages.ts` 会把 `assets/config.json` 的 `probe.hud` 改成 `false`。demo 里开着是为了本机调试，公网页挂一层诊断数字很出戏。保留 `probe.enabled: true`，`window.__WB_DIALOGUE__` / `__WB_FX__` 才能用 —— 远程排查线上问题时这是唯一抓手 |
+| **调试默认关闭** | `deployPages.ts` 把 `assets/config.json` 的 `probe` 改成 `{enabled: false, hud: false}`。demo 工程里两个都是 `true`（本机调试用）。`enabled` 一旦为真，`probeEnabled` 缺省就跟着为真 ⇒ 右上角「调试」入口一进去就是开着的，还会把 `__WB_DIALOGUE__` / `__WB_FX__` 挂到 window；`hud` 为真则屏幕上直接挂一层诊断数字。代价是失去那两个远程排查抓手 —— 面向访客的展示页，默认整洁优先 |
+| **额外产物 `manifest.json`** | 打包时生成的资源清单（画面必需 33 项 / 7.9MB）。**改了 config 里的贴图或骨架后必须重跑脚本**，否则进度条会算错 |
 | **体积** | 约 12.8 MB / 57 个文件。GitHub Pages 单文件上限 100MB、仓库建议 1GB，远没到线。脚本会在 bundle > 25MB 或总量 > 900MB 时报错 |
 | **`.nojekyll`** | 不加的话 Jekyll 会按自己的规则筛掉一部分路径，且多一层重定向 |
 | **og:image** | 复用 `preview.jpg`，不额外出图。改预览图记得同步换 demo 工程里那份 |
@@ -118,12 +147,29 @@ cd "<目标目录>" && git add -A && git commit -m "demo: 更新展示页" && gi
 
 ## 五、验收过什么
 
-用无头 Chrome（`--enable-unsafe-swiftshader` 软件 WebGL）实测过三张截图：
+用无头 Chrome（`--enable-unsafe-swiftshader` 软件 WebGL）实测：
 
-| 截图 | 结论 |
+| 项 | 结论 |
 | --- | --- |
 | 入场门 | 海报背景、标题、特性标签、进入按钮正常 |
 | 场景初始态 | 22 图层全部渲染，左上胶囊 / 右上框架入口列 / 右下 dock / 提示气泡都在 |
 | 运行 20 秒后 | 事件系统正常触发（字幕气泡出现），UI 已按设计自动淡出 |
+| 调试关闭 | 画面无 HUD、无诊断数字、无帧率面板，右上角无按钮处于打开态 |
+| 事件表 | `scripts/validateEvents.ts`：15 条，0 reject / 0 coerce / 0 report |
 
-`events.jsonc` 也过了 `scripts/validateEvents.ts`：15 条事件，0 reject / 0 coerce / 0 report。
+黑屏修复是用**限速服务器 + 请求时间线**验证的（本机千兆看不出问题，压到 1MB/s 才复现）：
+
+```
+4.390  index.html
+4.625  assets/manifest.json
+4.669  assets/bgm/Anniversary_03.ogg   ← 音频组，后台并行
+4.679… assets/config.json / events.jsonc / 全部贴图骨架（6 并发）
+5.634  bundle.js                        ← 预加载收尾
+       （此后无第二条 bundle.js / 贴图请求 ⇒ 全部命中 HTTP 缓存）
+```
+
+**整条时间线里 `bundle.js`、贴图、config、events 各只出现一次** —— 证明 bundle 注入后
+再没为等网络停留过一帧，这正是黑屏消失的直接证据。
+
+> 想自己复现：`python _slowserver.py <端口> <每秒字节数> <站点目录> <日志路径>`
+> （脚本在仓库外的临时目录，作用是给 SimpleHTTPRequestHandler 加限速和请求日志）
