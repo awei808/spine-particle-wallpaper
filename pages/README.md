@@ -171,5 +171,7 @@ cd "<目标目录>" && git add -A && git commit -m "demo: 更新展示页" && gi
 **整条时间线里 `bundle.js`、贴图、config、events 各只出现一次** —— 证明 bundle 注入后
 再没为等网络停留过一帧，这正是黑屏消失的直接证据。
 
-> 想自己复现：`python _slowserver.py <端口> <每秒字节数> <站点目录> <日志路径>`
-> （脚本在仓库外的临时目录，作用是给 SimpleHTTPRequestHandler 加限速和请求日志）
+> 想自己复现：
+> `python scripts/slowServer.py <端口> <每秒字节数> <站点目录> <日志路径>`
+> 例：`python scripts/slowServer.py 8881 307200 ../_ghpages ../_access.log`
+> （给 `SimpleHTTPRequestHandler` 加限速 + 带时间戳的请求日志，专门用来验收加载表现）
