@@ -12,3 +12,4 @@ docx/_archive
 # 成品视频请挂到 GitHub Release 附件，不要提交进 git
 _promo/
 *.mp4
+_tmp_abtest
