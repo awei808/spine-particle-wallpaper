@@ -18,7 +18,10 @@
  *   ② **alignment** —— View/World/Local/Facing 在**本引擎相机（无 roll / 无俯角 / 无偏航）**
  *      下投影等价；`Velocity` 改为朝向速度方向（唯一有实感的一档）；
  *   ③ **pivot** —— ScriptReference 逐字 *"multiplier of the particle sizes, **relative to
- *      their diameters**"* ⇒ 枢轴偏移 = `pivot × 直径`，是**旋转中心**（`pivot = 0` ⇒ 绕中心）；
+ *      their diameters**"* ⇒ 枢轴偏移 = `pivot × 直径`。★ **2026-10-25 实录更正**
+ *      （TODO §1.7 D2）：锚点 = quad 上距中心 −pivot×尺寸 的点，**钉在粒子位置上**
+ *      —— ang=0 时 quad 静态偏移 +pivot×直径（S6 hua01/hua02 的 [0,+0.5,0] ⇒ 花
+ *      上移半直径），自转绕锚点刚体旋转；`pivot = 0` ⇒ 中心钉在位置上（绕中心）；
  *   ④ **sortingFudge × fudgeToZ** —— 官方 *"only affects where an **entire system** appears
  *      in the scene"* ⇒ 只动 `mesh.position.z`（缺省 `fudgeToZ = 0` ⇒ 不动）；
  *   ⑤ `allowRoll` / `flip` / `min·maxParticleSize`；
@@ -263,9 +266,9 @@ function main() {
   const RV = run(VER, N);
   chk('Vertical：正视相机下 **≡ Billboard**（逐位）', sameGeom(R0, RV));
 
-  /* ── ③ pivot：枢轴 = 旋转中心 ── */
+  /* ── ③ pivot：锚点钉在粒子位置上（2026-10-25 实录更正，TODO §1.7 D2）── */
   console.log('');
-  console.log('[3] pivot（**直径的倍数** · 旋转中心）');
+  console.log('[3] pivot（**直径的倍数** · 锚点 = 距中心 −pivot×尺寸 的点，钉在粒子位置上）');
   const ROT90 = Math.PI / 2;
   const PR = JSON.parse(JSON.stringify(BASE));
   PR.startRotation = K(ROT90);
@@ -277,15 +280,36 @@ function main() {
    */
   chk('startRotation = π/2 生效（引擎内取负号 ⇒ −π/2）',
     near(RP0.p.rot, -ROT90, 1e-6), `rot=${RP0.p.rot}`);
-  chk('pivot = 0 ⇒ 绕**中心**转（包围盒中心不偏）',
+  chk('pivot = 0 ⇒ 中心钉在位置上（包围盒中心不偏）',
     near(RP0.box.cy, RP0.p.y, 1e-6), `Δ=${RP0.box.cy - RP0.p.y}`);
 
-  const PR5 = JSON.parse(JSON.stringify(PR));
+  /**
+   * ★ 更正前的断言是「pivot=[0,0.5] ⇒ 枢轴抬到顶端（90° 时 Δcy=+50）」——那是旧式
+   *   `中心 + o + R·(c − o)` 的行为：静态平移在 ang=0 时 +o/−o 抵消、只在旋转时显形。
+   *   S6 实录证实 Unity 里 pivot=[0,+0.5,0] 让花**静态上移半直径**（生成器烘焙
+   *   `y += pivot[1]×size` 已对齐实录），故改为下面两条：静态上移 + 绕锚点刚体旋转。
+   */
+  const PRS = JSON.parse(JSON.stringify(BASE));
+  PRS.startRotation = K(0);
+  PRS.renderer = { pivot: [0, 0.5, 0] };
+  const RPS = run(PRS, N);
+  chk('pivot = [0,0.5] · ang=0 ⇒ quad **静态上移**半直径（底边钉在位置上，实录口径）',
+    near(RPS.box.cy - RPS.p.y, 50, 1e-3) && near(RPS.box.y0, RPS.p.y, 1e-3),
+    `Δcy=${RPS.box.cy - RPS.p.y} y0=${RPS.box.y0}`);
+  chk('pivot 不改变尺寸（仍是 100×100）',
+    near(RPS.box.w, 100, 1e-6) && near(RPS.box.h, 100, 1e-6),
+    `w=${RPS.box.w} h=${RPS.box.h}`);
+
+  const PR5 = JSON.parse(JSON.stringify(BASE));
+  PR5.startRotation = K(ROT90);
   PR5.renderer = { pivot: [0, 0.5, 0] };
   const RP5 = run(PR5, N);
-  chk('pivot = [0, 0.5] ⇒ 枢轴抬到**顶端**（偏移 = 半个直径 = 50）',
-    near(RP5.box.cy - RP5.p.y, 50, 1e-3), `Δ=${RP5.box.cy - RP5.p.y}`);
-  chk('pivot 不改变尺寸（仍是 100×100）', near(RP5.box.w, 100, 1e-6) && near(RP5.box.h, 100, 1e-6),
+  chk('pivot = [0,0.5] · ang=90° ⇒ 绕**锚点（底边）**刚体转（quad 转到锚点右侧、上下对称）',
+    near(RP5.box.cy - RP5.p.y, 0, 1e-3) &&
+      near((RP5.box.x0 + RP5.box.x1) / 2 - RP5.p.x, 50, 1e-3),
+    `Δcy=${RP5.box.cy - RP5.p.y} Δcx=${(RP5.box.x0 + RP5.box.x1) / 2 - RP5.p.x}`);
+  chk('pivot 不改变尺寸（旋转后仍是 100×100）',
+    near(RP5.box.w, 100, 1e-6) && near(RP5.box.h, 100, 1e-6),
     `w=${RP5.box.w} h=${RP5.box.h}`);
 
   /* ── ④ Stretched：长轴沿速度 ── */

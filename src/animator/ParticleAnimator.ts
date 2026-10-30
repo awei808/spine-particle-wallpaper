@@ -1589,7 +1589,10 @@ export class ParticleAnimator {
       this.uAyX = ax[2];
       this.uAyY = ax[3];
       /** 枢轴 = **直径的倍数**（ScriptReference 逐字："multiplier of the particle sizes,
-       *  relative to their diameters"）⇒ 偏移量 = `pivot × 当前帧尺寸`，在 `buildGeometry` 里乘 */
+       *  relative to their diameters"）⇒ 偏移量 = `pivot × 当前帧尺寸`，在 `buildGeometry` 里乘。
+       *  2026-10-25 按 S6 实录更正（TODO §1.7 D2）：pivot 不是"纯旋转中心"——
+       *  锚点（quad 上距中心 −pivot×尺寸 的点）**钉在粒子位置上**，quad 静态偏移
+       *  = `+pivot×尺寸` 并绕锚点刚体旋转。hua01/hua02 的 [0,+0.5,0] ⇒ 花上移半直径。 */
       this.pvX = rd.pivot && isFinite(rd.pivot[0]) ? rd.pivot[0] : 0;
       this.pvY = rd.pivot && isFinite(rd.pivot[1]) ? rd.pivot[1] : 0;
       this.rRoll = rd.allowRoll !== false;
@@ -2518,6 +2521,28 @@ export class ParticleAnimator {
       return;
     }
 
+    // ── 0) 寿命结算（2026-10-25，TODO §1.7 D1）：先回收本帧到期的粒子，**再**发射 ──
+    /**
+     * Unity 同帧语义是「先回收死亡粒子、再发射」——burst-only + 循环 +
+     * `lifetime ≥ cycleSec` 的系统（S6 hua01/hua02，`maxNumParticles = 1`）在周期边界上
+     * 「旧粒子恰好死亡、新 burst 恰好触发」，两件事**必须同帧完成**。
+     * 旧实现把结算放在发射之后：新 burst 到达时旧粒子还占着坑 ⇒ 重发被
+     * `maxNumParticles` 拒绝 ⇒ 花消失整整一个周期（游戏侧全程连续，见 S6 实录）。
+     * S6 曾以「maxNumParticles +1」在生成器侧绕过，引擎修好后已撤（config 回资产值）。
+     * ⚠️ 对既有系统零观感变化：死亡判定与原先同一帧成立，只是从「发射后」挪到「发射前」
+     *   执行——被回收的粒子在 buildGeometry 之前就已移除，渲染结果逐位相同。
+     */
+    const settled: Particle[] = [];
+    for (let i = 0; i < this.particles.length; i++) {
+      const p = this.particles[i];
+      p.age += dt;
+      if (p.age >= p.life) {
+        continue; // 消亡；Unity 里不会原地复活，等下一次发射
+      }
+      settled.push(p);
+    }
+    this.particles = settled;
+
     // ── 1) 系统时间 + burst ──
     const prevSystemTime = this.systemTime;
     this.systemTime += dt;
@@ -2610,16 +2635,12 @@ export class ParticleAnimator {
     }
 
     // ── 4) 逐粒子推进（模块顺序与 Unity 一致）──
+    // （寿命结算已在第 0 步做完 ⇒ 这里只模拟活粒子，不再有消亡分支）
     const u = c.unitScale;
     const s = c.localScale;
     const nv = this.noiseVec;
-    const alive: Particle[] = [];
     for (let i = 0; i < this.particles.length; i++) {
       const p = this.particles[i];
-      p.age += dt;
-      if (p.age >= p.life) {
-        continue; // 消亡；Unity 里不会原地复活，等下一次发射
-      }
       const pr = p.age / p.life;
 
       /**
@@ -2909,14 +2930,20 @@ export class ParticleAnimator {
           tp.pop();
         }
       }
-
-      alive.push(p);
     }
-    this.particles = alive;
   }
 
   public update = (delta: number): void => {
-    const dt = Math.min(Math.max(delta, 0), 0.1);
+    /**
+     * TODO §1.7 D3（2026-10-25）：钳制上限 0.1 → **1/3 s**。
+     *
+     * Unity 的 ParticleSystem 本身不加钳制，但它消费的 `Time.deltaTime` 已被游戏循环
+     * 钳到 `Time.maximumDeltaTime`（缺省 **0.3333333 s**）——所以「Unity 口径」就是 1/3 s，
+     * 不是无界。旧钳制 0.1s 比 Unity 紧 3.3 倍，真实掉帧 >100ms 时粒子进慢动作。
+     * 上限钳制仍然保留（防跳帧本意）：WE 暂停恢复时的分钟级 delta 依旧只前进 1/3 s，
+     * 与 Unity 掉帧时不快进的行为一致。下限照旧钳 0（负 delta 不回退）。
+     */
+    const dt = Math.min(Math.max(delta, 0), 1 / 3);
     this.step(dt);
     this.buildGeometry();
   };
@@ -3362,11 +3389,20 @@ export class ParticleAnimator {
       /**
        * ── P3：四边形 / Mesh 的顶点（枢轴 · 朝向基 · 拉伸 · 镜像 · 尺寸钳制）────
        *
-       * 统一式：`顶点 = 中心 + 枢轴偏移 + R(ang)·(sgnA·半轴A + sgnB·半轴B − 枢轴偏移)`
+       * 统一式（**2026-10-25 按 S6 实录更正**，TODO §1.7 D2）：
+       *   `顶点 = 粒子位置 + R(ang)·(sgnA·半轴A + sgnB·半轴B + 枢轴偏移)`
        *   · `半轴A/B` = 「**单位尺寸**下的半轴」（`renderModeAxes`）× 当前帧直径；
        *   · `枢轴偏移 = pivot × 当前帧直径`（ScriptReference 逐字：*"multiplier of the
        *     particle sizes, relative to their diameters"*）；
-       *   · `枢轴 = 0` 且基 = 屏幕轴 ⇒ **与 P3 之前逐位相同**。
+       *   · 语义：**锚点 = quad 上距中心 −枢轴偏移 的点，钉在粒子位置上**；quad 连同
+       *     偏移绕锚点做刚体旋转。`ang = 0` 时静态偏移 = `+pivot×直径` —— S6
+       *     hua01/hua02 的 pivot=[0,+0.5,0] ⇒ 花整体上移半直径（游戏实录证实；
+       *     "0.5 adjusts the pivot by the particle radius, allowing particles to rotate
+       *     around their edges" = 绕**底边**转，花 rooted 在发射点摆动）。
+       *   · 旧式 `中心 + 枢轴偏移 + R·(角点 − 枢轴偏移)` 在 `ang=0` 时 +o/−o **相互抵消**，
+       *     静态平移丢失 ⇒ 花低半直径、几乎全在画布外 —— 这才是 D2 的真实根因
+       *     （"billboard 不消费 pivot" 的结论方向对、机理不准）；
+       *   · `枢轴 = 0` 且基 = 屏幕轴 ⇒ **与 P3 之前逐位相同**（两式在 o=0 时同式）。
        */
       let hwE = hw;
       let hhE = hh;
@@ -3447,12 +3483,10 @@ export class ParticleAnimator {
            *   尺度"，与 quad 的"单位几何"不同，所以 `sX2` / `sY2` 要在**这里**乘，
            *   而不能像 quad 分支那样折进 `aXX/aYX`（那两个在 mesh 分支里根本不参与）。
            */
-          const lx = mp[vi * 2 + 0] * mk * sX2;
-          const ly = mp[vi * 2 + 1] * mk * sY2;
-          const ddx = lx - ox;
-          const ddy = ly - oy;
-          pos[n * 3 + 0] = cx + ox + ddx * cs - ddy * sn;
-          pos[n * 3 + 1] = cy + oy + ddx * sn + ddy * cs;
+          const lx = mp[vi * 2 + 0] * mk * sX2 + ox;
+          const ly = mp[vi * 2 + 1] * mk * sY2 + oy;
+          pos[n * 3 + 0] = cx + lx * cs - ly * sn;
+          pos[n * 3 + 1] = cy + lx * sn + ly * cs;
           pos[n * 3 + 2] = 0;
           const uu = flipU
             ? this.rMeshUMin + this.rMeshUMax - mu[vi * 2 + 0]
@@ -3479,12 +3513,10 @@ export class ParticleAnimator {
         const qu = [u0, u1, u1, u0, u1, u0];
         const qv = [v0, v0, v1, v0, v1, v1];
         for (let q = 0; q < 6; q++) {
-          const lx = SGA[q] * aXX + SGB[q] * aYX;
-          const ly = SGA[q] * aXY + SGB[q] * aYY;
-          const ddx = lx - ox;
-          const ddy = ly - oy;
-          pos[n * 3 + 0] = cx + ox + ddx * cs - ddy * sn;
-          pos[n * 3 + 1] = cy + oy + ddx * sn + ddy * cs;
+          const lx = SGA[q] * aXX + SGB[q] * aYX + ox;
+          const ly = SGA[q] * aXY + SGB[q] * aYY + oy;
+          pos[n * 3 + 0] = cx + lx * cs - ly * sn;
+          pos[n * 3 + 1] = cy + lx * sn + ly * cs;
           pos[n * 3 + 2] = 0;
           const uu = flipU ? u0 + u1 - qu[q] : qu[q];
           const vv2 = flipV ? v0 + v1 - qv[q] : qv[q];

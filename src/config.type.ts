@@ -2567,7 +2567,17 @@ export type ParticleMeshConfig = MeshConfig & {
      * ★ `4` Velocity 是唯一有实感的档：粒子基准朝向 = 该粒子**速度方向**的屏幕角。
      */
     alignment?: number;
-    /** 旋转枢轴：**粒子直径的倍数**；偏移 = `pivot × 当前帧尺寸`。缺省 `[0,0,0]` = 绕中心 */
+    /**
+     * 渲染锚点：**粒子直径的倍数**（ScriptReference 逐字 *"multiplier of the particle
+     * sizes, relative to their diameters"*；*"0.5 … allowing particles to rotate around
+     * their edges"*）。
+     *
+     * ★ 语义（2026-10-25 按 S6 实录更正，TODO §1.7 D2）：**锚点 = quad 上距中心
+     *   `−pivot×尺寸` 的点，钉在粒子位置上** —— `ang=0` 时 quad 静态偏移
+     *   `+pivot×尺寸`，自转绕锚点做刚体旋转。例：`[0,+0.5,0]` = 底边钉在位置上、
+     *   quad 整体在位置**上方**半直径、绕底边摆（S6 hua01/hua02 即此，游戏实录证实
+     *   "花整体上移半直径"）。缺省 `[0,0,0]` = 中心钉在位置上（绕中心转）。
+     */
     pivot?: [number, number, number];
     /** Stretched：沿速度方向的**长度** = `|v|·velocityScale + lengthScale·size`（见 §4.13） */
     velocityScale?: number;
